@@ -1,0 +1,6 @@
+# Save only .tex file and subfolders
+thesis/*.*
+!thesis/*.tex
+
+# Exclude all locally saved data files
+code/data/*

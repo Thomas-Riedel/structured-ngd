@@ -1,0 +1,434 @@
+\documentclass[a4paper, 11pt, oneside]{scrartcl}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[german, english]{babel}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mleftright}
+\usepackage{bbm}
+\newtheoremstyle{break}
+  {\topsep}{\topsep}%
+  {\itshape}{}%
+  {\bfseries}{}%
+  {\newline}{}%
+\theoremstyle{break}
+\newtheorem{lemma}{Lemma}[section]
+\newtheorem{theorem}[lemma]{Theorem}
+\newtheorem{corollary}[lemma]{Corollary}
+\newtheorem{definition}[lemma]{Definition}
+
+\DeclareMathOperator*{\argmin}{argmin}
+\DeclareMathOperator*{\argmax}{argmax}
+\DeclareMathOperator{\Normal}{\mathcal{N}}
+\DeclareMathOperator{\Natural}{\mathbb{N}}
+\DeclareMathOperator{\Rational}{\mathbb{Q}}
+\DeclareMathOperator{\Real}{\mathbb{R}}
+\DeclareMathOperator{\Complex}{\mathbb{C}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\Diag}{Diag}
+\DeclareMathOperator{\Expect}{\mathbb{E}}
+\DeclareMathOperator{\grad}{\nabla}
+\DeclareMathOperator{\ngrad}{\tilde{\nabla}}
+\DeclareMathOperator{\Hessian}{\nabla^2}
+\DeclareMathOperator{\ELBO}{\mathcal{L}}
+\DeclareMathOperator{\BigO}{\mathcal{O}}
+\DeclareMathOperator{\KL}{\mathbb{KL}}
+\newcommand{\matr}[1]{\boldsymbol{#1}}
+\newcommand{\set}[1]{\mathcal{#1}}
+\newcommand{\numberthis}{\addtocounter{equation}{1}\tag{\theequation}}
+
+\usepackage[scaled=1]{helvet}
+\usepackage{enumitem}
+
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{changepage}
+\usepackage{stackengine}
+
+\usepackage[svgnames]{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+\DeclareCaptionFont{myblue}{\color{RoyalBlue}}
+\captionsetup{labelfont={myblue,bf}}
+
+\usepackage[bottom=3cm,left=2.8cm,right=2.5cm, top=2.5cm]{geometry}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\lhead{Thomas Riedel}
+\rhead{Structured Natural Gradient Descent for Bayesian Deep Learning}
+
+\usepackage[ruled,vlined]{algorithm2e}
+\SetKwInput{KwInput}{Input}
+\SetKwInput{KwOutput}{Output} 
+
+\usepackage{biblatex}
+\addbibresource{Literature/literature.bib}
+\numberwithin{equation}{section}
+
+\usepackage{float}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% % For printing: 						 %
+% \usepackage[hidelinks]{hyperref}		 %
+\usepackage{hyperref}					 %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\usepackage{aligned-overset}
+\usepackage{tcolorbox}
+\usepackage{sistyle}
+\usepackage[section]{placeins}
+\SIthousandsep{,}
+\allowdisplaybreaks
+
+\begin{document}
+	% Title Page
+	\thispagestyle{empty} % no page numbering
+	\parbox{1.5cm}{\resizebox*{90pt}{!}{
+		\includegraphics{{Graphics/TUMLogo}}}
+	}
+	\hspace{310pt}
+	\parbox{1.5cm}{\resizebox*{90pt}{!}{
+		\includegraphics{{Graphics/MathematikLogo}}}
+	}
+	\vspace*{1.5cm}
+	\begin{center}
+		{\Huge Technische Universität München} 
+		\\
+		\vspace*{1.5cm}
+		{\huge \textsc{ Faculty for Mathematics}} 
+		\\
+		\vspace*{3cm}
+		{\Huge {\textbf {Structured Natural Gradient Descent for Bayesian Deep Learning}}}
+		\\
+		\vspace*{3cm}
+		{\Large Master Thesis}\linebreak \\ 
+		{\Large by}\linebreak \\
+		{\Large Thomas Riedel}\\
+		\vspace*{3cm}
+		{\Large 
+			\begin{tabular}{ll}
+				Examiner: & Prof.\ Dr.\ Daniel Cremers\\ % Aufgabensteller
+				Supervisor: & Yuesong Shen, M.Sc.\\ % Betreuer
+				Abgabetermin: & \selectlanguage{german}\today\selectlanguage{english}
+			\end{tabular}
+		}
+	\end{center}
+	\newpage
+
+	% Eidesstattliche Erklärung
+	\thispagestyle{empty}
+	\vspace*{4cm}
+	\noindent
+		Hiermit erkläre ich, dass ich die Masterarbeit selbstständig und nur mit den angegebenen Hilfsmitteln angefertigt habe.
+	\\
+	\\
+	\\
+	\\
+	\\
+	\begin{figure}[H]
+		\includegraphics[width=0.2\textwidth]{{Graphics/signature}}
+	\end{figure}
+	\vspace{0cm}
+	\noindent
+	\underline{\hspace{5cm}}\\%
+		München, den \selectlanguage{german}\today\selectlanguage{english}
+	\newpage
+
+	\thispagestyle{empty}
+	\section*{Zusammenfassung auf Deutsch}
+	\selectlanguage{german}
+		Zusammenfassung...
+	\selectlanguage{english}
+
+	\section*{Summary in English}
+		Summary...
+	\newpage
+
+	\thispagestyle{empty}
+	\tableofcontents
+	\thispagestyle{empty}
+	\newpage
+
+	\pagenumbering{arabic}
+	\section{Introduction}
+	\setcounter{page}{1}
+
+		\subsection{Deep Learning}
+
+		\subsection{Variational Inference}
+			Instead of maximizing the likelihood as in the frequentist setting, one can take a Bayesian approach and place a prior $p$ on the weights $\matr{w}$ and maximize a posterior $p(\matr{w} | \set{D})$ instead:
+			\begin{equation}
+				p(\matr{w} | \set{D}) = \frac{p(\set{D} | \matr{w}) p(\matr{w})}{p(\set{D})} = \frac{p(\set{D} | \matr{w}) p(\matr{w})}{\int p(\set{D} | \matr{w}) p(\matr{w}) \text{d}\matr{w}} \propto p(\set{D} | \matr{w}) p(\matr{w}) = \text{likelihood} \times \text{prior},
+				\label{eqn:BayesRule}
+			\end{equation}
+			where $\set{D}$ the data, giving the Maximum A Posteriori (MAP) estimate
+			\begin{equation}
+				\matr{\hat{w}}_{MAP} := \argmax_{\matr{w} \in \Real^d} p(\matr{w} | \set{D})
+				\label{eqn:MAP}
+			\end{equation}
+			However, this distribution is much more difficult to sample and optimize over than in the case of MLE due to the difficulty of sampling from the posterior and the nonconjugacy of the product $p(\set{D} | \matr{w}) p(\matr{w})$ \cite{KNT+18}.
+			Thus, one can simplify the problem in Eqn. (\ref{eqn:MAP}) by introducing a simpler posterior called the variational posterior $q(\matr{w})$ such that $q(\matr{w}) \approx p(\matr{w} | \set{D})$ which is done by minimizing the KL divergence between the two distributions 
+			$$\min_{q \in \set{Q}} \KL(q(\matr{w}) || p(\matr{w} | \set{D})),$$
+			where $\set{Q}$ the set of all possible distributions.
+			However, optimizing over this set can become intractable such that one chooses a subset of distributions parametrized by $\lambda \in \Real^{\tilde{d}}, \tilde{d} \in \Natural$ and then maximize the ELBO 
+			\begin{equation}
+				\max_{\lambda \in \Real^{\tilde{d}}} -\Expect_{q_{\lambda}(\matr{w})}[\ell(\matr{w})] + \gamma \KL(q_{\lambda}(\matr{w}) || p(\matr)) := \ELBO(\lambda),
+				\label{eqn:ELBO}
+			\end{equation}
+			where $\gamma \ge 0$ \cite{ZSD+17, LSK20, LNK+21}.
+			However, in keeping with the traditional optimization setting, we will minimize over the negative ELBO instead,
+			\begin{equation*}
+				\min_{\lambda \in \Real^n} -\ELBO(\lambda).
+			\end{equation*}
+			Usually however, we have $d \ll n$ in Variatonal Inference (VI) which for today's large models becomes infeasible very quickly. 
+			For example, in practice we usually choose 
+			\begin{equation}
+				p(\matr{w}) := \Normal(\matr{0}, \eta^{-1} \matr{I}), \quad q_{\lambda}(\matr{w}) := \Normal(\matr{w} | \matr{\mu}, \matr{\Sigma}),
+				\label{eqn:VI_Normal}
+			\end{equation}
+			where $\eta > 0$ a precision parameter, $\matr{\lambda} := \{\matr{\mu}, \matr{\Sigma}\}$ the parameterization for the variational posterior, and $\matr{\mu} \in \Real^d, \matr{\Sigma} \in \Real^{d \times d}$ leading to quadratic storage cost $d + d^2 = \BigO(d^2)$ for VI \cite{ZSD+17, KNT+18, LSK20}.
+			To reduce complexity, one can take the covariance matrix $\matr{\Sigma}$ to be a diagonal matrix or a vector, respectively, as $\matr{\Sigma} := \diag(\matr{\sigma^2})$ reducing the storage cost from quadratic to linear, $d + d = \BigO(d)$. 
+			However, this approach assumes zero correlation between the weights and only models the variances of each individual weight in the diagonal of the covariance $\matr{\Sigma}$. 
+			Thus, finding a way of parametrizing the covariance matrix to be more informative than a diagonal matrix but less costly than a full square matrix is a desirable direction which will be presented in this thesis. 
+			Furthermore, special structures on the covariance matrix will also be investigated. 
+
+		\subsection{Optimization Methods}
+
+		\subsection{Natural Gradient Descent}
+
+	\section{Related Work}
+
+	% Better headlines; lot of "Structure"!
+	\section{Structured Natural Gradient Descent}
+		\subsection{Implicitly Defined Structure}
+
+			\subsubsection{Low-Rank Structure}
+				In this section, we will investigate a low-rank structure on the covariance $\matr{\Sigma}$ for the variational posterior $q(\matr{z} | \matr{\mu}, \matr{\Sigma}) = \Normal(\matr{\mu}, \matr{\Sigma})$, i.e., 
+					$$\matr{\Sigma} = \matr{U}_k \matr{U}_k^T + \diag(\matr{s}^2),$$ 
+				where $\matr{U}_k \in \Real^{d \times k}, k \in \{0, \dots, d\}$ a matrix of rank $k$ and $\matr{s} \in \Real^d.$
+				However, when we optimize the ELBO with parametrization $\matr{\lambda} = \{\matr{\mu}, \matr{\alpha}\}$ with $\matr{\alpha} = \{\matr{U}_k, \matr{s}\}$, this can lead to a non-invertible Fisher matrix \cite[Sec. J.1.6]{LNK+21}. 
+				Thus, we will instead follow the work of \cite{LNK+21} who proposed a parametrization $\matr{\lambda} = \{\matr{\mu}, \matr{B}\}$ such that $\matr{S} = \matr{B} \matr{B}^T$, where $\matr{B}$ is from the set of block upper triangular matrices
+					$$\set{B}_{up}(k) = \left\{\begin{pmatrix} \matr{B}_A & \matr{B}_B \\
+														        \matr{0}  & \matr{B}_D
+										  \end{pmatrix} \mid \matr{B}_A \in \text{GL}^{k \times k}, \matr{B}_D \in \set{D}_+^{d-k}\right\}.$$
+				This, in turn induces a low-rank structure on the covariance $\matr{\Sigma}$, as 
+				$$\matr{\Sigma} = \matr{S}^{-1} = (\matr{B} \matr{B}^T)^{-1} = \matr{U}_k \matr{U}_k^T + \begin{pmatrix} \matr{0}_k & \matr{0} \\ \matr{0} & \matr{B}_D^{-2}\end{pmatrix},$$
+				where 
+				$$\matr{U}_k = \begin{pmatrix} -\matr{B}_A^{-T} \\ \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}\end{pmatrix} \in \mathbb{R}^{d \times k}$$
+				a matrix of rank $k$ and a block arrowhead structure on $\matr{S}$ \cite{OS90}:
+				$$\matr{S} = \matr{B} \matr{B}^T = \begin{pmatrix} \matr{B}_A \matr{B}_A^T + \matr{B}_B \matr{B}_B^T & \matr{B}_B \matr{B}_D \\ \matr{B}_D \matr{B}_B^T & \matr{B}_D^2 \end{pmatrix}$$
+				Note that the dimensionality of $\set{B}_{up}(k)$ is
+				\begin{align*}
+					\dim(\set{B}_{up}(k)) &= \dim (\matr{B}_A) + \dim (\matr{B}_B) + \dim (\matr{B}_D) \\
+					&= k^2 + k (d - k) + (d - k) = d + k (d - 1) \in \{d, \dots, d^2\}
+				\end{align*}
+				for $k \in \{0, \dots, d\}$ such that this approach interpolates between a diagonal approximation to the covariance matrix $\matr{\Sigma}$ when $k = 0$ and the full covariance matrix when $k = d$.
+				Note that $\matr{B}_D$ is a diagonal matrix.
+				Their method uses two maps $\matr{\psi}$ and $\matr{\phi}$ which map from a local space to an auxiliary and a global space where the global space has some structure on the parameters $\matr{\lambda}$ and a possibly non-invertible Fisher matrix and the FIM in the local space invertible. 
+				$$\matr{\lambda}_{t+1} = \matr{\phi}_{\matr{\lambda}_t}(-\alpha \matr{\hat{g}}_{\matr{\eta}_0}^{(t)}), \quad \matr{\tau}_{t+1} = \matr{\psi} (\matr{\lambda}_{t+1}),$$
+				where $\matr{\eta}_0 = \matr{0}$.
+
+				\cite{LSK20} propose adding an additional term to the Bayesian Learning Rule (BLR) to ensure positive definite constraints which involves the Christoffel symbol. 
+				In doing so, they adapt their new ``improved Bayesian Learning Rule'' (iBLR) which ensures the updates remain in the constraint set without performing a costly line search at each step. 
+				\begin{align*}
+					\lambda^{c_i} \leftarrow \lambda^{c_i} - \alpha \hat{g}^{c_i} \color{red} - \frac{\alpha^2}{2} \sum_{a_i, b_i} \Gamma_{a_i, b_i}^{c_i} \hat{g}^{a_i} \hat{g}^{b_i} \color{black}
+				\end{align*}
+				Specifically, for a Gaussian posterior with precision matrix $\matr{S}$, i.e., $\matr{\lambda} = \{\matr{\mu}, \matr{S}\}$, this update rule becomes
+				\begin{align*}
+					\matr{\mu} &\leftarrow \matr{\mu} - \alpha \matr{S}^{-1} \Expect_q[\grad_z \bar{l}(\matr{z})] \color{red} + 0 \color{black}\\
+					\matr{S} &\leftarrow (1 - \alpha) \matr{S} + \alpha \Expect_q[\grad_z^2 \bar{l}(\matr{z})] \color{red} + \frac{\alpha^2}{2} \matr{G} \matr{S}^{-1} \matr{G} \color{black},
+				\end{align*}
+				where $\matr{G} := \matr{S} - \Expect_q[\grad_z^2 \bar{l}(\matr{z})]$.
+
+				Using a multivariate Gaussian with diagonal precision, i.e., $\matr{\lambda} = \{\matr{\mu}, \matr{s}\}$, with $\matr{\Sigma} = \diag (\matr{s}^{-1})$, \cite{LSK20} added a natural momentum term to the mean parameter $\matr{\mu}$ which gives an Adam-like optimizer as follows
+				\begin{align*}
+					\matr{\mu} &\leftarrow \matr{\mu} - \alpha \frac{1 - \beta_2^t}{1 - \beta_1^t} \matr{m} / \matr{s} \\
+					\matr{s} &\leftarrow \matr{s} + (1 - \beta_2) \matr{g_s} \color{red} + \frac{1}{2} (1 - \beta_2)^2 \matr{g_s} \odot \matr{s}^{-1} \odot \matr{g_s} \color{black}
+				\end{align*}
+				The full method is summarized in Algorithm \ref{alg:iBayesLRule}.
+
+				\begin{algorithm}[!htbp]
+					\DontPrintSemicolon
+					\KwInput{$\matr{\mu}_0, \matr{s}_0, \alpha, \beta_1, \beta_2, \tau, \eta$}
+					% \KwOutput{}
+					Set $\matr{m}_0 = 0$
+
+					\For{$k = 0, 1, \dots$}{
+						$\matr{z} = \matr{\mu_t} + (N s_t)^{-1/2} \odot \varepsilon \text{ , where }\matr{\varepsilon} \sim \Normal(\matr{0}, \matr{I}_{d\times d})$
+
+						Sample a minibatch $\mathcal{M}$ of size $M$.
+
+						Compute a mini-batch gradient $\matr{\bar{g}} = \frac{1}{M} \sum_{i=1}^M \matr{g}_i$.
+
+						$\matr{g_{\mu}} = \frac{\eta}{N} \matr{\mu}_k + \matr{\bar{g}}$
+
+						$\matr{m}_{t+1} = \beta_1 \matr{m}_t + (1 - \beta_1) \matr{g_{\mu}}$
+
+						$\matr{\tilde{m}} = \matr{m}_{t+1} / (1 - \beta_1^t)$
+
+						$\matr{\hat{m}} = (1 - \beta_2^t) \matr{\tilde{m}} / \matr{s}_{t+1}$
+
+						$\matr{g_s} = \frac{\tau \eta}{N} - \matr{s}_t + \left[ (N \matr{s}_t) \odot (\matr{z} - \matr{\mu}_t) \right] \odot \matr{\bar{g}}$
+
+						$\matr{\mu}_{t+1} = \matr{\mu}_t - \alpha \matr{\hat{m}}$
+
+						$\matr{s}_{t+1} = \matr{s}_t + (1 - \beta_2) \matr{g_s} \color{red} + \frac{1}{2} (1 - \beta_2)^2 \matr{g_s} \odot \matr{s}_t^{-1} \odot \matr{g_s} \color{black}$
+						}
+					\caption{Adam-like Optimizer using the iBayesLRule \cite[Fig.~1]{LSK20}}
+					\label{alg:iBayesLRule}
+				\end{algorithm}
+
+				However, their method cannot impose special structures on beyond a diagonal covariance matrix as easily since this can make the FIM non-invertible and thus computing a Natural Gradient step impossible. 
+				We will thus attempt to combine both works and provide an Adam-like optimizer by adding a momentum term in the auxiliary space to the work of \cite{LNK+21}:
+				$$\matr{\lambda}_{t+1} \leftarrow \matr{\phi}_{\matr{\lambda}_t}(-\alpha \matr{\hat{g}}_{\matr{\eta}_0}^{(t)}), \quad \matr{m}_{t+1} \leftarrow (1-\beta) \matr{m}_t + \beta \matr{\lambda}_{t+1}, \quad \matr{\tau}_{t+1} \leftarrow \matr{\psi} (\matr{m}_{t+1}).$$
+				One could also consider adding a momentum term in the global space:
+				$$\matr{\lambda}_{t+1} \leftarrow \matr{\phi}_{\matr{\lambda}_t}(-\alpha \matr{\hat{g}}_{\matr{\eta}_0}^{(t)}), \quad \matr{\tau}_{t+1} \leftarrow (1-\beta) \matr{\tau}_t + \beta \matr{\psi}(\matr{\lambda}_{t+1}).$$
+
+				For completeness, we present the derivation for the Adam-like optimizer using momentum in the auxiliary or global space, respectively, on the mean parameter $\matr{\mu}$ \cite[Sec. E.3]{LSK20}. 
+				Remember that we would like to minimize the function given in Eqn. \ref{eqn:ELBO}:
+				\begin{equation}
+					\min_{\matr{\mu}, \matr{B}} \ELBO(\matr{\mu}, \matr{B}) = \Expect_{q(\matr{z} | \matr{\mu}, \matr{B})} \left[ \left( \sum_{i=1}^N \ell_i(z) \right) - \gamma \log \Normal(\matr{z} | \matr{0}, \eta^{-1} \matr{I}) + \gamma \log q(\matr{z} | \matr{\mu}, \matr{B})\right],
+					\label{eqn:ELBO_Objective}
+				\end{equation}
+				where $q(\matr{z} | \matr{\mu}, \matr{B}) = \Normal(\matr{z} | \matr{\mu}, (\matr{B} \matr{B}^T)^{-1})$ since we parametrize $\matr{S} = \matr{B} \matr{B}^T$.
+				Using the reparametrization trick and an MC sample, we can approximate the gradients
+				\begin{align*}
+					\grad_{\matr{\mu}} \ELBO(\matr{\mu}, \matr{B}) &= \sum_{i=1}^N \grad_{\matr{\mu}}\Expect_q[\ell_i (\matr{z})] + \eta \matr{\mu} \approx \sum_{i=1}^N \grad_{\matr{z}} \ell_i (\matr{z}) + \gamma \eta \matr{\mu} \\
+					\grad_{\matr{\Sigma}} \ELBO(\matr{\mu}, \matr{B}) &= \sum_{i=1}^N \grad_{\matr{\Sigma}} \Expect_q[\ell_i (\matr{z})] + \frac{\gamma \eta}{2} \matr{I} - \frac{\gamma}{2} \matr{S} \approx \frac{1}{2} \left( \frac{1}{2} \sum_{i=1}^N (\matr{K}_i(\matr{z}) + \matr{K}_i(\matr{z})^T) + \gamma \eta \matr{I} - \gamma \matr{S} \right),
+				\end{align*}
+				where $\matr{K}_i(\matr{z}) := \matr{S} (\matr{z} - \matr{\mu}) (\grad_{\matr{z}} \ell_i (\matr{z}) )^T$ and $\matr{z} \sim q(\matr{z} | \matr{\mu}, \matr{B}) = \Normal(\matr{z} | \matr{\mu}, (\matr{B} \matr{B}^T)^{-1})$.
+				\cite{KNT+18, LSK20} propose adding a natural momentum term to the mean parameter
+				\begin{align*}
+					\matr{\mu}_{k+1} &= \matr{\mu}_k - \alpha_1 \matr{S}_k^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_k) + \alpha_2 \matr{S}_k^{-1} \matr{S}_{k-1} (\matr{\mu}_k - \matr{\mu}_{k-1}) \\
+					&= \matr{\mu}_k - \alpha_1 \matr{B}_k^{-T} \matr{B}_k^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_k) + \alpha_2 \matr{B}_k^{-T} \matr{B}_k^{-1} \matr{B}_{k-1} \matr{B}_{k-1}^T (\matr{\mu}_k - \matr{\mu}_{k-1}).
+				\end{align*}
+				Now, setting $\matr{B}_{k+1} = \sqrt{N} \matr{\hat{B}}_{k+1}, \matr{\hat{S}}_{k+1} = \matr{\hat{B}}_{k+1} \matr{\hat{B}}_{k+1}^T$, one can directly follow the derivation of \cite[Sec. E.3]{LSK20} to arrive at the method described in Algorithm \ref{alg:Rank_kCov} for low-rank structure on the covariance.
+
+				\begin{algorithm}[!htbp]
+					\DontPrintSemicolon
+					\KwInput{$\text{Initial parameters } \matr{\mu}, \matr{B}, \text{ learning rate } \alpha, \text{ rank } k, \eta, \beta_1, \beta_2$}
+					Set $\matr{m} = \matr{0}$
+
+					$\matr{z} \leftarrow \matr{\mu} + N^{-1/2} \matr{\hat{B}}^{-T} \matr{\varepsilon}$, where $\matr{\varepsilon} \sim \Normal(\matr{0}, \matr{I}_{d\times d})$
+					% $\matr{z} \leftarrow \matr{\mu} + N^{-1/2} \left[\matr{\hat{U_k}} \matr{\varepsilon}_{rank} + \diag{\matr{\hat{B}}_D^{-1}} \otimes \matr{\varepsilon}_{diag}\right]$, where $\matr{\varepsilon}_{rank} \sim \Normal(\matr{0}, \matr{I}_{k\times k}), \matr{\varepsilon}_{diag} \sim \mathcal{N}(\matr{0}, \matr{I}_{(d-k) \times (d-k)})$
+
+					Randomly sample a minibatch $\set{M}$ of size $M$
+
+					$\matr{\bar{g}} \leftarrow \frac{1}{M} \sum_{i=1}^M \matr{g}_i$
+
+					$\matr{g}_{\matr{\mu}} \leftarrow \frac{\eta}{N} \matr{\mu} + \matr{\bar{g}}$
+
+					$\matr{m} \leftarrow \beta_1 \matr{m} + (1 - \beta_1) \matr{g}_{\matr{\mu}}, \quad \matr{\bar{m}} \leftarrow \matr{m} / (1 - \beta_1^t)$
+
+					$\matr{G_{\Sigma}} \leftarrow \frac{\eta}{N} \matr{I} - \matr{\hat{B}} \matr{\hat{B}}^T + \frac{N}{2} \left[\matr{M} + \matr{M}^T \right]$, \\
+					where $\matr{M} = \matr{\hat{B}} \matr{\hat{B}}^T (\matr{z} - \matr{\mu}) \matr{\bar{g}}^T$
+
+					$\matr{\mu} \leftarrow \matr{\mu} - \alpha \matr{\bar{S}}^{-1} \matr{\bar{m}}, \quad \text{ where } \matr{\bar{S}}^{-1} = (1 - \beta_2^t) \matr{\hat{B}}^{-T} \matr{\hat{B}}^{-1}$
+
+					$\matr{\hat{B}} \leftarrow \matr{\hat{B}} \matr{h}((1 - \beta_2) \matr{C_{up}} \odot \kappa_{up}(\matr{\hat{B}}^{-1} \matr{G_{\Sigma}} \matr{\hat{B}}^{-T})), \text{ where } \matr{h}(\matr{M}) = \matr{I} + \matr{M} + \frac{1}{2} \matr{M}^2$
+					\caption{Rank $k$ Update Rule using Momentum in the Auxiliary/Global Space}
+					\label{alg:Rank_kCov}
+				\end{algorithm}
+
+				Note that this algorithm is an extension to the Adam-like optimizer of \cite{LSK20} in the diagonal case, $k = 0$, we can set $\matr{b} = \diag(\matr{B}) \in \Real^d$ and note that $\matr{c_{up}} = \frac{1}{2} \matr{\mathbbm{1}} \in \Real^d, \kappa_{up}(2\matr{b}^{-1} \odot \matr{g_s} \odot \matr{b}^{-1})) = 2 \matr{b}^{-1} \odot \matr{g_s} \odot \matr{b}^{-1}$.
+				\begin{align*}
+					\matr{s}_{t+1} & = (\matr{b}_{t+1})^2 = (\matr{b}_t \odot \matr{h}(\beta \matr{c_{up}} \odot \kappa_{up} (2 \matr{b}_t^{-1} \odot \matr{g_s} \odot \matr{b}_t^{-1})))^2 \\
+					&= (\matr{b}_t \odot \matr{h}(\beta \matr{b}_t^{-2} \odot \matr{g_s}))^2 \\
+					&= (\matr{b}_t + \beta \matr{b}_t^{-1} \odot \matr{g_s} + \frac{1}{2} \beta^2 \matr{b}_t^{-3} \odot \matr{g_s}^2)^2 \\
+					&= \matr{b}_t^2 + 2\beta \matr{g_s} + 2 \beta^2 \matr{b}_t^{-2} \odot \matr{g_s}^2 + \beta^3 \matr{b}_t^{-4} \odot \matr{g_s}^3 + \frac{1}{4} \beta^4 \matr{b}_t^{-6} \odot \matr{g_s}^4 \\
+					&= \matr{s}_t + \tilde{\beta} \matr{g_s} \color{red} + \frac{1}{2} \tilde{\beta}^2 \matr{s}_t^{-1} \odot \matr{g_s}^2 \color{blue} + \frac{1}{8} \tilde{\beta}^3 \matr{s}_t^{-2} \odot \matr{g_s}^3 + \frac{1}{64} \tilde{\beta}^4 \matr{s}_t^{-3} \odot \matr{g_s}^4 \color{black},
+				\end{align*}
+				where $\tilde{\beta} = 2 \beta$ and $\matr{s}_t = \matr{b}_t^2$.
+				This is thus an extension of the Adam-like optimizer from a quadratic update to a polynomial of order $4$ in terms of the gradient vector $\matr{g_s}$, i.e., fourth-order information is being used to update $\matr{s}$. 
+				Note, that we do not explicitly compute this update in terms of $\matr{s}$ but implicitly since we update its square root, namely $\matr{b}$ using only second-order information!
+
+				\subsubsection{Implementation Details}
+					Note that in Algorithm \ref{alg:Rank_kCov}, the term $\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-1}$ is generally a dense matrix that is passed as an argument to $\kappa_{up}$ which then zeroes out the entries in the bottom left block as well as the off-diagonals in the bottom right block:
+					$$\kappa_{up}(X) = \kappa_{up} \begin{pmatrix} \matr{A} & \matr{B} \\ \matr{C} & \matr{D} \end{pmatrix} = \begin{pmatrix} \matr{A} & \matr{B} \\ \matr{0} & \Diag(\diag (\matr{D}))\end{pmatrix},$$
+					where $\diag$ returns a vector of the diagonal elements of its arguments and $\Diag$ returns a diagonal matrix.
+					Since most of the entries in the bottom right block will be discarded (usually in practice, we will set $k \ll d$ such that the bottom block will hold the majority of entries, namely $(d - k)^2$), we need to find an efficient way of computing $\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-1})$.
+					\begin{theorem}
+						For a multivariate Gaussian posterior $q(\matr{z} | \matr{\lambda}) = \Normal(\matr{z} | \matr{\mu}, \matr{S}^{-1})$, and prior $p(z) = \Normal(\matr{z} | \matr{0}, \eta^{-1} \matr{I}), \eta > 0$, with parametrization $\matr{S} = \matr{B} \matr{B}^T, \matr{B} \in \set{B}_{up}(k)$, we have
+						\begin{align*}
+							\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-1}) &= \frac{\eta}{N}\begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ \matr{0} & \diag(\matr{B}_D^{-2}) \odot (1 + \sum_{j=1}^k ((\matr{B}_A^{-1} \matr{B}_B) \odot (\matr{B}_A^{-1} \matr{B}_B))_{ji})_{i \in [d-k]}\end{pmatrix} \\
+							&\quad - \matr{I} \\
+							&\quad + \frac{N}{2} \begin{pmatrix} \matr{B}_A^T \matr{v}_{:k} (\matr{\bar{g}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1}}) & \matr{B}_A^T \matr{v}_{:k} \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \\ \matr{0} & 2(\matr{v}_{k:} + \diag(\matr{B}_D^{-1}) \odot (\matr{B}_B^T \matr{v}_{:k})) \odot \matr{\bar{g}}_{k:}\end{pmatrix}
+						\end{align*}
+					\end{theorem}
+
+					\begin{proof}
+						Note that 
+						$$\matr{G_{\Sigma}} = \frac{\eta}{N} \matr{I} - \matr{S} + \frac{N}{2} (\matr{M} + \matr{M}^T),$$
+						where $\matr{M} = \matr{S} (\matr{z} - \matr{\mu}) \matr{\bar{g}}^T$.
+						Denote $\matr{v} := \matr{z} - \matr{\mu}$.
+						With parametrization $\matr{S} = \matr{B} \matr{B}^T$, we have
+						% Add lemma for block arrowhead matrix Sigma?
+						\begin{align*}
+							\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T} &= \frac{\eta}{N} \matr{B}^{-T} \matr{B}^{-1} - \matr{I} + \frac{N}{2} (\matr{B}^{-1} \matr{M} \matr{B}^{-T} + \matr{B}^{-1} \matr{M}^T \matr{B}^{-T}) \\
+							&= \frac{\eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \matr{I} \\
+							&\quad + \frac{N}{2} (\matr{B}^{-1} \matr{M} \matr{B}^{-T} + (\matr{B}^{-1} \matr{M} \matr{B}^{-T})^T) \numberthis{\label{eqn:RankMatrix}}
+						\end{align*}
+						Now, for the last term (\ref{eqn:RankMatrix}), we can decompose the vectors 
+						$$\matr{v} = (\underbrace{v_1, \dots, v_{k}}_{=: \matr{v}_{:k}}, \underbrace{v_{k+1}, \dots, v_d}_{=:\matr{v}_{k:}})^T, \text{ and } \matr{\bar{g}} = (\underbrace{\bar{g}_1, \dots, \bar{g}_{k}}_{=: \matr{\bar{g}}_{:k}}, \underbrace{\bar{g}_{k+1}, \dots, \bar{g}_d}_{=:\matr{\bar{g}}_{k:}})^T$$
+						and write
+						\begin{align*}
+							\matr{B}^{-1} \matr{M} \matr{B}^{-T} &= \matr{B}^T \matr{v} \matr{\bar{g}}^T \matr{B}^{-T} \\
+							&= \begin{pmatrix} \matr{B}_A^T & \matr{0} \\ \matr{B}_B^T & \matr{B}_D \end{pmatrix} \begin{pmatrix} \matr{v}_{:k} \\ \matr{v}_{k:} \end{pmatrix} \begin{pmatrix} \matr{\bar{g}}_{:k}^T, & \matr{\bar{g}}_{k:}^T \end{pmatrix} \begin{pmatrix} \matr{B}_A^{-T} & \matr{0} \\ -\matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} & \matr{B}_D^{-1} \end{pmatrix} \\
+							&= \begin{pmatrix} \matr{B}_A^T \matr{v}_{:k} \\ \matr{B}_B^T \matr{v}_{:k} + \matr{B}_D \matr{v}_{k:} \end{pmatrix} \begin{pmatrix} \matr{\bar{g}}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}, & \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \end{pmatrix} \\
+							&= \begin{pmatrix} \matr{\tilde{M}}_A & \matr{\tilde{M}}_B \\ \matr{\tilde{M}}_C & \matr{\tilde{M}}_D \end{pmatrix},
+						\end{align*}
+						where 
+						\begin{align*}
+							\matr{\tilde{M}}_A &= \matr{B}_A^T \matr{v}_{:k} (\matr{\bar{g}}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1}) \\
+							\matr{\tilde{M}}_B &= \matr{B}_A^T \matr{v}_{:k} \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \\
+							\matr{\tilde{M}}_C &= (\matr{B}_B^T \matr{v}_{:k} + \matr{B}_D \matr{v}_{k:}) (\matr{\bar{g}}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T})\\
+							\matr{\tilde{M}}_D &= (\matr{B}_B^T \matr{v}_{:k} + \matr{B}_D \matr{v}_{k:}) \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1}.
+						\end{align*}
+						Combining terms, we arrive at
+						\begin{align*}
+							\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T} &= \frac{\eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \matr{I} \\
+							&\quad + \frac{N}{2} \begin{pmatrix} \matr{\tilde{M}}_A + \matr{\tilde{M}}_A^T & \matr{\tilde{M}}_B + \matr{\tilde{M}}_C^T \\ * & \matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T \end{pmatrix}.
+						\end{align*}
+						Note that $\kappa_{up}$ is linear such that
+						\begin{align*}
+							\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T}) &= \frac{\eta}{N} \kappa_{up} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \kappa_{up}(\matr{I}) \\
+							&\quad + \frac{N}{2} \kappa_{up} \begin{pmatrix} \matr{\tilde{M}}_A + \matr{\tilde{M}}_A^T & \matr{\tilde{M}}_B + \matr{\tilde{M}}_C^T \\ * & \matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T \end{pmatrix} \\
+							&= \frac{\eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ \matr{0} & \diag(\matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2}) \end{pmatrix} - \matr{I} \\
+							&\quad + \frac{N}{2} \begin{pmatrix} \matr{\tilde{M}}_A + \matr{\tilde{M}}_A^T & \matr{\tilde{M}}_B + \matr{\tilde{M}}_C^T \\ \matr{0} & \diag(\matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T) \end{pmatrix}.
+						\end{align*}
+						For the diagonal terms, note that $\diag$ is also a linear function and for diagonal matrices $D_1, D_2$, we have
+						$$\diag(D_1 X D_2) = \diag(D_1) \odot \diag(X) \odot \diag(D_2).$$
+						For non-diagonal matrices, we have
+						$$\diag(A B)_i = \sum_j (A \odot B^T)_{ji}$$
+						Thus, 
+						\begin{align*}
+							\diag(\matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2}) &= \diag(\matr{B}_D)^{-2} \odot (1 + \diag((\matr{B}_A^{-1} \matr{B}_B)^T (\matr{B}_A^{-1} \matr{B}_B))_i) \\
+							&= \diag(\matr{B}_D)^{-2} \odot \left(1 + \sum_{j=1}^k ((\matr{B}_A^{-1} \matr{B}_B) \odot (\matr{B}_A^{-1} \matr{B}_B))_{ji} \right)
+						\end{align*}
+						\begin{align*}
+							\diag(\matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T) &= 2 \diag(\matr{\tilde{M}}_D) \\
+							&= 2 (\diag(\matr{B}_D)^{-1} \odot \diag(\matr{B}_B^T \matr{v}_{:k} \matr{\bar{g}}_{k:}^T) + \diag(\matr{v}_{k:} \matr{\bar{g}}_{k:}^T)) \\
+							&= 2 (\diag(\matr{B}_D)^{-1} \odot (\matr{B}_B^T \matr{v}_{:k}) + \matr{v}_{k:}) \odot \matr{\bar{g}}_{k:}
+						\end{align*}
+					\end{proof}
+
+			\subsubsection{Block Arrowhead Structure}
+			\subsubsection{Block-Diagonal Structure}
+			\subsubsection{Block-Tridiagonal Structure}
+			\subsubsection{Kronecker Structure}
+		\subsection{Explicitly Defined Structure}
+
+	\section{Experiments}
+
+	\section{Outlook}
+
+	\section{Conclusion}
+
+	\newpage
+	\printbibliography
+
+\end{document}
+
+
