@@ -8,7 +8,8 @@ from matrix_groups.triangular import B_up
 class ResNet(nn.Module):
     def __init__(self, model_type='resnet18',
                  num_classes=10,
-                 num_samples=3, 
+                 num_samples=3,
+                 N=50000,
                  device='cuda'):
         super(ResNet, self).__init__()
 
@@ -44,46 +45,29 @@ class ResNet(nn.Module):
             
         self.init_weights()
         self.num_classes = num_classes  
-        # For forward sampling
-        self.num_samples = num_samples
+        # Training set size
+        self.N = N
         self.device = device
 
-    def forward(self, x, scales=None):
-        if scales is None:
+    def forward(self, x, z=None):
+        if z is None:
             return self.model(x)
         else:
-            # draw multiple z ~ N(0, Sigma), perturb weights mu and perform forward pass
-            return torch.mean(self.sample_predictions(x, scales), axis=0)
-            
-    def sample_predictions(self, x, scales, num_samples=None):
-        if num_samples is None:
-            num_samples = self.num_samples
-        preds = torch.zeros((num_samples, x.shape[0], self.num_classes), device=self.device)
-        # Extract parameters from model as vector
-        p = parameters_to_vector(self.model.parameters())
-        N, B = scales
-        for i in range(num_samples):
-            # z ~ N(0, (B B^T)^{-1})
-            if isinstance(B, B_up):
-                z = 1/np.sqrt(N) * B.sample(mu=0, n=1).reshape(-1)
-            else:
-                # B is a list of B_up instances, i.e. a block-diagonal matrix
-                for j, b in enumerate(B):
-                    sample = 1/np.sqrt(N) * b.sample(mu=0, n=1).reshape(-1)
-                    if j == 0:
-                        z = sample
-                        continue
-                    z = torch.cat((z, sample))
-            # Overwrite model weights
-            vector_to_parameters(p + z, self.model.parameters())
-            # Run forward pass (without sampling again!)
-            preds[i] = self(x, scales=None)
-        # Return model parameters to original state
-        vector_to_parameters(p, self.model.parameters())
-        return preds
+            preds = torch.zeros((z.shape[0], x.shape[0], self.num_classes), device=self.device)
+            # Extract parameters from model as vector
+            p = parameters_to_vector(self.model.parameters())
+            for i, z_i in enumerate(z):
+                # z_i ~ N(mu, (B B^T)^{-1})
+                # Overwrite model weights
+                vector_to_parameters(z_i, self.model.parameters())
+                # Run forward pass (without sampling again!)
+                preds[i] = self(x, z=None)
+            # Return model parameters to original state
+            vector_to_parameters(p, self.model.parameters())
+            return preds
 
     def train(self, data_loader, optimizer, epoch=0, eval_every=1,
-              loss_fn=nn.CrossEntropyLoss()):
+              loss_fn=nn.CrossEntropyLoss(), M=1):
         running_loss = 0.0
         epoch_loss = 0.0
         iteration_losses = []
@@ -101,19 +85,22 @@ class ResNet(nn.Module):
             optimizer.zero_grad()
 
             # Perform forward pass, compute loss, backpropagate
-            if type(optimizer).__name__ == "NoisyAdam":
-                scales = (N, optimizer.param_groups[0]['scales'])
-                preds = self.sample_predictions(images, scales)
-                preds = preds.reshape((-1, *preds.shape[2:]))
-                labels = labels.repeat(self.num_samples)
+            if type(optimizer).__name__ == "Rank_kCov":
+                z = optimizer.sample(M)
+                preds = self(images, z=z)
+                def closure(i):
+                    loss = loss_fn(preds[i], labels)
+                    loss.backward(retain_graph=True)
+                    return loss
+                loss = optimizer.step(z, closure)
+                preds = torch.mean(preds, axis=0)
             else:
-                preds = self(images, scales=None)
-            loss = loss_fn(preds, labels)
-            loss.backward()
+                preds = self(images)
+                loss = loss_fn(preds, labels)
+                loss.backward()
+                # Take optimizer step
+                optimizer.step()
             print(loss.item())
-            
-            # Take optimizer step
-            optimizer.step()
 
             # Record metrics
             iteration_losses.append(loss.item())

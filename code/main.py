@@ -23,16 +23,16 @@ from torch.optim import Adam
 
 
 def parse_args():
-	# Parse args; custom function?
 	parser = argparse.ArgumentParser(description='Run noisy optimizers with parameters.')
 	parser.add_argument('--epochs', type=int, default=100)
 	parser.add_argument('--dataset', type=str, default="CIFAR10")
 	parser.add_argument('--model', type=str, default="resnet18")
 	parser.add_argument('--batch_size', type=int, default=64)
+	parser.add_argument('--mc_samples', type=int, default=1)
 	parser.add_argument('--eval_every', type=int, default=10)
 
 	args = parser.parse_args(sys.argv[1:])
-	return args.epochs, args.dataset, args.model, args.batch_size, args.eval_every
+	return args.epochs, args.dataset, args.model, args.batch_size, args.mc_samples, args.eval_every
 
 
 def load_data(dataset, batch_size):
@@ -69,7 +69,7 @@ def load_data(dataset, batch_size):
 	return train_loader, val_loader, test_loader
 
 
-def run(epochs, model, optimizers, train_loader, val_loader, eval_every=1):
+def run(epochs, model, optimizers, train_loader, val_loader, M=1, eval_every=1):
 	loss_fn = nn.CrossEntropyLoss()
 	runs = []
 	lr = 1e-1
@@ -91,7 +91,7 @@ def run(epochs, model, optimizers, train_loader, val_loader, eval_every=1):
 		for epoch in range(epochs):
 			start = time.time()
 			running_loss, iter_loss = model.train(train_loader, optimizer, epoch=epoch,
-												  loss_fn=loss_fn, eval_every=eval_every)
+												  loss_fn=loss_fn, M=M, eval_every=eval_every)
 			if epoch == 0:
 				times.append(0)
 			else:
@@ -170,7 +170,7 @@ def save_runs(runs):
 def main():
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-	EPOCHS, DATASET, MODEL, BATCH_SIZE, EVAL_EVERY = parse_args()
+	EPOCHS, DATASET, MODEL, BATCH_SIZE, MC_SAMPLES, EVAL_EVERY = parse_args()
 
 	train_loader, val_loader, test_loader = load_data(DATASET, BATCH_SIZE)
 	num_classes = len(train_loader.dataset.classes)
@@ -178,7 +178,7 @@ def main():
 	model = ResNet(model_type=MODEL, num_classes=num_classes, device=device)
 	optimizers = [Rank_kCov]
 
-	runs = run(EPOCHS, model, optimizers, train_loader, val_loader, eval_every=EVAL_EVERY)
+	runs = run(EPOCHS, model, optimizers, train_loader, val_loader, M=MC_SAMPLES, eval_every=EVAL_EVERY)
 	plot_runs(runs)
 	save_runs(runs)
 

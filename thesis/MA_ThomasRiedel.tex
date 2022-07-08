@@ -8,10 +8,10 @@
 \usepackage{mleftright}
 \usepackage{bbm}
 \newtheoremstyle{break}
-  {\topsep}{\topsep}%
-  {\itshape}{}%
-  {\bfseries}{}%
-  {\newline}{}%
+	{\topsep}{\topsep}%
+	{\itshape}{}%
+	{\bfseries}{}%
+	{\newline}{}%
 \theoremstyle{break}
 \newtheorem{lemma}{Lemma}[section]
 \newtheorem{theorem}[lemma]{Theorem}
@@ -59,9 +59,16 @@
 \lhead{Thomas Riedel}
 \rhead{Structured Natural Gradient Descent for Bayesian Deep Learning}
 
-\usepackage[ruled,vlined]{algorithm2e}
+\usepackage[ruled, vlined]{algorithm2e}
 \SetKwInput{KwInput}{Input}
-\SetKwInput{KwOutput}{Output} 
+\SetKwInput{KwOutput}{Output}
+% For multiple line arguments in algorithm
+\newlength\mylen
+\newcommand\myinput[1]{%
+	\settowidth\mylen{\KwIn{}}%
+	\setlength\hangindent{\mylen}%
+	\hspace*{\mylen}#1\\
+}
 
 \usepackage{biblatex}
 \addbibresource{Literature/literature.bib}
@@ -218,7 +225,7 @@
 				where 
 				$$\matr{U}_k = \begin{pmatrix} -\matr{B}_A^{-T} \\ \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}\end{pmatrix} \in \mathbb{R}^{d \times k}$$
 				a matrix of rank $k$ and a block arrowhead structure on $\matr{S}$ \cite{OS90}:
-				$$\matr{S} = \matr{B} \matr{B}^T = \begin{pmatrix} \matr{B}_A \matr{B}_A^T + \matr{B}_B \matr{B}_B^T & \matr{B}_B \matr{B}_D \\ \matr{B}_D \matr{B}_B^T & \matr{B}_D^2 \end{pmatrix}$$
+				$$\matr{S} = \matr{B} \matr{B}^T = \begin{pmatrix} \matr{B}_A \matr{B}_A^T + \matr{B}_B \matr{B}_B^T & \matr{B}_B \matr{B}_D \\ \matr{B}_D \matr{B}_B^T & \matr{B}_D^2 \end{pmatrix}.$$
 				Note that the dimensionality of $\set{B}_{up}(k)$ is
 				\begin{align*}
 					\dim(\set{B}_{up}(k)) &= \dim (\matr{B}_A) + \dim (\matr{B}_B) + \dim (\matr{B}_D) \\
@@ -226,6 +233,10 @@
 				\end{align*}
 				for $k \in \{0, \dots, d\}$ such that this approach interpolates between a diagonal approximation to the covariance matrix $\matr{\Sigma}$ when $k = 0$ and the full covariance matrix when $k = d$.
 				Note that $\matr{B}_D$ is a diagonal matrix.
+				That is, we can linearly interpolate from linear to quadratic storage cost via the rank parameter $k$,
+				\begin{equation*}
+					\dim(\set{B}_{up}(k)) = (k + 1) d - k = \BigO ((k + 1) d).
+				\end{equation*}
 				Their method uses two maps $\matr{\psi}$ and $\matr{\phi}$ which map from a local space to an auxiliary and a global space where the global space has some structure on the parameters $\matr{\lambda}$ and a possibly non-invertible Fisher matrix and the FIM in the local space invertible. 
 				$$\matr{\lambda}_{t+1} = \matr{\phi}_{\matr{\lambda}_t}(-\alpha \matr{\hat{g}}_{\matr{\eta}_0}^{(t)}), \quad \matr{\tau}_{t+1} = \matr{\psi} (\matr{\lambda}_{t+1}),$$
 				where $\matr{\eta}_0 = \matr{0}$.
@@ -251,26 +262,31 @@
 
 				\begin{algorithm}[!htbp]
 					\DontPrintSemicolon
-					\KwInput{$\matr{\mu}_0, \matr{s}_0, \alpha, \beta_1, \beta_2, \tau, \eta$}
+					\KwInput{$\text{Initial parameters } \matr{\mu}_0, \matr{s}_0$}
+					\myinput{$\text{Learning rate } \alpha > 0, \text{ prior precision } \eta > 0$}
+					\myinput{$\text{Regularization } \gamma \ge 0, \text{ damping } \xi \ge 0, \text{ Number of MC samples } M \ge 1$}
+					\myinput{$\beta_1, \beta_2 \in (0, 1]$}
 					% \KwOutput{}
+
 					Set $\matr{m}_0 = 0$
 
-					\For{$k = 0, 1, \dots$}{
-						$\matr{z} = \matr{\mu_t} + (N s_t)^{-1/2} \odot \varepsilon \text{ , where }\matr{\varepsilon} \sim \Normal(\matr{0}, \matr{I}_{d\times d})$
+					\For{$t = 0, 1, \dots$}{
+						$\matr{z}_m = \matr{\mu_t} + (N s_t)^{-1/2} \odot \varepsilon_m \text{ , where }\matr{\varepsilon}_m \sim \Normal(\matr{0}, \matr{I}_{d\times d}), \quad \forall m \in \{1, \dots, M\}$
 
-						Sample a minibatch $\mathcal{M}$ of size $M$.
+						Sample a minibatch $\set{M}$ from the training set.
 
-						Compute a mini-batch gradient $\matr{\bar{g}} = \frac{1}{M} \sum_{i=1}^M \matr{g}_i$.
+						Compute sampled mini-batch gradients $\matr{\bar{g}}_m = \frac{1}{|\set{M}|} \sum_{i \in \set{M}} \grad \ell_i (\matr{z}_m) \quad \forall m \in \{1, \dots, M\}$.
 
-						$\matr{g_{\mu}} = \frac{\eta}{N} \matr{\mu}_k + \matr{\bar{g}}$
+						$\matr{g_{\mu}} = \frac{\eta}{N} \matr{\mu}_t + \frac{1}{M} \sum_{m=1}^M \matr{\bar{g}}_m$
 
 						$\matr{m}_{t+1} = \beta_1 \matr{m}_t + (1 - \beta_1) \matr{g_{\mu}}$
 
-						$\matr{\tilde{m}} = \matr{m}_{t+1} / (1 - \beta_1^t)$
+						Debias the update and add damping to the precision vector
+						$\matr{\bar{m}} = \matr{m}_{t+1} / (1 - \beta_1^t), \quad \matr{\bar{s}} = \matr{s}_{t+1} / (1 - \beta_2^t) + \xi$
 
-						$\matr{\hat{m}} = (1 - \beta_2^t) \matr{\tilde{m}} / \matr{s}_{t+1}$
+						$\matr{\hat{m}} = \matr{\bar{m}} / \matr{\bar{s}}$
 
-						$\matr{g_s} = \frac{\tau \eta}{N} - \matr{s}_t + \left[ (N \matr{s}_t) \odot (\matr{z} - \matr{\mu}_t) \right] \odot \matr{\bar{g}}$
+						$\matr{g_s} = \frac{\gamma \eta}{N} - \gamma \matr{s}_t + \frac{1}{M} \sum_{m=1}^M \left[ (N \matr{s}_t) \odot (\matr{z}_m - \matr{\mu}_t) \right] \odot \matr{\bar{g}}_m$
 
 						$\matr{\mu}_{t+1} = \matr{\mu}_t - \alpha \matr{\hat{m}}$
 
@@ -295,39 +311,51 @@
 				where $q(\matr{z} | \matr{\mu}, \matr{B}) = \Normal(\matr{z} | \matr{\mu}, (\matr{B} \matr{B}^T)^{-1})$ since we parametrize $\matr{S} = \matr{B} \matr{B}^T$.
 				Using the reparametrization trick and an MC sample, we can approximate the gradients
 				\begin{align*}
-					\grad_{\matr{\mu}} \ELBO(\matr{\mu}, \matr{B}) &= \sum_{i=1}^N \grad_{\matr{\mu}}\Expect_q[\ell_i (\matr{z})] + \eta \matr{\mu} \approx \sum_{i=1}^N \grad_{\matr{z}} \ell_i (\matr{z}) + \gamma \eta \matr{\mu} \\
-					\grad_{\matr{\Sigma}} \ELBO(\matr{\mu}, \matr{B}) &= \sum_{i=1}^N \grad_{\matr{\Sigma}} \Expect_q[\ell_i (\matr{z})] + \frac{\gamma \eta}{2} \matr{I} - \frac{\gamma}{2} \matr{S} \approx \frac{1}{2} \left( \frac{1}{2} \sum_{i=1}^N (\matr{K}_i(\matr{z}) + \matr{K}_i(\matr{z})^T) + \gamma \eta \matr{I} - \gamma \matr{S} \right),
+					\grad_{\matr{\mu}} \ELBO(\matr{\mu}, \matr{B}) &= \sum_{i=1}^N \grad_{\matr{\mu}}\Expect_q[\ell_i (\matr{z})] + \eta \matr{\mu} \approx \frac{1}{M} \sum_{m=1}^M \sum_{i=1}^N \grad_{\matr{z}} \ell_i (\matr{z}_m) + \gamma \eta \matr{\mu} \\
+					\grad_{\matr{\Sigma}} \ELBO(\matr{\mu}, \matr{B}) &= \sum_{i=1}^N \grad_{\matr{\Sigma}} \Expect_q[\ell_i (\matr{z})] + \gamma \left( \frac{\eta}{2} \matr{I} - \frac{1}{2} \matr{S} \right) \\
+					&= \frac{1}{2} \left( \sum_{i=1}^N \Expect_q[\grad_{\matr{\Sigma}}^2 \ell_i (\matr{z})] + \gamma \eta \matr{I} - \gamma \matr{S} \right) \\
+					&\approx \frac{1}{2} \left( \sum_{i=1}^N \frac{1}{M} \sum_{m=1}^M (\matr{K}_i(\matr{z_m}) + \matr{K}_i(\matr{z_m})^T) + \gamma \eta \matr{I} - \gamma \matr{S} \right) \\
+					&= \frac{N}{2} \left( \frac{1}{2 M} \sum_{m=1}^M (\matr{K}(\matr{z_m}) + \matr{K}(\matr{z_m})^T) + \frac{\gamma \eta}{N} \matr{I} - \frac{\gamma}{N} \matr{S}) \right),
 				\end{align*}
-				where $\matr{K}_i(\matr{z}) := \matr{S} (\matr{z} - \matr{\mu}) (\grad_{\matr{z}} \ell_i (\matr{z}) )^T$ and $\matr{z} \sim q(\matr{z} | \matr{\mu}, \matr{B}) = \Normal(\matr{z} | \matr{\mu}, (\matr{B} \matr{B}^T)^{-1})$.
+				where 
+				\begin{align*}
+					\matr{K}_i(\matr{z}_m) &:= \matr{S} (\matr{z}_m - \matr{\mu}) (\grad_{\matr{z}} \ell_i (\matr{z}_m) )^T \\
+					\matr{K}(\matr{z}_m) &:= \frac{1}{N} \sum_{i=1}^N \matr{K}_i(\matr{z}_m) = \matr{S} (\matr{z}_m - \matr{\mu}) (\grad_{\matr{z}} \bar{\ell} (\matr{z}_m) )^T,
+				\end{align*}
+				and $\matr{z}_m \sim q(\matr{z} | \matr{\mu}, \matr{B}) = \Normal(\matr{z} | \matr{\mu}, (\matr{B} \matr{B}^T)^{-1})$ for $M$ MC samples, $m \in \{1, \dots, M\}$.
 				\cite{KNT+18, LSK20} propose adding a natural momentum term to the mean parameter
 				\begin{align*}
-					\matr{\mu}_{k+1} &= \matr{\mu}_k - \alpha_1 \matr{S}_k^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_k) + \alpha_2 \matr{S}_k^{-1} \matr{S}_{k-1} (\matr{\mu}_k - \matr{\mu}_{k-1}) \\
-					&= \matr{\mu}_k - \alpha_1 \matr{B}_k^{-T} \matr{B}_k^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_k) + \alpha_2 \matr{B}_k^{-T} \matr{B}_k^{-1} \matr{B}_{k-1} \matr{B}_{k-1}^T (\matr{\mu}_k - \matr{\mu}_{k-1}).
+					\matr{\mu}_{t+1} &= \matr{\mu}_t - \alpha_1 \matr{S}_t^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_t) + \alpha_2 \matr{S}_t^{-1} \matr{S}_{t-1} (\matr{\mu}_t - \matr{\mu}_{t-1}) \\
+					&= \matr{\mu}_t - \alpha_1 \matr{B}_t^{-T} \matr{B}_t^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_t) + \alpha_2 \matr{B}_t^{-T} \matr{B}_t^{-1} \matr{B}_{t-1} \matr{B}_{t-1}^T (\matr{\mu}_t - \matr{\mu}_{t-1}).
 				\end{align*}
-				Now, setting $\matr{B}_{k+1} = \sqrt{N} \matr{\hat{B}}_{k+1}, \matr{\hat{S}}_{k+1} = \matr{\hat{B}}_{k+1} \matr{\hat{B}}_{k+1}^T$, one can directly follow the derivation of \cite[Sec. E.3]{LSK20} to arrive at the method described in Algorithm \ref{alg:Rank_kCov} for low-rank structure on the covariance.
+				% Full derivation better here!
+				Now, setting $\matr{B}_{t+1} = \sqrt{N} \matr{\hat{B}}_{t+1}, \matr{\hat{S}}_{t+1} = \matr{\hat{B}}_{t+1} \matr{\hat{B}}_{t+1}^T$, one can directly follow the derivation of \cite[Sec. E.3]{LSK20} to arrive at the method described in Algorithm \ref{alg:Rank_kCov} for low-rank structure on the covariance.
 
 				\begin{algorithm}[!htbp]
 					\DontPrintSemicolon
-					\KwInput{$\text{Initial parameters } \matr{\mu}, \matr{B}, \text{ learning rate } \alpha, \text{ rank } k, \eta, \beta_1, \beta_2$}
+					\KwInput{$\text{Initial parameters } \matr{\mu}, \matr{B}$}
+					\myinput{$\text{Learning rate } \alpha > 0, \text{ rank } k \in \{0, \dots, d\}, \text{ prior precision } \eta > 0$}
+					\myinput{$\text{Regularization } \gamma \ge 0, \text{ damping } \xi \ge 0, \text{ Number of MC samples } M \ge 1$}
+					\myinput{$\beta_1, \beta_2 \in (0, 1]$}
 					Set $\matr{m} = \matr{0}$
 
-					$\matr{z} \leftarrow \matr{\mu} + N^{-1/2} \matr{\hat{B}}^{-T} \matr{\varepsilon}$, where $\matr{\varepsilon} \sim \Normal(\matr{0}, \matr{I}_{d\times d})$
+					$\matr{z}_m \leftarrow \matr{\mu} + N^{-1/2} \matr{\hat{B}}^{-T} \matr{\varepsilon}_m$, where $\matr{\varepsilon}_m \sim \Normal(\matr{0}, \matr{I}_{d\times d}), \quad \forall m \in \{1, \dots, M\}$
 					% $\matr{z} \leftarrow \matr{\mu} + N^{-1/2} \left[\matr{\hat{U_k}} \matr{\varepsilon}_{rank} + \diag{\matr{\hat{B}}_D^{-1}} \otimes \matr{\varepsilon}_{diag}\right]$, where $\matr{\varepsilon}_{rank} \sim \Normal(\matr{0}, \matr{I}_{k\times k}), \matr{\varepsilon}_{diag} \sim \mathcal{N}(\matr{0}, \matr{I}_{(d-k) \times (d-k)})$
 
-					Randomly sample a minibatch $\set{M}$ of size $M$
+					Randomly sample a minibatch $\set{M}$ from the training set
 
-					$\matr{\bar{g}} \leftarrow \frac{1}{M} \sum_{i=1}^M \matr{g}_i$
+					$\matr{\bar{g}}_m \leftarrow \frac{1}{|\set{M}|} \sum_{i \in \set{M}} \grad_z \ell_i (\matr{z}_m), \quad \forall m \in \{1, \dots, M\}$
 
-					$\matr{g}_{\matr{\mu}} \leftarrow \frac{\eta}{N} \matr{\mu} + \matr{\bar{g}}$
+					$\matr{g}_{\matr{\mu}} \leftarrow \frac{\gamma \eta}{N} \matr{\mu} + \frac{1}{M} \sum_{m=1}^M \matr{\bar{g}}_m$
 
 					$\matr{m} \leftarrow \beta_1 \matr{m} + (1 - \beta_1) \matr{g}_{\matr{\mu}}, \quad \matr{\bar{m}} \leftarrow \matr{m} / (1 - \beta_1^t)$
 
-					$\matr{G_{\Sigma}} \leftarrow \frac{\eta}{N} \matr{I} - \matr{\hat{B}} \matr{\hat{B}}^T + \frac{N}{2} \left[\matr{M} + \matr{M}^T \right]$, \\
-					where $\matr{M} = \matr{\hat{B}} \matr{\hat{B}}^T (\matr{z} - \matr{\mu}) \matr{\bar{g}}^T$
+					$\matr{G_{\Sigma}} \leftarrow \frac{\gamma \eta}{N} \matr{I} - \gamma\matr{\hat{B}} \matr{\hat{B}}^T + \frac{N}{2M} \sum_{m=1}^M \left( \matr{K}(\matr{z}_m) + \matr{K}(\matr{z}_m)^T \right)$, \\
+					where $\matr{K}(\matr{z}_m) = \matr{\hat{B}} \matr{\hat{B}}^T (\matr{z}_m - \matr{\mu}) \matr{\bar{g}}_m^T$
 
-					$\matr{\mu} \leftarrow \matr{\mu} - \alpha \matr{\bar{S}}^{-1} \matr{\bar{m}}, \quad \text{ where } \matr{\bar{S}}^{-1} = (1 - \beta_2^t) \matr{\hat{B}}^{-T} \matr{\hat{B}}^{-1}$
+					$\matr{\mu} \leftarrow \matr{\mu} - \alpha \matr{\bar{S}}^{-1} \matr{\bar{m}}, \quad \text{ where } \matr{\bar{S}} = \matr{\hat{B}} \matr{\hat{B}}^{T} / (1 - \beta_2^t) + \xi \matr{I}$
 
-					$\matr{\hat{B}} \leftarrow \matr{\hat{B}} \matr{h}((1 - \beta_2) \matr{C_{up}} \odot \kappa_{up}(\matr{\hat{B}}^{-1} \matr{G_{\Sigma}} \matr{\hat{B}}^{-T})), \text{ where } \matr{h}(\matr{M}) = \matr{I} + \matr{M} + \frac{1}{2} \matr{M}^2$
+					$\matr{\hat{B}} \leftarrow \matr{\hat{B}} \matr{h}((1 - \beta_2) \matr{C_{up}} \odot \kappa_{up}(\matr{\hat{B}}^{-1} \matr{G_{\Sigma}} \matr{\hat{B}}^{-T})), \text{ where } \matr{h}(\matr{M}) := \matr{I} + \matr{M} + \frac{1}{2} \matr{M}^2$
 					\caption{Rank $k$ Update Rule using Momentum in the Auxiliary/Global Space}
 					\label{alg:Rank_kCov}
 				\end{algorithm}
@@ -348,55 +376,63 @@
 					Note that in Algorithm \ref{alg:Rank_kCov}, the term $\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-1}$ is generally a dense matrix that is passed as an argument to $\kappa_{up}$ which then zeroes out the entries in the bottom left block as well as the off-diagonals in the bottom right block:
 					$$\kappa_{up}(X) = \kappa_{up} \begin{pmatrix} \matr{A} & \matr{B} \\ \matr{C} & \matr{D} \end{pmatrix} = \begin{pmatrix} \matr{A} & \matr{B} \\ \matr{0} & \Diag(\diag (\matr{D}))\end{pmatrix},$$
 					where $\diag$ returns a vector of the diagonal elements of its arguments and $\Diag$ returns a diagonal matrix.
-					Since most of the entries in the bottom right block will be discarded (usually in practice, we will set $k \ll d$ such that the bottom block will hold the majority of entries, namely $(d - k)^2$), we need to find an efficient way of computing $\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-1})$.
+					Since most of the entries in the bottom right block will be discarded (usually in practice, we will set $k \ll d$ such that the bottom block will hold the majority of entries, namely $(d - k)^2$), we need to find an efficient way of computing $\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T})$.
 					\begin{theorem}
-						For a multivariate Gaussian posterior $q(\matr{z} | \matr{\lambda}) = \Normal(\matr{z} | \matr{\mu}, \matr{S}^{-1})$, and prior $p(z) = \Normal(\matr{z} | \matr{0}, \eta^{-1} \matr{I}), \eta > 0$, with parametrization $\matr{S} = \matr{B} \matr{B}^T, \matr{B} \in \set{B}_{up}(k)$, we have
+						For a multivariate Gaussian posterior $q(\matr{z} | \matr{\lambda}) = \Normal(\matr{z} | \matr{\mu}, \matr{S}^{-1})$, $M$ MC samples $\matr{z} \sim q(\matr{z} | \matr{\lambda})$, and prior $p(z) = \Normal(\matr{z} | \matr{0}, \eta^{-1} \matr{I}), \eta > 0$, with parametrization $\matr{S} = \matr{B} \matr{B}^T, \matr{B} \in \set{B}_{up}(k)$, we have
 						\begin{align*}
-							\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-1}) &= \frac{\eta}{N}\begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ \matr{0} & \diag(\matr{B}_D^{-2}) \odot (1 + \sum_{j=1}^k ((\matr{B}_A^{-1} \matr{B}_B) \odot (\matr{B}_A^{-1} \matr{B}_B))_{ji})_{i \in [d-k]}\end{pmatrix} \\
-							&\quad - \matr{I} \\
-							&\quad + \frac{N}{2} \begin{pmatrix} \matr{B}_A^T \matr{v}_{:k} (\matr{\bar{g}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1}}) & \matr{B}_A^T \matr{v}_{:k} \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \\ \matr{0} & 2(\matr{v}_{k:} + \diag(\matr{B}_D^{-1}) \odot (\matr{B}_B^T \matr{v}_{:k})) \odot \matr{\bar{g}}_{k:}\end{pmatrix}
+							\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T}) &= \frac{\gamma \eta}{N}\begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ \matr{0} & \diag(\matr{B}_D^{-2}) \odot (1 + \sum_{j=1}^k ((\matr{B}_A^{-1} \matr{B}_B) \odot (\matr{B}_A^{-1} \matr{B}_B))_{ji})_{i \in [d-k]} \end{pmatrix} \\
+							&\quad - \gamma \matr{I} \\
+							&\quad + \frac{N}{2 M} \sum_{m=1}^M \begin{pmatrix} \matr{M}_{A, m} & \matr{M}_{B, m} \\ \matr{0} & \matr{M}_{D, m} \end{pmatrix},
+						\end{align*}
+						where 
+
+						% Definition for notation z_{:k}, z_{k:} beforehand!
+						\begin{align*}
+							\matr{M}_{A, m} &:= \matr{B}_A^T (\matr{z}_{m, :k} - \matr{\mu}) (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1} ) \\
+							\matr{M}_{B, m} &:= \matr{B}_A^T (\matr{z}_{m, :k} - \matr{\mu}) \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \\
+							\matr{M}_{D, m} &:= 2(\matr{z}_{m, k:} - \matr{\mu} + \diag(\matr{B}_D^{-1}) \odot (\matr{B}_B^T (\matr{z}_{m, :k} - \matr{\mu}))) \odot \matr{\bar{g}}_{m, k:}
 						\end{align*}
 					\end{theorem}
 
 					\begin{proof}
 						Note that 
-						$$\matr{G_{\Sigma}} = \frac{\eta}{N} \matr{I} - \matr{S} + \frac{N}{2} (\matr{M} + \matr{M}^T),$$
-						where $\matr{M} = \matr{S} (\matr{z} - \matr{\mu}) \matr{\bar{g}}^T$.
-						Denote $\matr{v} := \matr{z} - \matr{\mu}$.
+						$$\matr{G_{\Sigma}} = \frac{\gamma \eta}{N} \matr{I} - \gamma \matr{S} + \frac{N}{2 M} \sum_{i=1}^M (\matr{K}(\matr{z}_m) + \matr{K}(\matr{z}_m)^T),$$
+						where $\matr{K}(\matr{z}_m) := \matr{S} (\matr{z}_m - \matr{\mu}) \matr{\bar{g}}_m^T$.
+						Denote $\matr{v}_m := \matr{z}_m - \matr{\mu}$.
 						With parametrization $\matr{S} = \matr{B} \matr{B}^T$, we have
 						% Add lemma for block arrowhead matrix Sigma?
 						\begin{align*}
-							\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T} &= \frac{\eta}{N} \matr{B}^{-T} \matr{B}^{-1} - \matr{I} + \frac{N}{2} (\matr{B}^{-1} \matr{M} \matr{B}^{-T} + \matr{B}^{-1} \matr{M}^T \matr{B}^{-T}) \\
-							&= \frac{\eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \matr{I} \\
-							&\quad + \frac{N}{2} (\matr{B}^{-1} \matr{M} \matr{B}^{-T} + (\matr{B}^{-1} \matr{M} \matr{B}^{-T})^T) \numberthis{\label{eqn:RankMatrix}}
+							\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T} &= \frac{\gamma \eta}{N} \matr{B}^{-T} \matr{B}^{-1} - \gamma \matr{I} + \frac{N}{2 M} \sum_{m=1}^M (\matr{B}^{-1} \matr{K}(\matr{z}_m) \matr{B}^{-T} + \matr{B}^{-1} \matr{K}(\matr{z}_m)^T \matr{B}^{-T}) \\
+							&= \frac{\gamma \eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \gamma \matr{I} \\
+							&\quad + \frac{N}{2 M} \sum_{m=1}^M (\matr{B}^{-1} \matr{K}(\matr{z}_m) \matr{B}^{-T} + (\matr{B}^{-1} \matr{K}(\matr{z}_m) \matr{B}^{-T})^T) \numberthis{\label{eqn:RankMatrix}}
 						\end{align*}
 						Now, for the last term (\ref{eqn:RankMatrix}), we can decompose the vectors 
-						$$\matr{v} = (\underbrace{v_1, \dots, v_{k}}_{=: \matr{v}_{:k}}, \underbrace{v_{k+1}, \dots, v_d}_{=:\matr{v}_{k:}})^T, \text{ and } \matr{\bar{g}} = (\underbrace{\bar{g}_1, \dots, \bar{g}_{k}}_{=: \matr{\bar{g}}_{:k}}, \underbrace{\bar{g}_{k+1}, \dots, \bar{g}_d}_{=:\matr{\bar{g}}_{k:}})^T$$
+						$$\matr{v}_m = (\underbrace{v_{m, 1}, \dots, v_{m, k}}_{=: \matr{v}_{m, :k}}, \underbrace{v_{m, k+1}, \dots, v_{m, d}}_{=:\matr{v}_{m, k:}})^T, \text{ and } \matr{\bar{g}}_{m} = (\underbrace{\bar{g}_{m, k}, \dots, \bar{g}_{m, k}}_{=: \matr{\bar{g}}_{m, :k}}, \underbrace{\bar{g}_{m, k+1}, \dots, \bar{g}_{m, d}}_{=:\matr{\bar{g}}_{m, k:}})^T$$
 						and write
 						\begin{align*}
-							\matr{B}^{-1} \matr{M} \matr{B}^{-T} &= \matr{B}^T \matr{v} \matr{\bar{g}}^T \matr{B}^{-T} \\
-							&= \begin{pmatrix} \matr{B}_A^T & \matr{0} \\ \matr{B}_B^T & \matr{B}_D \end{pmatrix} \begin{pmatrix} \matr{v}_{:k} \\ \matr{v}_{k:} \end{pmatrix} \begin{pmatrix} \matr{\bar{g}}_{:k}^T, & \matr{\bar{g}}_{k:}^T \end{pmatrix} \begin{pmatrix} \matr{B}_A^{-T} & \matr{0} \\ -\matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} & \matr{B}_D^{-1} \end{pmatrix} \\
-							&= \begin{pmatrix} \matr{B}_A^T \matr{v}_{:k} \\ \matr{B}_B^T \matr{v}_{:k} + \matr{B}_D \matr{v}_{k:} \end{pmatrix} \begin{pmatrix} \matr{\bar{g}}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}, & \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \end{pmatrix} \\
-							&= \begin{pmatrix} \matr{\tilde{M}}_A & \matr{\tilde{M}}_B \\ \matr{\tilde{M}}_C & \matr{\tilde{M}}_D \end{pmatrix},
+							\matr{B}^{-1} \matr{K}(\matr{z}_m) \matr{B}^{-T} &= \matr{B}^T \matr{v}_m \matr{\bar{g}}_m^T \matr{B}^{-T} \\
+							&= \begin{pmatrix} \matr{B}_A^T & \matr{0} \\ \matr{B}_B^T & \matr{B}_D \end{pmatrix} \begin{pmatrix} \matr{v}_{m, :k} \\ \matr{v}_{m, k:} \end{pmatrix} \begin{pmatrix} \matr{\bar{g}}_{m, :k}^T, & \matr{\bar{g}}_{m, k:}^T \end{pmatrix} \begin{pmatrix} \matr{B}_A^{-T} & \matr{0} \\ -\matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} & \matr{B}_D^{-1} \end{pmatrix} \\
+							&= \begin{pmatrix} \matr{B}_A^T \matr{v}_{m, :k} \\ \matr{B}_B^T \matr{v}_{m, :k} + \matr{B}_D \matr{v}_{m, k:} \end{pmatrix} \begin{pmatrix} \matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}, & \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \end{pmatrix} \\
+							&= \begin{pmatrix} \matr{\tilde{M}}_{A, m} & \matr{\tilde{M}}_{B, m} \\ \matr{\tilde{M}}_{C, m} & \matr{\tilde{M}}_{D, m} \end{pmatrix},
 						\end{align*}
 						where 
 						\begin{align*}
-							\matr{\tilde{M}}_A &= \matr{B}_A^T \matr{v}_{:k} (\matr{\bar{g}}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1}) \\
-							\matr{\tilde{M}}_B &= \matr{B}_A^T \matr{v}_{:k} \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \\
-							\matr{\tilde{M}}_C &= (\matr{B}_B^T \matr{v}_{:k} + \matr{B}_D \matr{v}_{k:}) (\matr{\bar{g}}_{:k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T})\\
-							\matr{\tilde{M}}_D &= (\matr{B}_B^T \matr{v}_{:k} + \matr{B}_D \matr{v}_{k:}) \matr{\bar{g}}_{k:}^T \matr{B}_D^{-1}.
+							\matr{\tilde{M}}_{A, m} &= \matr{B}_A^T \matr{v}_{m, :k} (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1}) \\
+							\matr{\tilde{M}}_{B, m} &= \matr{B}_A^T \matr{v}_{m, :k} \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \\
+							\matr{\tilde{M}}_{C, m} &= (\matr{B}_B^T \matr{v}_{m, :k} + \matr{B}_D \matr{v}_{m, k:}) (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T})\\
+							\matr{\tilde{M}}_{D, m} &= (\matr{B}_B^T \matr{v}_{m, :k} + \matr{B}_D \matr{v}_{m, k:}) \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1}.
 						\end{align*}
 						Combining terms, we arrive at
 						\begin{align*}
-							\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T} &= \frac{\eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \matr{I} \\
-							&\quad + \frac{N}{2} \begin{pmatrix} \matr{\tilde{M}}_A + \matr{\tilde{M}}_A^T & \matr{\tilde{M}}_B + \matr{\tilde{M}}_C^T \\ * & \matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T \end{pmatrix}.
+							\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T} &= \frac{\gamma \eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \gamma \matr{I} \\
+							&\quad + \frac{N}{2 M} \sum_{m=1}^M \begin{pmatrix} \matr{\tilde{M}}_{A, m} + \matr{\tilde{M}}_{A, m}^T & \matr{\tilde{M}}_{B, m} + \matr{\tilde{M}}_{C, m}^T \\ * & \matr{\tilde{M}}_{D, m} + \matr{\tilde{M}}_{D, m}^T \end{pmatrix}.
 						\end{align*}
 						Note that $\kappa_{up}$ is linear such that
 						\begin{align*}
-							\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T}) &= \frac{\eta}{N} \kappa_{up} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \kappa_{up}(\matr{I}) \\
-							&\quad + \frac{N}{2} \kappa_{up} \begin{pmatrix} \matr{\tilde{M}}_A + \matr{\tilde{M}}_A^T & \matr{\tilde{M}}_B + \matr{\tilde{M}}_C^T \\ * & \matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T \end{pmatrix} \\
-							&= \frac{\eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ \matr{0} & \diag(\matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2}) \end{pmatrix} - \matr{I} \\
-							&\quad + \frac{N}{2} \begin{pmatrix} \matr{\tilde{M}}_A + \matr{\tilde{M}}_A^T & \matr{\tilde{M}}_B + \matr{\tilde{M}}_C^T \\ \matr{0} & \diag(\matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T) \end{pmatrix}.
+							\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T}) &= \frac{\gamma \eta}{N} \kappa_{up} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ * & \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2} \end{pmatrix} - \gamma \kappa_{up}(\matr{I}) \\
+							&\quad + \frac{N}{2 M} \sum_{m=1}^M \kappa_{up} \begin{pmatrix} \matr{\tilde{M}}_{A, m} + \matr{\tilde{M}}_{A, m}^T & \matr{\tilde{M}}_{B, m} + \matr{\tilde{M}}_{C, m}^T \\ * & \matr{\tilde{M}}_{D, m} + \matr{\tilde{M}}_{D, m}^T \end{pmatrix} \\
+							&= \frac{\gamma \eta}{N} \begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ \matr{0} & \diag(\matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} + \matr{B}_D^{-2}) \end{pmatrix} - \gamma \matr{I} \\
+							&\quad + \frac{N}{2 M} \sum_{m=1}^M \begin{pmatrix} \matr{\tilde{M}}_{A, m} + \matr{\tilde{M}}_{A, m}^T & \matr{\tilde{M}}_{B, m} + \matr{\tilde{M}}_{C, m}^T \\ \matr{0} & \diag(\matr{\tilde{M}}_{D, m} + \matr{\tilde{M}}_{D, m}^T) \end{pmatrix}.
 						\end{align*}
 						For the diagonal terms, note that $\diag$ is also a linear function and for diagonal matrices $D_1, D_2$, we have
 						$$\diag(D_1 X D_2) = \diag(D_1) \odot \diag(X) \odot \diag(D_2).$$
@@ -408,10 +444,11 @@
 							&= \diag(\matr{B}_D)^{-2} \odot \left(1 + \sum_{j=1}^k ((\matr{B}_A^{-1} \matr{B}_B) \odot (\matr{B}_A^{-1} \matr{B}_B))_{ji} \right)
 						\end{align*}
 						\begin{align*}
-							\diag(\matr{\tilde{M}}_D + \matr{\tilde{M}}_D^T) &= 2 \diag(\matr{\tilde{M}}_D) \\
-							&= 2 (\diag(\matr{B}_D)^{-1} \odot \diag(\matr{B}_B^T \matr{v}_{:k} \matr{\bar{g}}_{k:}^T) + \diag(\matr{v}_{k:} \matr{\bar{g}}_{k:}^T)) \\
-							&= 2 (\diag(\matr{B}_D)^{-1} \odot (\matr{B}_B^T \matr{v}_{:k}) + \matr{v}_{k:}) \odot \matr{\bar{g}}_{k:}
+							\diag(\matr{\tilde{M}}_{D, m} + \matr{\tilde{M}}_{D, m}^T) &= 2 \diag(\matr{\tilde{M}}_{D, m}) \\
+							&= 2 (\diag(\matr{B}_D)^{-1} \odot \diag(\matr{B}_B^T \matr{v}_{m, :k} \matr{\bar{g}}_{m, k:}^T) + \diag(\matr{v}_{m, k:} \matr{\bar{g}}_{m, k:}^T)) \\
+							&= 2 (\diag(\matr{B}_D)^{-1} \odot (\matr{B}_B^T \matr{v}_{m, :k}) + \matr{v}_{m, k:}) \odot \matr{\bar{g}}_{m, k:}
 						\end{align*}
+						which completes the proof.
 					\end{proof}
 
 			\subsubsection{Block Arrowhead Structure}

@@ -5,11 +5,12 @@ Master Thesis "Structured Natural Gradient Descent for Bayesian Deep Learning" b
 ## Compiling the latex document
 Clone the repository and change into it and the `thesis` folder
 ```
-git clone <REPO_URL>
+git clone https://gitlab.lrz.de/00000000014965FA/structured-ngd.git
 cd structured-ngd
 ```
 Then, run
 ```
+cd thesis
 pdflatex MA_ThomasRiedel.tex
 biber MA_ThomasRiedel
 pdflatex MA_ThomasRiedel.tex

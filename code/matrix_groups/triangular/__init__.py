@@ -5,7 +5,7 @@ sns.set()
 
 
 def h(M):
-    return B_up.eye(M.d, M.k, device=M.device) + M + 0.5 * M @ M
+    return M.add_I() + 0.5 * M @ M
 
 
 class B_up:
@@ -266,10 +266,17 @@ class B_up:
     def __radd__(self, X):
         return self + X
 
+    def __truediv__(self, x):
+        return 1/x * self
+
     def __neg__(self):
         """Unary minus
         """
         return B_up(-self.B_a, -self.B_b, -self.B_d, self.k, self.device)
+
+    def add_I(self, alpha=1):
+        return B_up(self.B_a + alpha * torch.eye(self.k), self.B_b, self.B_d + alpha,
+                    self.k, device=self.device)
 
     def trace(self):
         """Compute trace.
@@ -319,7 +326,7 @@ class B_up:
         z = mu + (self.inv().t() @ eps)
         return z.T
 
-    def update(self, eta, N, g, beta2=0.999):
+    def update(self, eta, N, g, v, beta2=0.999):
         """Perform update step 
           B <- B h((1 - beta2) * C_up .* kappa_up(B^{-T} G_S B^{-1})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -333,27 +340,26 @@ class B_up:
         B_d_inv = B_inv.B_d
 
         # Sample v ~ N(0, 1/N * B^{-T} B^{-1}) = N(0, (sqrt(N) B)^{-T} (sqrt(N) B)^{-1})
-        eps = torch.randn((self.d, 1), device=self.device)
-        v = 1/np.sqrt(N) * B_inv.t() @ eps
 
         AB = B_a_inv @ self.B_b
         BAT = self.B_b.T @ B_a_inv
-        ATv = self.B_a.T @ v[:self.k]
-        BTv = self.B_b.T @ v[:self.k]
-        X = g[:self.k].T @ B_a_inv.T - g[self.k:].T @ (B_d_inv * BAT)
+
+        ATv = self.B_a.T @ v[:, :self.k]
+        BTv = self.B_b.T @ v[:, :self.k]
+        X = g[:, :self.k].transpose(1, 2) @ B_a_inv.T - g[:, self.k:].transpose(1, 2) @ (B_d_inv * BAT)
         
         B_a = eta / N * B_a_inv.T @ B_a_inv
         B_a += -torch.eye(self.k, device=self.device)
-        M = ATv @ X
+        M = torch.mean(ATv @ X, axis=0)
         B_a += N/2 * (M + M.T)
 
         B_b = -eta / N * B_a_inv.T @ AB * B_d_inv.T
-        B_b += N/2 * ATv @ (g[self.k:] * B_d_inv).T
-        B_b += (N/2 * (BTv + self.B_d * v[self.k:]) @ X).T
+        B_b += N/2 * torch.mean(ATv @ (g[:, self.k:] * B_d_inv).transpose(1, 2))
+        B_b += N/2 * torch.mean(((BTv + self.B_d * v[:, self.k:]) @ X).transpose(1, 2), axis=0)
 
         B_d = eta / N * (B_d_inv ** 2) * (1 + torch.sum(AB ** 2, axis=0)).reshape(-1, 1)
         B_d += -1
-        B_d += N * (v[self.k:] + B_d_inv * BTv) * g[self.k:]
+        B_d += N * torch.mean((v[:, self.k:] + B_d_inv * BTv) * g[:, self.k:], axis=0)
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
         # values in the respective blocks
@@ -474,3 +480,5 @@ class B_low:
             result[:self.k] = self.B_a @ X[:self.k]
             result[self.k:] = self.B_c @ X[:self.k] + self.B_d * X[self.k:]
             return result
+
+#%%
