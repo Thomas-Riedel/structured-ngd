@@ -25,6 +25,7 @@
 \DeclareMathOperator{\Rational}{\mathbb{Q}}
 \DeclareMathOperator{\Real}{\mathbb{R}}
 \DeclareMathOperator{\Complex}{\mathbb{C}}
+\DeclareMathOperator{\Prob}{\mathbb{P}}
 \DeclareMathOperator{\diag}{diag}
 \DeclareMathOperator{\Diag}{Diag}
 \DeclareMathOperator{\Expect}{\mathbb{E}}
@@ -163,6 +164,14 @@
 	\setcounter{page}{1}
 
 		\subsection{Deep Learning}
+
+		\subsection{Maximum Likelihood Estimation}
+			Given a Neural Network $f$ with weights $\matr{w}$ and data $\set{D} = \{(\matr{x}_i, \matr{y}_i) | i \in \{1, \dots, N\}\}$, we would like the network to approximate the true distribution $\Prob(\matr{y} | \matr{x})$ as best as possible. 
+			This is usually done via Maximum Likelihood Estimation (MLE) which aims to maximize the likelihood of the data,
+			\begin{equation}
+				\matr{\hat{w}}_{MLE} := \argmax_{\matr{w} \in \Real^d} p(\set{D} \matr{w}).
+				\label{eqn:MLE}
+			\end{equation}
 
 		\subsection{Variational Inference}
 			Instead of maximizing the likelihood as in the frequentist setting, one can take a Bayesian approach and place a prior $p$ on the weights $\matr{w}$ and maximize a posterior $p(\matr{w} | \set{D})$ instead:
@@ -330,32 +339,72 @@
 				\end{align*}
 				% Full derivation better here!
 				Now, setting $\matr{B}_{t+1} = \sqrt{N} \matr{\hat{B}}_{t+1}, \matr{\hat{S}}_{t+1} = \matr{\hat{B}}_{t+1} \matr{\hat{B}}_{t+1}^T$, one can directly follow the derivation of \cite[Sec. E.3]{LSK20} to arrive at the method described in Algorithm \ref{alg:Rank_kCov} for low-rank structure on the covariance.
+				While taking the inverse of the block triangular matrix $\matr{B} \in \set{B}_{up}(k)$ can be computed easily, when updating the mean parameter with the inverse precision matrix $\matr{S}^{-1} = (\matr{B} \matr{B}^T)^{-1}$, this can lead to numerical instabilities when $\matr{S}$ is ill-conditioned and nearly singular. 
+				Thus, in the literature, one often adds a damping term $\xi \matr{I}$ to the matrix where $\xi > 0$ and then performs inversion similar to a Levenberg-Marquardt update \cite{L44, M63}.
+				However, $\matr{S}$ is a dense matrix so computing its inverse is not feasible in practice computationally.
+				Thus, we can follow the approach in \cite[Sec. 6.3]{MG15} and approximate it as 
+				\begin{align*}
+					\matr{S} + \xi \matr{I} &= \matr{B} \matr{B}^T + \xi \matr{I} \\
+					&\approx (\matr{B} + \pi \sqrt{\xi} \matr{I}) (\matr{B} + \frac{1}{\pi} \sqrt{\xi} \matr{I})^T \\
+					&= (\matr{S} + \xi \matr{I}) + \sqrt{\xi} \left(\pi \matr{B}^T + \frac{1}{\pi} \matr{B} \right),
+				\end{align*}
+				where $\pi$ is a scalar chosen such that the difference $\sqrt{\xi}(\pi \matr{B}^T + \frac{1}{\pi} \matr{B})$ is minimized which it is for $\pi = 1$.
+				Thus, we can approximate
+				\begin{equation*}
+					(\matr{S} + \xi \matr{I})^{-1} \approx (\matr{B} + \sqrt{\xi} \matr{I})^{-t} (\matr{B} + \sqrt{\xi} \matr{I})^{-1},
+				\end{equation*}
+				where the inversion on the right hand side involves a block triangular matrix which can be done very efficiently. 
+				%%% Analyze in terms of complexity!
+				We can perform a natural gradient step to update $\matr{B}$
+				\begin{equation}
+					\matr{B} \leftarrow \matr{B} \matr{h}((1 - \beta_2) \matr{C_{up}} \odot \kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T})),
+				\end{equation}
+				where
+				\begin{align}
+					\matr{h}(\matr{M}) &:= \matr{I} + \matr{M} + \frac{1}{2} \matr{M}^2 \label{eqn:h_func} \\
+					\matr{C_{up}} &:= \begin{pmatrix} \frac{1}{2} \matr{J_A} & \matr{J_B} \\ \matr{0} & \frac{1}{2} \matr{J_D} \end{pmatrix} \label{eqn:C_up} \\
+					\kappa_{up} \begin{pmatrix} \matr{M_A} & \matr{M_B} \\ \matr{M_C} & \matr{M_D} \end{pmatrix} &:= \begin{pmatrix} \matr{M_A} & \matr{M_B} \\ \matr{0} & \diag(\matr{M_D}) \end{pmatrix}
+					\label{eqn:kappa_up}
+				\end{align}
 
 				\begin{algorithm}[!htbp]
 					\DontPrintSemicolon
-					\KwInput{$\text{Initial parameters } \matr{\mu}, \matr{B}$}
-					\myinput{$\text{Learning rate } \alpha > 0, \text{ rank } k \in \{0, \dots, d\}, \text{ prior precision } \eta > 0$}
+					% \KwInput{$\text{Initial parameters } \matr{\mu}, \matr{B}$}
+					\KwInput{$\text{Learning rate } \alpha > 0, \text{ rank } k \in \{0, \dots, d\}, \text{ prior precision } \eta > 0$}
 					\myinput{$\text{Regularization } \gamma \ge 0, \text{ damping } \xi \ge 0, \text{ Number of MC samples } M \ge 1$}
 					\myinput{$\beta_1, \beta_2 \in (0, 1]$}
-					Set $\matr{m} = \matr{0}$
+					Set $\matr{m} \leftarrow \matr{0}, \matr{\mu} \leftarrow \matr{0}, \matr{\hat{B}} \leftarrow \sqrt{\frac{\gamma \eta}{N} + \xi} \matr{I} \quad \color{red} \text{(1)} \color{black}$
 
-					$\matr{z}_m \leftarrow \matr{\mu} + N^{-1/2} \matr{\hat{B}}^{-T} \matr{\varepsilon}_m$, where $\matr{\varepsilon}_m \sim \Normal(\matr{0}, \matr{I}_{d\times d}), \quad \forall m \in \{1, \dots, M\}$
-					% $\matr{z} \leftarrow \matr{\mu} + N^{-1/2} \left[\matr{\hat{U_k}} \matr{\varepsilon}_{rank} + \diag{\matr{\hat{B}}_D^{-1}} \otimes \matr{\varepsilon}_{diag}\right]$, where $\matr{\varepsilon}_{rank} \sim \Normal(\matr{0}, \matr{I}_{k\times k}), \matr{\varepsilon}_{diag} \sim \mathcal{N}(\matr{0}, \matr{I}_{(d-k) \times (d-k)})$
+					\For{$t = 0, 1, 2, \dots $}{
 
-					Randomly sample a minibatch $\set{M}$ from the training set
+						Randomly sample a minibatch $\set{M}$ from the training set
 
-					$\matr{\bar{g}}_m \leftarrow \frac{1}{|\set{M}|} \sum_{i \in \set{M}} \grad_z \ell_i (\matr{z}_m), \quad \forall m \in \{1, \dots, M\}$
+						Draw $M$ MC samples from the posterior $q(\matr{z} | \matr{\lambda}) = \Normal(\matr{z} | \matr{\mu}, N (\matr{\hat{B}} \matr{\hat{B}}^T)^{-1})$
+						$$\matr{z}_m \leftarrow \matr{\mu} + N^{-1/2} \matr{\hat{B}}^{-T} \matr{\varepsilon}_m, \quad \text{ where } \matr{\varepsilon}_m \sim \Normal(\matr{0}, \matr{I}_{d\times d}), \quad \forall m \in \{1, \dots, M\} \quad \color{red} \text{(2)} \color{black}$$
+						% $\matr{z} \leftarrow \matr{\mu} + N^{-1/2} \left[\matr{\hat{U_k}} \matr{\varepsilon}_{rank} + \diag{\matr{\hat{B}}_D^{-1}} \otimes \matr{\varepsilon}_{diag}\right]$, where $\matr{\varepsilon}_{rank} \sim \Normal(\matr{0}, \matr{I}_{k\times k}), \matr{\varepsilon}_{diag} \sim \mathcal{N}(\matr{0}, \matr{I}_{(d-k) \times (d-k)})$
 
-					$\matr{g}_{\matr{\mu}} \leftarrow \frac{\gamma \eta}{N} \matr{\mu} + \frac{1}{M} \sum_{m=1}^M \matr{\bar{g}}_m$
+						Sample $M$ gradient samples using $\matr{z}_m$
+						$$\matr{\bar{g}}_m \leftarrow \frac{1}{|\set{M}|} \sum_{i \in \set{M}} \grad_z \ell_i (\matr{z}_m), \quad \forall m \in \{1, \dots, M\}$$
 
-					$\matr{m} \leftarrow \beta_1 \matr{m} + (1 - \beta_1) \matr{g}_{\matr{\mu}}, \quad \matr{\bar{m}} \leftarrow \matr{m} / (1 - \beta_1^t)$
+						Compute the gradient for the mean parameter
+						$$\matr{g}_{\matr{\mu}} \leftarrow \frac{\gamma \eta}{N} \matr{\mu} + \frac{1}{M} \sum_{m=1}^M \matr{\bar{g}}_m \quad \color{red} \text{(3)} \color{black}$$
 
-					$\matr{G_{\Sigma}} \leftarrow \frac{\gamma \eta}{N} \matr{I} - \gamma\matr{\hat{B}} \matr{\hat{B}}^T + \frac{N}{2M} \sum_{m=1}^M \left( \matr{K}(\matr{z}_m) + \matr{K}(\matr{z}_m)^T \right)$, \\
-					where $\matr{K}(\matr{z}_m) = \matr{\hat{B}} \matr{\hat{B}}^T (\matr{z}_m - \matr{\mu}) \matr{\bar{g}}_m^T$
+						Update the momentum term
+						$$\matr{m} \leftarrow \beta_1 \matr{m} + (1 - \beta_1) \matr{g}_{\matr{\mu}} \quad \color{red} \text{(4)} \color{black}$$
 
-					$\matr{\mu} \leftarrow \matr{\mu} - \alpha \matr{\bar{S}}^{-1} \matr{\bar{m}}, \quad \text{ where } \matr{\bar{S}} = \matr{\hat{B}} \matr{\hat{B}}^{T} / (1 - \beta_2^t) + \xi \matr{I}$
+						Debias momentum and precision
+						$$\matr{\bar{m}} \leftarrow \frac{\matr{m}}{1 - \beta_1^{t + 1}}, \matr{\bar{B}} = \frac{\matr{\hat{B}} - \sqrt{\frac{\gamma \eta}{N} + \xi} \matr{I}}{\sqrt{1 - \beta_2^t + \varepsilon}} + \sqrt{\frac{\gamma \eta}{N} + \xi} \matr{I} \color{red} \text{(5)} \color{black}$$
 
-					$\matr{\hat{B}} \leftarrow \matr{\hat{B}} \matr{h}((1 - \beta_2) \matr{C_{up}} \odot \kappa_{up}(\matr{\hat{B}}^{-1} \matr{G_{\Sigma}} \matr{\hat{B}}^{-T})), \text{ where } \matr{h}(\matr{M}) := \matr{I} + \matr{M} + \frac{1}{2} \matr{M}^2$
+						Compute the gradient with respect to $\matr{\Sigma}$
+						$$\matr{G_{\Sigma}} \leftarrow \frac{\gamma \eta}{N} \matr{I} - \gamma\matr{\hat{B}} \matr{\hat{B}}^T + \frac{N}{2M} \sum_{m=1}^M \left( \matr{K}(\matr{z}_m) + \matr{K}(\matr{z}_m)^T \right), \color{red} \text{(6)} \color{black}$$
+						where $\matr{K}(\matr{z}_m) = \matr{\hat{B}} \matr{\hat{B}}^T (\matr{z}_m - \matr{\mu}) \matr{\bar{g}}_m^T$
+
+						Update mean parameter scaled by dampened precision estimate
+						$$\matr{\mu} \leftarrow \matr{\mu} - \alpha \matr{\bar{B}}^{-T} \matr{\bar{B}}^{-1} \matr{\bar{m}}, \color{red} \text{(7)} \color{black}$$
+
+						Update square root precision
+						$$\matr{\hat{B}} \leftarrow \matr{\hat{B}} \matr{h}((1 - \beta_2) \matr{C_{up}} \odot \kappa_{up}(\matr{\hat{B}}^{-1} \matr{G_{\Sigma}} \matr{\hat{B}}^{-T})), \color{red} \text{(8)} \color{black} \text{ where } \matr{h}, \matr{C_{up}}, \matr{\kappa_{up}}\text{ given in (\ref{eqn:h_func}), (\ref{eqn:C_up}), \ref{eqn:kappa_up}}$$%(\matr{M}) := \matr{I} + \matr{M} + \frac{1}{2} \matr{M}^2$$
+					}
 					\caption{Rank $k$ Update Rule using Momentum in the Auxiliary/Global Space}
 					\label{alg:Rank_kCov}
 				\end{algorithm}
@@ -382,7 +431,7 @@
 						\begin{align*}
 							\kappa_{up}(\matr{B}^{-1} \matr{G_{\Sigma}} \matr{B}^{-T}) &= \frac{\gamma \eta}{N}\begin{pmatrix} \matr{B}_A^{-T} \matr{B}_A^{-1} & -\matr{B}_A^{-T} \matr{B}_A^{-1} \matr{B}_B \matr{B}_D^{-1} \\ \matr{0} & \diag(\matr{B}_D^{-2}) \odot (1 + \sum_{j=1}^k ((\matr{B}_A^{-1} \matr{B}_B) \odot (\matr{B}_A^{-1} \matr{B}_B))_{ji})_{i \in [d-k]} \end{pmatrix} \\
 							&\quad - \gamma \matr{I} \\
-							&\quad + \frac{N}{2 M} \sum_{m=1}^M \begin{pmatrix} \matr{M}_{A, m} & \matr{M}_{B, m} \\ \matr{0} & \matr{M}_{D, m} \end{pmatrix},
+							&\quad + \frac{N}{2 M} \sum_{m=1}^M \begin{pmatrix} \matr{M}_{A, m} + \matr{M}_{A, m}^T & \matr{M}_{B, m} + \matr{M}_{C, m}^T \\ \matr{0} & 2\matr{M}_{D, m} \end{pmatrix},
 						\end{align*}
 						where 
 
@@ -390,7 +439,8 @@
 						\begin{align*}
 							\matr{M}_{A, m} &:= \matr{B}_A^T (\matr{z}_{m, :k} - \matr{\mu}) (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1} ) \\
 							\matr{M}_{B, m} &:= \matr{B}_A^T (\matr{z}_{m, :k} - \matr{\mu}) \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \\
-							\matr{M}_{D, m} &:= 2(\matr{z}_{m, k:} - \matr{\mu} + \diag(\matr{B}_D^{-1}) \odot (\matr{B}_B^T (\matr{z}_{m, :k} - \matr{\mu}))) \odot \matr{\bar{g}}_{m, k:}
+							\matr{M}_{C, m} &:= (\matr{B}_B^T \matr{v}_{m, :k} + \matr{B}_D \matr{v}_{m, k:}) (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}) \\
+							\matr{M}_{D, m} &:= (\matr{z}_{m, k:} - \matr{\mu} + \diag(\matr{B}_D^{-1}) \odot (\matr{B}_B^T (\matr{z}_{m, :k} - \matr{\mu}))) \odot \matr{\bar{g}}_{m, k:}
 						\end{align*}
 					\end{theorem}
 
@@ -419,7 +469,7 @@
 						\begin{align*}
 							\matr{\tilde{M}}_{A, m} &= \matr{B}_A^T \matr{v}_{m, :k} (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-1}) \\
 							\matr{\tilde{M}}_{B, m} &= \matr{B}_A^T \matr{v}_{m, :k} \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \\
-							\matr{\tilde{M}}_{C, m} &= (\matr{B}_B^T \matr{v}_{m, :k} + \matr{B}_D \matr{v}_{m, k:}) (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T})\\
+							\matr{\tilde{M}}_{C, m} &= (\matr{B}_B^T \matr{v}_{m, :k} + \matr{B}_D \matr{v}_{m, k:}) (\matr{\bar{g}}_{m, :k}^T \matr{B}_A^{-T} - \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}) \\
 							\matr{\tilde{M}}_{D, m} &= (\matr{B}_B^T \matr{v}_{m, :k} + \matr{B}_D \matr{v}_{m, k:}) \matr{\bar{g}}_{m, k:}^T \matr{B}_D^{-1}.
 						\end{align*}
 						Combining terms, we arrive at

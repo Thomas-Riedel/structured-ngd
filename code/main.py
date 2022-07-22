@@ -1,6 +1,3 @@
-from models.resnet import *
-from optimizers.rank_k_cov import *
-
 import argparse
 import sys
 import time
@@ -21,6 +18,9 @@ from torchvision import transforms
 from torchmetrics.functional import calibration_error
 from torch.optim import Adam
 
+from models.resnet import *
+from optimizers.rank_k_cov import *
+
 
 def parse_args():
 	parser = argparse.ArgumentParser(description='Run noisy optimizers with parameters.')
@@ -36,13 +36,13 @@ def parse_args():
 
 
 def load_data(dataset, batch_size):
-	'''Load dataset, prepare for ResNet training, and split into train. validation and test set
-	'''
+	"""Load dataset, prepare for ResNet training, and split into train. validation and test set
+	"""
 
 	# For ResNet, see https://pytorch.org/hub/pytorch_vision_resnet/
 	transform = transforms.Compose([transforms.ToTensor(), 
-	                                transforms.Normalize((0.485, 0.456, 0.406), 
-	                                                     (0.229, 0.224, 0.225))])
+									transforms.Normalize((0.485, 0.456, 0.406),
+														 (0.229, 0.224, 0.225))])
 
 	if dataset.lower() == "mnist":
 		training_data = MNIST('data/mnist/train', download=True, train=True, transform=transform)
@@ -72,13 +72,13 @@ def load_data(dataset, batch_size):
 def run(epochs, model, optimizers, train_loader, val_loader, M=1, eval_every=1):
 	loss_fn = nn.CrossEntropyLoss()
 	runs = []
-	lr = 1e-1
+	lr = 1e-3
 	device = model.device
 
 	for optimizer in optimizers:
 		model.init_weights()
-		if optimizer is Rank_kCov:
-			optimizer = optimizer(model.parameters(), len(train_loader.dataset), k=1, lr=lr, device=device)
+		if optimizer is RankCov:
+			optimizer = optimizer(model, len(train_loader.dataset), k=0, lr=lr, device=device, M=M)
 		else:
 			optimizer = optimizer(model.parameters(), lr=lr)
 		scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -91,7 +91,7 @@ def run(epochs, model, optimizers, train_loader, val_loader, M=1, eval_every=1):
 		for epoch in range(epochs):
 			start = time.time()
 			running_loss, iter_loss = model.train(train_loader, optimizer, epoch=epoch,
-												  loss_fn=loss_fn, M=M, eval_every=eval_every)
+												  loss_fn=loss_fn, eval_every=eval_every)
 			if epoch == 0:
 				times.append(0)
 			else:
@@ -103,13 +103,15 @@ def run(epochs, model, optimizers, train_loader, val_loader, M=1, eval_every=1):
 			iter_losses += iter_loss
 			scheduler.step()
 
-		runs.append(dict(name=type(optimizer).__name__,
-						optimizer=optimizer,
-						times=np.cumsum(times),
-						val_acc=val_acc,
-						val_loss=val_loss,
-						iter_loss=iter_losses,
-						time=datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+		runs.append(
+			dict(
+				name=type(optimizer).__name__,
+				optimizer=optimizer,
+				times=np.cumsum(times),
+				val_acc=val_acc,
+				val_loss=val_loss,
+				iter_loss=iter_losses,
+				time=datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
 		print('Finished Training')
 	return runs
 
@@ -167,6 +169,7 @@ def save_runs(runs):
 		with open(f"runs/{run['time']}.pkl", 'wb') as f:
 			pickle.dump(run, f)
 
+
 def main():
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -176,11 +179,12 @@ def main():
 	num_classes = len(train_loader.dataset.classes)
 
 	model = ResNet(model_type=MODEL, num_classes=num_classes, device=device)
-	optimizers = [Rank_kCov]
+	optimizers = [RankCov]
 
 	runs = run(EPOCHS, model, optimizers, train_loader, val_loader, M=MC_SAMPLES, eval_every=EVAL_EVERY)
 	plot_runs(runs)
 	save_runs(runs)
+
 
 if __name__ == '__main__':
 	main()

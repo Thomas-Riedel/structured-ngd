@@ -2,7 +2,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
-from matrix_groups.triangular import B_up
+from matrix_groups.triangular import MUp
+from optimizers.noisy_optimizer import *
 
 
 class ResNet(nn.Module):
@@ -49,25 +50,33 @@ class ResNet(nn.Module):
         self.N = N
         self.device = device
 
-    def forward(self, x, z=None):
-        if z is None:
-            return self.model(x)
-        else:
-            preds = torch.zeros((z.shape[0], x.shape[0], self.num_classes), device=self.device)
-            # Extract parameters from model as vector
-            p = parameters_to_vector(self.model.parameters())
-            for i, z_i in enumerate(z):
-                # z_i ~ N(mu, (B B^T)^{-1})
-                # Overwrite model weights
-                vector_to_parameters(z_i, self.model.parameters())
-                # Run forward pass (without sampling again!)
-                preds[i] = self(x, z=None)
-            # Return model parameters to original state
-            vector_to_parameters(p, self.model.parameters())
-            return preds
+    def forward(self, x):
+        return self.model(x)
+        # else:
+        #     M = len(z[0])
+        #     preds = torch.zeros((M, x.shape[0], self.num_classes), device=self.device)
+        #     # Extract parameters from model as vector
+        #     p = parameters_to_vector(self.model.parameters())
+        #     for i in range(M):
+        #         # z_i ~ N(mu, (B B^T)^{-1})
+        #         # Overwrite model weights
+        #         if i > 0:
+        #             for j, param in enumerate(self.model.parameters()):
+        #                 z_i = z[j][i].reshape(param.shape)
+        #                 z_prev_i = z[j][i-1].reshape(param.shape)
+        #                 param.data.add_(z_i - z_prev_i)
+        #         else:
+        #             for j, param in enumerate(self.model.parameters()):
+        #                 z_i =  z[j][i].reshape(param.shape)
+        #                 param.data.add_(z_i)
+        #         # Run forward pass (without sampling again!)
+        #         preds[i] = self(x, z=None)
+        #     # Return model parameters to original state
+        #     vector_to_parameters(p, self.model.parameters())
+        #     return preds
 
     def train(self, data_loader, optimizer, epoch=0, eval_every=1,
-              loss_fn=nn.CrossEntropyLoss(), M=1):
+              loss_fn=nn.CrossEntropyLoss()):
         running_loss = 0.0
         epoch_loss = 0.0
         iteration_losses = []
@@ -84,17 +93,12 @@ class ResNet(nn.Module):
             # zero the parameter gradients
             optimizer.zero_grad()
 
-            # Perform forward pass, compute loss, backpropagate
-            if type(optimizer).__name__ == "Rank_kCov":
-                z = optimizer.sample(M)
-                preds = self(images, z=z)
-                def closure(i):
-                    loss = loss_fn(preds[i], labels)
-                    loss.backward(retain_graph=True)
-                    return loss
-                loss = optimizer.step(z, closure)
-                preds = torch.mean(preds, axis=0)
+            if isinstance(optimizer, NoisyOptimizer):
+                # Perform forward pass, compute loss, backpropagate
+                # Take optimizer step
+                loss, preds = optimizer.step(images, labels, loss_fn)
             else:
+                # Perform forward pass, compute loss, backpropagate
                 preds = self(images)
                 loss = loss_fn(preds, labels)
                 loss.backward()
