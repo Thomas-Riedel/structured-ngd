@@ -363,7 +363,7 @@ class MUp:
         z = mu + (self.inv().t() @ eps)
         return z.T
 
-    def update(self, lr, eta, N, g, v, gamma=1):
+    def update(self, beta, eta, N, g, v, gamma=1):
         """Perform update step 
           B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -400,12 +400,12 @@ class MUp:
         m_d = N * torch.mean((v[:, self.k:] + m_d_inv * BTv) * g[:, self.k:], axis=0)
         if gamma > 0:
             m_d += factor * (m_d_inv ** 2) * (1 + torch.sum(AB ** 2, axis=0)).reshape(-1, 1) - gamma
-        # print(h(lr * B_up(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
+        # print(h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
-        return self @ h(lr * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))
+        return self @ h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))
 
 
 class MLow:

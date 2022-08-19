@@ -69,16 +69,16 @@ def load_data(dataset, batch_size):
 	return train_loader, val_loader, test_loader
 
 
-def run(epochs, model, optimizers, train_loader, val_loader, M=1, eval_every=1):
+def run(epochs, model, optimizers, train_loader, val_loader, mc_samples=1, eval_every=1):
 	loss_fn = nn.CrossEntropyLoss()
 	runs = []
-	lr = 1e-3
+	lr = 1e-2
 	device = model.device
 
 	for optimizer in optimizers:
 		model.init_weights()
 		if optimizer is RankCov:
-			optimizer = optimizer(model, len(train_loader.dataset), k=0, lr=lr, device=device, M=M)
+			optimizer = optimizer(model.parameters(), len(train_loader.dataset), rank=0, lr=lr, device=device, mc_samples=mc_samples)
 		else:
 			optimizer = optimizer(model.parameters(), lr=lr)
 		scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -181,7 +181,7 @@ def main():
 	model = ResNet(model_type=MODEL, num_classes=num_classes, device=device)
 	optimizers = [RankCov]
 
-	runs = run(EPOCHS, model, optimizers, train_loader, val_loader, M=MC_SAMPLES, eval_every=EVAL_EVERY)
+	runs = run(EPOCHS, model, optimizers, train_loader, val_loader, mc_samples=MC_SAMPLES, eval_every=EVAL_EVERY)
 	plot_runs(runs)
 	save_runs(runs)
 

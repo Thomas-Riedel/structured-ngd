@@ -9,8 +9,6 @@ from optimizers.noisy_optimizer import *
 class ResNet(nn.Module):
     def __init__(self, model_type='resnet18',
                  num_classes=10,
-                 num_samples=3,
-                 N=50000,
                  device='cuda'):
         super(ResNet, self).__init__()
 
@@ -45,35 +43,11 @@ class ResNet(nn.Module):
                              f"Choose one of {model_types}.")
             
         self.init_weights()
-        self.num_classes = num_classes  
-        # Training set size
-        self.N = N
+        self.num_classes = num_classes
         self.device = device
 
     def forward(self, x):
         return self.model(x)
-        # else:
-        #     M = len(z[0])
-        #     preds = torch.zeros((M, x.shape[0], self.num_classes), device=self.device)
-        #     # Extract parameters from model as vector
-        #     p = parameters_to_vector(self.model.parameters())
-        #     for i in range(M):
-        #         # z_i ~ N(mu, (B B^T)^{-1})
-        #         # Overwrite model weights
-        #         if i > 0:
-        #             for j, param in enumerate(self.model.parameters()):
-        #                 z_i = z[j][i].reshape(param.shape)
-        #                 z_prev_i = z[j][i-1].reshape(param.shape)
-        #                 param.data.add_(z_i - z_prev_i)
-        #         else:
-        #             for j, param in enumerate(self.model.parameters()):
-        #                 z_i =  z[j][i].reshape(param.shape)
-        #                 param.data.add_(z_i)
-        #         # Run forward pass (without sampling again!)
-        #         preds[i] = self(x, z=None)
-        #     # Return model parameters to original state
-        #     vector_to_parameters(p, self.model.parameters())
-        #     return preds
 
     def train(self, data_loader, optimizer, epoch=0, eval_every=1,
               loss_fn=nn.CrossEntropyLoss()):
@@ -90,20 +64,15 @@ class ResNet(nn.Module):
             images = images.to(self.device)
             labels = labels.to(self.device)
 
-            # zero the parameter gradients
-            optimizer.zero_grad()
-
-            if isinstance(optimizer, NoisyOptimizer):
-                # Perform forward pass, compute loss, backpropagate
-                # Take optimizer step
-                loss, preds = optimizer.step(images, labels, loss_fn)
-            else:
-                # Perform forward pass, compute loss, backpropagate
+            def closure():
+                optimizer.zero_grad()
                 preds = self(images)
                 loss = loss_fn(preds, labels)
                 loss.backward()
-                # Take optimizer step
-                optimizer.step()
+                return loss, preds
+
+            # Perform forward pass, compute loss, backpropagate, update parameters
+            loss, preds = optimizer.step(closure)
             print(loss.item())
 
             # Record metrics

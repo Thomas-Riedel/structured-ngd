@@ -2,175 +2,193 @@ import numpy as np
 import torch
 from matrix_groups.triangular import MUp
 from optimizers.noisy_optimizer import *
-from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 
 class RankCov(NoisyOptimizer):
-    def __init__(self, model, N, k=1, lr=1e-3, eta=0.4, damping=0.01, betas=(0.9, 0.999), gamma=1, M=1,
-                 weight_decay=0, device='cuda'):
+    def __init__(self, params, data_size, rank=1, lr=1e-3, momentum_grad=0.9, damping=0.01, mc_samples=1,
+                 prior_precision=0.4, gamma=1, device='cuda', momentum_hess=None, hess_init=None):
         """
 
-        :param model:
-        :param N:
+        :param params:
+        :param data_size:
         :param k:
         :param lr:
+        :param mc_samples:
         :param eta:
         :param damping:
-        :param betas:
+        :param beta:
         :param gamma:
-        :param M:
-        :param weight_decay:
         :param device:
         """
-        if not 0.0 <= lr:
-            raise ValueError("Invalid learning rate: {}".format(lr))
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-        if not 0.0 <= weight_decay:
-            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+        assert data_size >= 1
+        assert (type(rank) == int) and (rank >= 0)
+        assert lr > 0.0
+        assert momentum_grad >= 0.0
+        assert mc_samples >= 1
+        assert prior_precision > 0.0
+        assert damping >= 0.0
+        if momentum_hess is None:
+            momentum_hess = 1.0 - lr
 
-        self.model = model
-        params = model.parameters()
-        self.N = N
-        self.M = M
-        self.eta = eta
+        self.data_size = data_size
+        self.mc_samples = mc_samples
         self.gamma = gamma
-        self.damping = damping
-        self.eps = 1e-9
         self.device = device
         
-        defaults = dict(lr=lr, betas=betas,
-                        weight_decay=weight_decay)
+        defaults = dict(lr=lr, data_size=data_size, rank=rank, momentum_grad=momentum_grad, mc_samples=mc_samples,
+                        momentum_hess=momentum_hess, damping=damping, prior_precision=prior_precision)
         super(NoisyOptimizer, self).__init__(params, defaults)
 
-        d_is = []
+        self._init_momentum_buffers()
+        self._reset_param_and_grad_samples(hess_init)
+
+        self.d = np.sum(self.d_is)
+        print(f"d = {self.d:,}")
+        print(f"d_i = {self.d_is}")
+
+    def _init_momentum_buffers(self, hess_init):
+        self.d_is = []
         for group in self.param_groups:
             params = group['params']
-            group['momentum'], group['scales'] = [], []
-            for p in params:
+            eta = group['prior_precision']
+            k = group['rank']
+            n = group['data_size']
+            damping = group['damping']
+            mc_samples = group['mc_samples']
+            for i, p in enumerate(params):
+                state = self.state[p]
                 d_i = int(np.prod(p.shape))
-                d_is.append(d_i)
-                group['momentum'].append(torch.zeros(d_i, 1, device=self.device))
+                self.d_is.append(d_i)
+                state['momentum'] = torch.zeros(d_i, 1, device=self.device)
 
                 # Initialize precision S to prior precision eta / N * I,
                 # i.e., B = sqrt(eta / N) * I
                 # Note that we cap k to d_i since k \in [0, d_i]
-                b_init = np.sqrt(eta / N + damping) * MUp.eye(d_i,
-                                                              np.minimum(d_i, k),
-                                                              device=self.device)
-                group['scales'].append(b_init) # (1)
-        self.d = np.sum(d_is)
-        print(f"d = {self.d:,}")
-        print(f"d_i = {d_is}")
-        assert((type(k) == int) and (0 <= k <= self.d))
+                identity = MUp.eye(d_i,
+                                   np.minimum(d_i, k),
+                                   device=self.device)
+                if hess_init is None:
+                    state['scale'] = np.sqrt(eta / n + damping) * identity
+                else:
+                    state['scale'] = hess_init * identity
+                # For gradient sample collection
+                state['grad_samples'] = torch.zeros((mc_samples, np.prod(p.shape), 1), device=self.device)
+                # t counter
+                state['step'] = 0
+                if k > d_i:
+                    raise Warning(f"The rank parameter {k} at layer {i} is bigger than the number of parameters {d_i} "
+                                  f"and will be capped, i.e. k_{i} := {d_i}.")
+
+    def _reset_param_and_grad_samples(self):
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.requires_grad:
+                    self.state[p]['param_samples'] = []
+                    self.state[p]['grad_samples'] = []
 
     @torch.no_grad()
-    def sample(self, M):
+    def sample(self):
         """
         Return list z in shape [num_layers, M, *param_dim]
         """
-        N = self.N
-        params, scales = self.param_groups[0]['params'], self.param_groups[0]['scales']
-        z = None
-        for p, B in zip(params, scales):
-            # z_i ~ N(0, (B B^T)^{-1})
-            sample = p.reshape(-1) + torch.rsqrt(torch.tensor(N)) * B.sample(mu=0, n=M).reshape((M, -1))
-            if z is None:
-                z = sample
-                continue
-            z = torch.cat((z, sample), dim=1)
-        return z
+        for group in self.param_groups:
+            n = group['data_size']
+            damping = group['damping']
+            mc_samples = group['mc_samples']
+            for p in group['params']:
+                state = self.state[p]
+                # z_i ~ N(0, n (B B^T)^{-1})
+                state['param_samples'] = (torch.sqrt(torch.tensor(n)) * state['scale'].add_id(np.sqrt(damping))).sample(mu=p.reshape((-1, 1)), n=mc_samples).reshape((mc_samples, -1, 1))
 
-    def step(self, images, labels, loss_fn, closure=None):
+    @torch.no_grad()
+    def step(self, closure=None):
         """Performs a single optimization step.
-
-        Args:
-            z (nd.array): samples from posterior distribution
-            closure (callable): A closure that reevaluates the model
-                and returns the loss.
         """
-        M = self.M
-        z = self.sample(M) # (2)
-        params = parameters_to_vector(self.param_groups[0]['params'])
+        self.sample() # (2)
+        self._stash_param_averages()
+
+        # Save params for each param group
+        # Sample for each param group and parameter, and store the sample
+        # Compute closure and save gradients
+        # Restore original parameters and update parameters
         if closure is None:
-            def closure(i):
-                self.zero_grad()
-                # z_i ~ N(mu, (B B^T)^{-1})
-                # Overwrite model weights
-                vector_to_parameters(z[i], self.model.parameters())
-                # Run forward pass (without sampling again!)
-                preds = self.model(images)
-
-                loss = loss_fn(preds, labels)
-                loss.backward()
-                return loss, preds
-        g = []
-        preds = None
-        loss = 0
-        for j in range(M):
-            l_i, pred = closure(j)
-
-            loss += l_i
-            if preds is None:
-                preds = pred
-            else:
-                preds += pred
-            for i, p in enumerate(self.param_groups[0]['params']):
-                if p.grad is None:
-                    continue
-                if j == 0:
-                    g_i = torch.zeros((M, np.prod(p.grad.shape), 1), device=self.device)
-                    g.append(g_i)
-                g[i][j] = p.grad.reshape((-1, 1))
-        preds /= M
-        loss /= M
-        z = z.reshape((z.shape[0], z.shape[1], 1))
-
-        # Return model parameters to original state
-        vector_to_parameters(params, self.model.parameters())
-
-        with torch.no_grad():
+            raise ValueError("Closure needs to be specified for Noisy Optimizer!")
+        outputs = []
+        losses = []
+        for i in range(self.mc_samples):
             for group in self.param_groups:
-                lr = group['lr']
-                beta1, beta2 = group['betas']
-                N = self.N
-                eta = self.eta
-                gamma = self.gamma
-                eps = self.eps
-                damping = self.damping
+                for p in group['params']:
+                    z = self.state[p]['param_samples']
+                    z_i = z[i].reshape(p.shape)
+                    p.data = z_i
+            with torch.enable_grad():
+                loss, output = closure()
 
-                # For each layer
-                for i, (p, grad, m, B) in enumerate(zip(group['params'], g, group['momentum'], group['scales'])):
+            losses.append(loss.detach())
+            outputs.append(output.detach())
+            for group in self.param_groups:
+                for p in group['params']:
                     if p.grad is None:
                         continue
                     state = self.state[p]
-                    if len(state) == 0:
-                        state['step'] = -1
-                    # update the steps for each param group update
-                    state['step'] += 1
+                    state['grad_samples'][i] = p.grad.reshape((-1, 1))
+        avg_pred = torch.mean(torch.stack(outputs, dim=0), axis=0)
+        avg_loss = torch.mean(torch.stack(losses, dim=0))
 
-                    mu = p.reshape((-1, 1))
-                    g_bar = torch.mean(grad, axis=0)
-                    g_mu = gamma * eta / N * mu + g_bar # (3)
-                    m.mul_(beta1).add_((1 - beta1) * g_mu) # (4)
+        # Restore model parameters to original state
+        self._restore_params()
 
-                    t = state['step']
-                    m_bar = m / (1 - beta1 ** (t + 1)) # (5)
-                    B_bar = torch.rsqrt(torch.tensor(1 - beta2 ** t + eps)) * B.add_id(-np.sqrt(eta / N + damping))
-                    B_bar = B_bar.add_id(np.sqrt(eta / N + damping))
+        # Update parameters
+        self._update()
+        return avg_loss, avg_pred
 
-                    # Evaluate matrix vector products so intermediate results stay in memory
-                    update = (B_bar.inv().t() @ (B_bar.inv() @ m_bar)).reshape(p.shape) # (7)
-                    p.add_(-lr * update)
+    def _update(self):
+        gamma = self.gamma
+        for group in self.param_groups:
+            lr = group['lr']
+            beta1, beta2 = group['momentum_grad'], group['momentum_hess']
+            n = group['data_size']
+            eta = group['prior_precision']
+            damping = group['damping']
 
-                    group['scales'][i] = B.update(lr, eta, N, grad, z[:, :mu.shape[0]] - mu) # (6) & (8)
-                    z = z[:, mu.shape[0]:]
-            return loss, preds
+            # For each layer
+            for i, p in enumerate(group['params']):
+                if p.grad is None:
+                    continue
+                state = self.state[p]
+
+                mu = p.reshape((-1, 1))
+                g_bar = torch.mean(state['grad_samples'], axis=0)
+                g_mu = gamma * eta / n * mu + g_bar # (3)
+                state['momentum'].mul_(beta1).add_((1 - beta1) * g_mu) # (4)
+
+                t = state['step']
+                m_bar = state['momentum'] / (1 - beta1 ** (t + 1)) # (5)
+                # B_bar = torch.rsqrt(torch.tensor(1 - beta2 ** t + eps)) * state['scale'].add_id(-np.sqrt(eta / n + damping))
+                B_bar = state['scale'].add_id(np.sqrt(eta / n + damping))
+
+                # Evaluate matrix vector products so intermediate results stay in memory
+                update = (B_bar.inv().t() @ (B_bar.inv() @ m_bar)).reshape(p.shape) # (7)
+                p.add_(-lr * update)
+
+                state['scale'] = state['scale'].add_id(np.sqrt(damping)).update(beta2, eta, n, state['grad_samples'], state['param_samples'] - mu) # (6) & (8)
+
+                # update the steps for each param group update
+                state['step'] += 1
+
+    def _stash_param_averages(self):
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.requires_grad:
+                    self.state[p]['param_average'] = p.data
+
+    def _restore_params(self):
+        for group in self.param_groups:
+            for p in group['params']:
+                p.data = self.state[p]['param_average']
     
     def elbo(self, loss_fn):
-        def f(preds, labels, M=1, gamma=1):
+        def f(preds, labels, gamma=1):
             """Compute ELBO: L(mu, Sigma) = E_q[sum l_i] - gamma * KL(q || p)
             """
             # When q, p both MVG, we have
