@@ -1,25 +1,12 @@
 import numpy as np 
 import torch
-from matrix_groups.triangular import MUp
+from matrix_groups.triangular import MUp, MLow
 from optimizers.noisy_optimizer import *
 
 
-class RankCov(NoisyOptimizer):
+class StructuredNGD(NoisyOptimizer):
     def __init__(self, params, data_size, rank=1, lr=1e-3, momentum_grad=0.9, damping=0.01, mc_samples=1,
-                 prior_precision=0.4, gamma=1, device='cuda', momentum_hess=None, hess_init=None):
-        """
-
-        :param params:
-        :param data_size:
-        :param k:
-        :param lr:
-        :param mc_samples:
-        :param eta:
-        :param damping:
-        :param beta:
-        :param gamma:
-        :param device:
-        """
+                 prior_precision=0.4, gamma=1, device='cuda', momentum_hess=None, hess_init=None, method='rank_cov', debias=True):
         assert data_size >= 1
         assert (type(rank) == int) and (rank >= 0)
         assert lr > 0.0
@@ -30,23 +17,28 @@ class RankCov(NoisyOptimizer):
         if momentum_hess is None:
             momentum_hess = 1.0 - lr
 
+        if not method in ['rank_cov', 'arrowhead']:
+            raise NotImplementedError()
+
+        self.method = method
         self.data_size = data_size
         self.mc_samples = mc_samples
         self.gamma = gamma
         self.device = device
+        self.debias = debias
         
         defaults = dict(lr=lr, data_size=data_size, rank=rank, momentum_grad=momentum_grad, mc_samples=mc_samples,
                         momentum_hess=momentum_hess, damping=damping, prior_precision=prior_precision)
         super(NoisyOptimizer, self).__init__(params, defaults)
 
-        self._init_momentum_buffers()
-        self._reset_param_and_grad_samples(hess_init)
+        self._init_momentum_buffers(method, hess_init)
+        self._reset_param_and_grad_samples()
 
         self.d = np.sum(self.d_is)
         print(f"d = {self.d:,}")
         print(f"d_i = {self.d_is}")
 
-    def _init_momentum_buffers(self, hess_init):
+    def _init_momentum_buffers(self, method, hess_init):
         self.d_is = []
         for group in self.param_groups:
             params = group['params']
@@ -64,15 +56,18 @@ class RankCov(NoisyOptimizer):
                 # Initialize precision S to prior precision eta / N * I,
                 # i.e., B = sqrt(eta / N) * I
                 # Note that we cap k to d_i since k \in [0, d_i]
-                identity = MUp.eye(d_i,
-                                   np.minimum(d_i, k),
-                                   device=self.device)
+                if method == 'rank_cov':
+                    identity = MUp.eye(d_i,
+                                       np.minimum(d_i, k),
+                                       device=self.device)
+                else:
+                    identity = MLow.eye(d_i,
+                                       np.minimum(d_i, k),
+                                       device=self.device)
                 if hess_init is None:
                     state['scale'] = np.sqrt(eta / n + damping) * identity
                 else:
                     state['scale'] = hess_init * identity
-                # For gradient sample collection
-                state['grad_samples'] = torch.zeros((mc_samples, np.prod(p.shape), 1), device=self.device)
                 # t counter
                 state['step'] = 0
                 if k > d_i:
@@ -83,11 +78,12 @@ class RankCov(NoisyOptimizer):
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
-                    self.state[p]['param_samples'] = []
-                    self.state[p]['grad_samples'] = []
+                    state = self.state[p]
+                    state['param_samples'] = []
+                    state['grad_samples'] = []#torch.zeros((self.mc_samples, np.prod(p.shape), 1), device=self.device)
 
     @torch.no_grad()
-    def sample(self):
+    def _sample_params(self):
         """
         Return list z in shape [num_layers, M, *param_dim]
         """
@@ -101,18 +97,7 @@ class RankCov(NoisyOptimizer):
                 state['param_samples'] = (torch.sqrt(torch.tensor(n)) * state['scale'].add_id(np.sqrt(damping))).sample(mu=p.reshape((-1, 1)), n=mc_samples).reshape((mc_samples, -1, 1))
 
     @torch.no_grad()
-    def step(self, closure=None):
-        """Performs a single optimization step.
-        """
-        self.sample() # (2)
-        self._stash_param_averages()
-
-        # Save params for each param group
-        # Sample for each param group and parameter, and store the sample
-        # Compute closure and save gradients
-        # Restore original parameters and update parameters
-        if closure is None:
-            raise ValueError("Closure needs to be specified for Noisy Optimizer!")
+    def _sample_grads(self, closure):
         outputs = []
         losses = []
         for i in range(self.mc_samples):
@@ -131,7 +116,24 @@ class RankCov(NoisyOptimizer):
                     if p.grad is None:
                         continue
                     state = self.state[p]
-                    state['grad_samples'][i] = p.grad.reshape((-1, 1))
+                    state['grad_samples'].append(p.grad.reshape((-1, 1)))
+            return losses, outputs
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        """Performs a single optimization step.
+        """
+        self._stash_param_averages()
+        self._sample_params() # (2)
+
+        # Save params for each param group
+        # Sample for each param group and parameter, and store the sample
+        # Compute closure and save gradients
+        # Restore original parameters and update parameters
+        if closure is None:
+            raise ValueError("Closure needs to be specified for Noisy Optimizer!")
+
+        losses, outputs = self._sample_grads(closure)
         avg_pred = torch.mean(torch.stack(outputs, dim=0), axis=0)
         avg_loss = torch.mean(torch.stack(losses, dim=0))
 
@@ -140,6 +142,9 @@ class RankCov(NoisyOptimizer):
 
         # Update parameters
         self._update()
+
+        # Clear sample buffers
+        self._reset_param_and_grad_samples()
         return avg_loss, avg_pred
 
     def _update(self):
@@ -156,25 +161,30 @@ class RankCov(NoisyOptimizer):
                 if p.grad is None:
                     continue
                 state = self.state[p]
+                state['grad_samples'] = torch.stack(state['grad_samples'], dim=0)
 
                 mu = p.reshape((-1, 1))
                 g_bar = torch.mean(state['grad_samples'], axis=0)
                 g_mu = gamma * eta / n * mu + g_bar # (3)
                 state['momentum'].mul_(beta1).add_((1 - beta1) * g_mu) # (4)
 
-                t = state['step']
-                m_bar = state['momentum'] / (1 - beta1 ** (t + 1)) # (5)
-                # B_bar = torch.rsqrt(torch.tensor(1 - beta2 ** t + eps)) * state['scale'].add_id(-np.sqrt(eta / n + damping))
-                B_bar = state['scale'].add_id(np.sqrt(eta / n + damping))
+                if self.debias:
+                    eps = 1e-9
+                    t = state['step']
+                    m_bar = state['momentum'] / (1 - beta1 ** (t + 1)) # (5)
+                    b_bar = torch.rsqrt(torch.tensor(1 - beta2 ** t + eps)) * state['scale'].add_id(-np.sqrt(eta / n + damping))
+                    b_bar = b_bar.add_id(np.sqrt(eta / n + damping))
+                    state['step'] += 1
+                else:
+                    m_bar = state['momentum']
+                    b_bar = state['scale']
+                b_bar = b_bar.add_id(np.sqrt(damping))
 
                 # Evaluate matrix vector products so intermediate results stay in memory
-                update = (B_bar.inv().t() @ (B_bar.inv() @ m_bar)).reshape(p.shape) # (7)
+                update = (b_bar.inv().t() @ (b_bar.inv() @ m_bar)).reshape(p.shape) # (7)
                 p.add_(-lr * update)
 
-                state['scale'] = state['scale'].add_id(np.sqrt(damping)).update(beta2, eta, n, state['grad_samples'], state['param_samples'] - mu) # (6) & (8)
-
-                # update the steps for each param group update
-                state['step'] += 1
+                state['scale'] = state['scale'].add_id(np.sqrt(damping))._update(beta2, eta, n, state['grad_samples'], state['param_samples'] - mu) # (6) & (8)
 
     def _stash_param_averages(self):
         for group in self.param_groups:

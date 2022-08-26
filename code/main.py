@@ -77,7 +77,7 @@ def run(epochs, model, optimizers, train_loader, val_loader, mc_samples=1, eval_
 
 	for optimizer in optimizers:
 		model.init_weights()
-		if optimizer is RankCov:
+		if optimizer is StructuredNGD:
 			optimizer = optimizer(model.parameters(), len(train_loader.dataset), rank=0, lr=lr, device=device, mc_samples=mc_samples)
 		else:
 			optimizer = optimizer(model.parameters(), lr=lr)
@@ -179,7 +179,7 @@ def main():
 	num_classes = len(train_loader.dataset.classes)
 
 	model = ResNet(model_type=MODEL, num_classes=num_classes, device=device)
-	optimizers = [RankCov]
+	optimizers = [StructuredNGD]
 
 	runs = run(EPOCHS, model, optimizers, train_loader, val_loader, mc_samples=MC_SAMPLES, eval_every=EVAL_EVERY)
 	plot_runs(runs)

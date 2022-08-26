@@ -12,7 +12,7 @@ def h(x):
 
 
 class MUp:
-    def __init__(self, m_a, m_b, m_d, k, device='cuda'):
+    def __init__(self, m_a, m_b, m_d, k, device='cuda', damping=0):
         assert(m_a.shape[0] == m_a.shape[1])
         assert(m_a.shape[1] == m_b.shape[0])
         assert(m_b.shape[1] == m_d.shape[0])
@@ -24,6 +24,7 @@ class MUp:
         self.m_b = m_b.to(device)
         self.m_d = m_d.reshape((-1, 1)).to(device)
         self.shape = self.size()
+        self.damping = damping
         self.inverse = None
         self.a_inv = None
         self.d_inv = None
@@ -54,13 +55,18 @@ class MUp:
         if self.inverse is None:
             m_a_inv = self.m_a_inv()
             m_d_inv = self.m_d_inv()
-            self.inverse = MUp(m_a_inv, -m_a_inv @ (self.m_b * m_d_inv.T), m_d_inv, self.k, device=self.device)
+            self.inverse = MUp(m_a_inv,
+                               -m_a_inv @ (self.m_b * m_d_inv.T),
+                               m_d_inv,
+                               self.k,
+                               device=self.device,
+                               damping=self.damping)
         return self.inverse
 
     def m_d_inv(self):
         # m_d is diagonal matrix
         if self.d_inv is None:
-            self.d_inv = 1/self.m_d
+            self.d_inv = 1/(self.m_d + self.damping)
         return self.d_inv
 
     def m_a_inv(self):
@@ -68,7 +74,7 @@ class MUp:
         Calculate inverse for invertible k x k matrix block m_a
         """
         if self.a_inv is None:
-            self.a_inv = torch.linalg.inv(self.m_a)
+            self.a_inv = torch.linalg.inv(self.m_a + self.damping * torch.eye(self.k, device=self.device))
         return self.a_inv
 
     def full(self):
@@ -363,7 +369,7 @@ class MUp:
         z = mu + (self.inv().t() @ eps)
         return z.T
 
-    def update(self, beta, eta, N, g, v, gamma=1):
+    def _update(self, beta, eta, N, g, v, gamma=1):
         """Perform update step 
           B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -409,7 +415,7 @@ class MUp:
 
 
 class MLow:
-    def __init__(self, m_a, m_c, m_d, k, device='cuda'):
+    def __init__(self, m_a, m_c, m_d, k, device='cuda', damping=0):
         self.k = k
         self.d = m_d.shape[0] + k
         self.device = device
@@ -417,6 +423,10 @@ class MLow:
         self.m_c = m_c.to(device)
         self.m_d = m_d.to(device).reshape((-1, 1))
         self.shape = self.size()
+        self.damping = damping
+        self.inverse = None
+        self.a_inv = None
+        self.d_inv = None
 
     @staticmethod
     def eye(d, k, device='cpu'):
@@ -438,6 +448,9 @@ class MLow:
         self.m_d = self.m_d.reshape((-1, 1)).to(device)
         return self
 
+    def t(self):
+        return MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, self.device)
+
     def __repr__(self):
         """String representation
         """
@@ -448,6 +461,45 @@ class MLow:
         string += "\nm_d: \n\t"
         string += str(self.m_d)
         return string
+
+    def __add__(self, x):
+        """
+          (Elementwise) Addition X + M
+        """
+        x = x.to(self.device)
+        if isinstance(x, MLow):
+            assert((self.size() == x.size()) and (self.k == x.k))
+            return MLow(x.m_a + self.m_a,
+                       x.m_c + self.m_c,
+                       x.m_d + self.m_d,
+                       self.k,
+                       device=self.device)
+        elif isinstance(x, (int, float)):
+            return MLow(x + self.m_a,
+                        x + self.m_c,
+                        x + self.m_d,
+                        self.k,
+                        device=self.device)
+        elif len(x.shape) == 2:
+            assert(x.shape == self.shape)
+            return MLow(x[:self.k, :self.k] + self.m_a,
+                        x[self.k:, :self.k] + self.m_c,
+                        torch.diag(x[self.k:, self.k:]).reshape(-1, 1) + self.m_d,
+                        self.k,
+                        device=self.device)
+        else:
+            raise ValueError()
+
+    def __radd__(self, x):
+        return self + x
+
+    def __truediv__(self, x):
+        return 1/x * self
+
+    def __neg__(self):
+        """Unary minus
+        """
+        return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device)
 
     def __mul__(self, X):
         if isinstance(X, MUp):
@@ -521,3 +573,96 @@ class MLow:
             result[:self.k] = self.m_a @ x[:self.k]
             result[self.k:] = self.m_c @ x[:self.k] + self.m_d * x[self.k:]
             return result
+
+    def inv(self):
+        """
+        Calculate inverse of lower triangular block matrix
+            ( m_a    0  )             ( m_a^{-1}                     0    )
+        M = (           ) => M^{-1} = (                                   )
+            ( m_c   m_d )             ( -m_d^{-1} m_c m_a^{-1}   m_d^{-1} )
+        """
+        if self.inverse is None:
+            m_a_inv = self.m_a_inv()
+            m_d_inv = self.m_d_inv()
+            self.inverse = MLow(m_a_inv, -m_d_inv * (self.m_c @ m_a_inv), m_d_inv, self.k, device=self.device)
+        return self.inverse
+
+    def m_a_inv(self):
+        """
+        Calculate inverse for invertible k x k matrix block m_a
+        """
+        if self.a_inv is None:
+            self.a_inv = torch.linalg.inv(self.m_a + self.damping * torch.eye(self.k, device=self.device))
+        return self.a_inv
+
+    def m_d_inv(self):
+        # m_d is diagonal matrix
+        if self.d_inv is None:
+            self.d_inv = 1/(self.m_d + self.damping)
+        return self.d_inv
+
+    def add_id(self, alpha=1):
+        return MLow(
+            self.m_a + alpha * torch.eye(self.k, device=self.device),
+            self.m_c,
+            self.m_d + alpha,
+            self.k,
+            self.device,
+            self.damping
+        )
+
+    def sample(self, mu=0, n=1):
+        """
+        Sample z ~ N(mu, Sigma) with covariance matrix
+          Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2}):
+        z = mu + U @ eps_rank + diag(0_k, m_d^{-1} @ eps_diag),
+          where eps_rank ~ N(0, I_k), eps_diag ~ N(0, I_{d-k})
+        """
+
+        eps = torch.randn((self.d, n), device=self.device)
+        z = mu + (self.inv().t() @ eps)
+        return z.T
+
+    def _update(self, beta, eta, N, g, v, gamma=1):
+        """Perform update step
+          B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
+        where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
+        by zeroing out entries.
+        This function however avoids storing intermediate d x d matrices and
+        computes the update step much more efficiently (see algorithm for details).
+        """
+        assert(gamma >= 0)
+        factor = gamma * eta / N
+        b_inv = self.inv()
+        m_a_inv = b_inv.m_a
+        m_d_inv = b_inv.m_d
+
+        if self.k == 0:
+            m_a = torch.zeros_like(self.m_a)
+            m_c = torch.zeros_like(self.m_c)
+        else:
+            x_1 = self.m_a.T @ v[:, :self.k] + self.m_c.T @ v[:, self.k:]
+            x_2 = self.m_d * v[:, self.k:]
+            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a + g[:, self.k:].transpose(1, 2) @ self.m_c
+            y_2 = (g[:, self.k:] * self.m_d).transpose(1, 2)
+
+            M = torch.mean(x_1 @ y_1, axis=0)
+            m_a = N/2 * (M + M.T)
+
+            m_c = N/2 * torch.mean(x_1 @ y_2, axis=0).T
+            m_c += N/2 * torch.mean(x_2 @ y_1, axis=0)
+
+            if gamma > 0:
+                identity = torch.eye(self.k, device=self.device)
+                m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ (m_d_inv ** 2 * self.m_c)) @ m_a_inv - gamma * identity
+                m_c += -factor * m_d_inv ** 2 * self.m_c @ m_a_inv
+
+        m_d = N * torch.mean(self.m_d ** 2 * v[:, self.k:] * g[:, self.k:], axis=0)
+        if gamma > 0:
+            m_d += factor * (m_d_inv ** 2) - gamma
+        # print(h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
+
+        # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar
+        # values in the respective blocks
+        # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
+        return self @ h(beta * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
