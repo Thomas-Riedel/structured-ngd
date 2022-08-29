@@ -637,20 +637,29 @@ class MLow:
         m_a_inv = b_inv.m_a
         m_d_inv = b_inv.m_d
 
+        # Edge case handling for k = 0 and k = d
         if self.k == 0:
             m_a = torch.zeros_like(self.m_a)
             m_c = torch.zeros_like(self.m_c)
         else:
-            x_1 = self.m_a.T @ v[:, :self.k] + self.m_c.T @ v[:, self.k:]
-            x_2 = self.m_d * v[:, self.k:]
-            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a + g[:, self.k:].transpose(1, 2) @ self.m_c
-            y_2 = (g[:, self.k:] * self.m_d).transpose(1, 2)
+            x_1 = self.m_a.T @ v[:, :self.k]
+            x_2 = 0.0
+            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a
+            y_2 = 0.0
+            if self.k == self.d:
+                m_c = torch.zeros_like(self.m_c)
+                m_d = torch.zeros_like(self.m_d)
+            else:
+                x_1 += self.m_c.T @ v[:, self.k:]
+                x_2 += self.m_d * v[:, self.k:]
+                y_1 += g[:, self.k:].transpose(1, 2) @ self.m_c
+                y_2 += (g[:, self.k:] * self.m_d).transpose(1, 2)
+
+                m_c = N/2 * torch.mean(x_1 @ y_2, axis=0).T
+                m_c += N/2 * torch.mean(x_2 @ y_1, axis=0)
 
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a = N/2 * (M + M.T)
-
-            m_c = N/2 * torch.mean(x_1 @ y_2, axis=0).T
-            m_c += N/2 * torch.mean(x_2 @ y_1, axis=0)
 
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)

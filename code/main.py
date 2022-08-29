@@ -28,10 +28,13 @@ def parse_args():
 	parser.add_argument('--dataset', type=str, default="CIFAR10")
 	parser.add_argument('--model', type=str, default="resnet18")
 	parser.add_argument('--batch_size', type=int, default=64)
+	parser.add_argument('--k', type=str, default='0')
 	parser.add_argument('--mc_samples', type=int, default=1)
 	parser.add_argument('--eval_every', type=int, default=10)
 
 	args = parser.parse_args(sys.argv[1:])
+	print(list(range(*[int(x) for x in args.k.split('to')])))
+
 	return args.epochs, args.dataset, args.model, args.batch_size, args.mc_samples, args.eval_every
 
 
@@ -78,7 +81,7 @@ def run(epochs, model, optimizers, train_loader, val_loader, mc_samples=1, eval_
 	for optimizer in optimizers:
 		model.init_weights()
 		if optimizer is StructuredNGD:
-			optimizer = optimizer(model.parameters(), len(train_loader.dataset), rank=0, lr=lr, device=device, mc_samples=mc_samples)
+			optimizer = optimizer(model.parameters(), len(train_loader.dataset), k=1, lr=lr, device=device, mc_samples=mc_samples)
 		else:
 			optimizer = optimizer(model.parameters(), lr=lr)
 		scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
