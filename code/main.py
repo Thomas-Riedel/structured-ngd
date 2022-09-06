@@ -81,7 +81,8 @@ def run(epochs, model, optimizers, train_loader, val_loader, mc_samples=1, eval_
 	for optimizer in optimizers:
 		model.init_weights()
 		if optimizer is StructuredNGD:
-			optimizer = optimizer(model.parameters(), len(train_loader.dataset), k=1, lr=lr, device=device, mc_samples=mc_samples)
+			optimizer = optimizer(model.parameters(), len(train_loader.dataset), k=0, lr=lr, device=device,
+								  mc_samples=mc_samples, structure='rank_cov')
 		else:
 			optimizer = optimizer(model.parameters(), lr=lr)
 		scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
