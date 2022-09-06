@@ -31,7 +31,7 @@ class StructuredNGD(NoisyOptimizer):
                         momentum_hess=momentum_hess, damping=damping, prior_precision=prior_precision)
         super(NoisyOptimizer, self).__init__(params, defaults)
 
-        self._init_momentum_buffers(structure, hess_init)
+        self._init_momentum_buffers(hess_init)
         self._reset_param_and_grad_samples()
 
         self.d = np.sum(self.d_is)
@@ -86,7 +86,6 @@ class StructuredNGD(NoisyOptimizer):
         """Performs a single optimization step.
         """
         self._stash_param_averages()
-        # self._sample_params() # (2)
 
         # Save params for each param group
         # Sample for each param group and parameter, and store the sample
@@ -98,7 +97,7 @@ class StructuredNGD(NoisyOptimizer):
         losses = []
         outputs = []
         for _ in range(self.mc_samples):
-            self._sample_weight_and_collect()
+            self._sample_weight_and_collect() # (2)
             with torch.enable_grad():
                 loss, output = closure()
             losses.append(loss.detach())
@@ -136,23 +135,21 @@ class StructuredNGD(NoisyOptimizer):
                     p.data = p_sample.reshape(p.shape)
                     self.state[p]['param_samples'].append(p_sample.reshape((-1, 1)))
 
-        for group in self.param_groups:
-            for p in group['params']:
-                if p.requires_grad:
-                    self.state[p]['param_samples'] = torch.stack(self.state[p]['param_samples'], dim=0)
-
     def _collect_grad_samples(self):
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
                     self.state[p]['grad_samples'].append(p.grad.reshape((-1, 1)))
 
+    def _stack_samples(self):
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
+                    self.state[p]['param_samples'] = torch.stack(self.state[p]['param_samples'], dim=0)
                     self.state[p]['grad_samples'] = torch.stack(self.state[p]['grad_samples'], dim=0)
 
     def _update(self):
+        self._stack_samples()
         for group in self.param_groups:
             lr = group['lr']
             beta1, beta2 = group['momentum_grad'], group['momentum_hess']

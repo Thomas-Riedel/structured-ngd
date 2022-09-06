@@ -6,16 +6,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set()
 import pickle
-
-import torch
-import torch.nn as nn
+import re
+import itertools
 
 from torchvision.datasets import FashionMNIST, MNIST, CIFAR10
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 from torchvision import transforms
 
-from torchmetrics.functional import calibration_error
+from torchmetrics.functional import accuracy, precision, recall, f1_score, calibration_error
 from torch.optim import Adam
 
 from models.resnet import *
@@ -28,14 +27,50 @@ def parse_args():
 	parser.add_argument('--dataset', type=str, default="CIFAR10")
 	parser.add_argument('--model', type=str, default="resnet18")
 	parser.add_argument('--batch_size', type=int, default=64)
+	parser.add_argument('--lr', type=str, default='1e-3')
 	parser.add_argument('--k', type=str, default='0')
-	parser.add_argument('--mc_samples', type=int, default=1)
+	parser.add_argument('--mc_samples', type=str, default='1')
+	parser.add_argument('--structure', type=str, default='rank_cov')
 	parser.add_argument('--eval_every', type=int, default=10)
 
 	args = parser.parse_args(sys.argv[1:])
-	print(list(range(*[int(x) for x in args.k.split('to')])))
+	args.lr, args.k, args.mc_samples = parse_vals([args.lr, args.k, args.mc_samples],
+												  [float, int, int])
+	args.structure = len(args.lr) * [args.structure]
 
-	return args.epochs, args.dataset, args.model, args.batch_size, args.mc_samples, args.eval_every
+	return args.epochs, args.dataset, args.model, args.batch_size, args.lr, args.k, args.mc_samples, args.structure, args.eval_every
+
+
+def parse_vals(args, types):
+	def make_sequence(type):
+		def f(val):
+			if type == int:
+				val_list = [type(x) for x in re.split(r'to|step', val)]
+				if len(val_list) == 3:
+					start, end, step = val_list
+				elif len(val_list) == 2:
+					start, end = val_list
+					step = 1
+				elif len(val_list) == 1:
+					start = val_list[0]
+					end = start + 1
+					step = 1
+				else:
+					raise ValueError("Supply your parameter as <start>to<end>step<step_size>")
+				return list(range(start, end, step))
+			else:
+				return [type(val)]
+		return f
+	result = []
+	for arg, type in zip(args, types):
+		result.append(list(sorted(set(itertools.chain.from_iterable(map(make_sequence(type), arg.split(',')))))))
+	max_length = np.max([len(x) for x in result])
+	for i in range(len(result)):
+		if len(result[i]) == 1:
+			result[i] *= max_length
+		elif len(result[i]) < max_length:
+			raise ValueError()
+	return result
 
 
 def load_data(dataset, batch_size):
@@ -72,50 +107,65 @@ def load_data(dataset, batch_size):
 	return train_loader, val_loader, test_loader
 
 
-def run(epochs, model, optimizers, train_loader, val_loader, mc_samples=1, eval_every=1):
+def run(epochs, model, optimizers, train_loader, val_loader, adam_params=None, ngd_params=None, metrics=[], eval_every=1):
 	loss_fn = nn.CrossEntropyLoss()
 	runs = []
-	lr = 1e-2
 	device = model.device
 
 	for optimizer in optimizers:
-		model.init_weights()
 		if optimizer is StructuredNGD:
-			optimizer = optimizer(model.parameters(), len(train_loader.dataset), k=0, lr=lr, device=device,
-								  mc_samples=mc_samples, structure='rank_cov')
+			params = ngd_params
 		else:
-			optimizer = optimizer(model.parameters(), lr=lr)
-		scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-
-		times = []
-		val_acc = []
-		val_loss = []
-		iter_losses = []
-
-		for epoch in range(epochs):
-			start = time.time()
-			running_loss, iter_loss = model.train(train_loader, optimizer, epoch=epoch,
-												  loss_fn=loss_fn, eval_every=eval_every)
-			if epoch == 0:
-				times.append(0)
+			params = adam_params
+		for param in params:
+			print(optimizer.__name__, param)
+			model.init_weights()
+			if optimizer is StructuredNGD:
+				optimizer = optimizer(model.parameters(), len(train_loader.dataset), device=device, **param)
 			else:
-				times.append(time.time() - start)
+				optimizer = optimizer(model.parameters(), lr=param['lr'])
+			scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-			acc, loss = model.evaluate(val_loader)
-			val_acc.append(acc)
-			val_loss.append(loss)
-			iter_losses += iter_loss
-			scheduler.step()
+			times = []
+			val_loss = []
+			val_metrics = []
+			iter_losses = []
+			iter_metrics = []
 
-		runs.append(
-			dict(
-				name=type(optimizer).__name__,
-				optimizer=optimizer,
-				times=np.cumsum(times),
-				val_acc=val_acc,
-				val_loss=val_loss,
-				iter_loss=iter_losses,
-				time=datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+			for epoch in range(epochs):
+				start = time.time()
+				iter_loss, iter_metric = model.train(train_loader, optimizer, epoch=epoch,
+																   loss_fn=loss_fn, metrics=metrics,
+																   eval_every=eval_every)
+				if epoch == 0:
+					times.append(0)
+				else:
+					times.append(time.time() - start)
+
+				metric, loss = model.evaluate(val_loader, metrics=metrics)
+				# Append single validation metric value epoch-wise
+				for metric_key in metric.keys():
+					val_metrics[metric_key].append(metric[metric_key])
+				val_loss.append(loss)
+
+				iter_losses += iter_loss
+				# Append multiple values iteration-wise
+				for metric_key in iter_metric.keys():
+					iter_metrics[metric].append(iter_metric[metric_key])
+
+				scheduler.step()
+
+			runs.append(
+				dict(
+					name=type(optimizer).__name__,
+					optimizer=optimizer,
+					params=params,
+					times=np.cumsum(times),
+					val_metrics=val_metrics,
+					val_loss=val_loss,
+					iter_loss=iter_losses,
+					iter_metrics=iter_metrics,
+					time=datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
 		print('Finished Training')
 	return runs
 
@@ -177,15 +227,24 @@ def save_runs(runs):
 def main():
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-	EPOCHS, DATASET, MODEL, BATCH_SIZE, MC_SAMPLES, EVAL_EVERY = parse_args()
+	EPOCHS, DATASET, MODEL, BATCH_SIZE, LEARNING_RATE, K, MC_SAMPLES, STRUCTURE, EVAL_EVERY = parse_args()
+	metrics = [accuracy, precision, recall, f1_score, calibration_error]
 
 	train_loader, val_loader, test_loader = load_data(DATASET, BATCH_SIZE)
 	num_classes = len(train_loader.dataset.classes)
 
 	model = ResNet(model_type=MODEL, num_classes=num_classes, device=device)
-	optimizers = [StructuredNGD]
+	ngd_params = [
+		dict(lr=lr, k=k, mc_samples=mc_samples, structure=structure)
+		for lr, k, mc_samples, structure in zip(LEARNING_RATE, K, MC_SAMPLES, STRUCTURE)
+	]
+	adam_params = list(set(LEARNING_RATE))
+	optimizers = [Adam, StructuredNGD]
 
-	runs = run(EPOCHS, model, optimizers, train_loader, val_loader, mc_samples=MC_SAMPLES, eval_every=EVAL_EVERY)
+	runs = run(
+		EPOCHS, model, optimizers, train_loader, val_loader, adam_params=adam_params,
+		ngd_params=ngd_params, metrics=metrics, eval_every=EVAL_EVERY
+	)
 	plot_runs(runs)
 	save_runs(runs)
 

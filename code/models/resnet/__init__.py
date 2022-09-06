@@ -49,14 +49,16 @@ class ResNet(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-    def train(self, data_loader, optimizer, epoch=0, eval_every=1,
+    def train(self, data_loader, optimizer, epoch=0, metrics=[], eval_every=1,
               loss_fn=nn.CrossEntropyLoss()):
-        running_loss = 0.0
         epoch_loss = 0.0
-        iteration_losses = []
-        # iteration_ece = []
-        running_acc = 0.0
-        N = len(data_loader.dataset)
+        iter_loss = []
+        iter_metrics = {}
+        running_loss = 0.0
+        running_metrics = {}
+        for metric in metrics:
+            iter_metrics[metric.__name__] = []
+            running_metrics[metric.__name__] = 0.0
 
         for i, data in enumerate(data_loader):
             # get the inputs; data is a list of [inputs, labels]
@@ -75,20 +77,24 @@ class ResNet(nn.Module):
             loss, preds = optimizer.step(closure)
             print(loss.item())
 
-            # Record metrics
-            iteration_losses.append(loss.item())
-            # iteration_ece.append(calibration_error(preds, labels, n_bins=10, norm='l1').item())
-            # print(iteration_ece[-1])
+            # Record losses and metrics
+            iter_loss.append(loss.item())
             running_loss += loss.item()
             epoch_loss += loss.item()
-            running_acc += torch.mean((torch.argmax(preds, 1) == labels).float()).item()
+            for metric in metrics:
+                running_metrics[metric.__name__] += metric(preds, labels)
+                iter_metrics[metric.__name__].append(metric(preds, labels))
 
             if i % eval_every == (eval_every - 1):
+                print("===========================================")
                 print(f"[{epoch + 1}, {i + 1}] Total loss: {running_loss / eval_every:.3f}")
-                print(f"\tAccuracy: {running_acc / eval_every}")
                 running_loss = 0.0
-                running_acc = 0.0
-        return epoch_loss / N, iteration_losses
+                for metric in metrics:
+                    name = metric.__name__
+                    print(f"\t{name}: {running_metrics[name] / eval_every:.3f}")
+                    running_metrics[name] = 0.0
+                print("===========================================")
+        return iter_loss, iter_metrics
 
     @torch.no_grad()
     def evaluate(self, data_loader, loss_fn=nn.CrossEntropyLoss()):

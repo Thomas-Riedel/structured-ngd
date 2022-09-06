@@ -654,7 +654,7 @@ class MLow:
         z = mu + self.t().solve(eps)
         return z.T
 
-    def _update(self, beta, eta, N, g, v, gamma=1):
+    def _update(self, beta, eta, n, g, v, gamma=1):
         """Perform update step
           B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -663,39 +663,41 @@ class MLow:
         computes the update step much more efficiently (see algorithm for details).
         """
         assert(gamma >= 0)
-        factor = gamma * eta / N
+        factor = gamma * eta / n
         m_a_inv = self.m_a_inv()
         m_d_inv = self.m_d_inv()
 
+        m_a = torch.zeros_like(self.m_a)
+        m_c = torch.zeros_like(self.m_c)
+        m_d = torch.zeros_like(self.m_d)
+
         # Edge case handling for k = 0 and k = d
         if self.k == 0:
-            m_a = torch.zeros_like(self.m_a)
-            m_c = torch.zeros_like(self.m_c)
-        else:
+            m_d = n * torch.mean(self.m_d ** 2 * v[:, self.k:] * g[:, self.k:], axis=0)
+        elif self.k == self.d:
             x_1 = self.m_a.T @ v[:, :self.k]
-            x_2 = 0.0
             y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a
-            y_2 = 0.0
-            if self.k == self.d:
-                m_c = torch.zeros_like(self.m_c)
-            else:
-                x_1 += self.m_c.T @ v[:, self.k:]
-                x_2 += self.m_d * v[:, self.k:]
-                y_1 += g[:, self.k:].transpose(1, 2) @ self.m_c
-                y_2 += (g[:, self.k:] * self.m_d).transpose(1, 2)
-
-                m_c = N/2 * torch.mean(x_1 @ y_2, axis=0).T
-                m_c += N/2 * torch.mean(x_2 @ y_1, axis=0)
+            M = torch.mean(x_1 @ y_1, axis=0)
+            m_a += n/2 * (M + M.T)
+            if gamma > 0:
+                identity = torch.eye(self.k, device=self.device)
+                m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ (m_d_inv ** 2 * self.m_c)) @ m_a_inv - gamma * identity
+        else:
+            x_1 = self.m_a.T @ v[:, :self.k] + self.m_c.T @ v[:, self.k:]
+            x_2 = self.m_d * v[:, self.k:]
+            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a + g[:, self.k:].transpose(1, 2) @ self.m_c
+            y_2 = (g[:, self.k:] * self.m_d).transpose(1, 2)
 
             M = torch.mean(x_1 @ y_1, axis=0)
-            m_a = N/2 * (M + M.T)
+            m_a = n/2 * (M + M.T)
+            m_c += n/2 * torch.mean(x_1 @ y_2, axis=0).T
+            m_c += n/2 * torch.mean(x_2 @ y_1, axis=0)
 
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)
                 m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ (m_d_inv ** 2 * self.m_c)) @ m_a_inv - gamma * identity
                 m_c += -factor * m_d_inv ** 2 * self.m_c @ m_a_inv
 
-        m_d = N * torch.mean(self.m_d ** 2 * v[:, self.k:] * g[:, self.k:], axis=0)
         if gamma > 0:
             m_d += factor * (m_d_inv ** 2) - gamma
         # print(h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
@@ -703,7 +705,7 @@ class MLow:
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
-        return self @ h(beta * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
+        return self @ h(beta/n * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
 
 
 class RankMatrix:
@@ -716,32 +718,52 @@ class RankMatrix:
         self.y = y
         self.k = x.shape[1]
         self.device = device
+        self.shape = (x.shape[0], y.shape[0])
 
     def full(self):
         return self.x @ self.y.T
 
     def t(self):
-        return RankMatrix(self.y.T, self.x.T, device=self.device)
+        '''
+        (x @ y^T)^T = y @ x^T = RankMatrix(y, x)
+        '''
+        return RankMatrix(self.y, self.x, device=self.device)
 
     def __matmul__(self, other):
         '''
         self @ other = x @ y.T @ other
         '''
-        if len(other.shape) == 1:
-            return self.x @ (self.y.T @ other)
-        elif isinstance(other, (MUp, MLow)):
+        if isinstance(other, (MUp, MLow)):
             return RankMatrix(self.x, other.t() @ self.y, device=self.device)
-        elif len(other.shape) == 2:
+        elif isinstance(other, RankMatrix):
+            # self @ other = x_1 @ y_1^T @ x_2 @ y_2^T = dot(y_1, x_2) * x_1 @ y_2^T
+            return torch.dot(self.y, other.x) * RankMatrix(self.x, other.y, device=self.device)
+        elif (len(other.shape) == 1) or (other.shape[1] == 1):
+            # other a vector
+            # x @ y^T @ other = dot(y, other) * x
+            return torch.dot(self.y, other) * self.x
+        else:
+            # other a matrix
+            # x @ y^T @ other = x @ (other^T @ y)^T
             return RankMatrix(self.x, other.T @ self.y, device=self.device)
 
     def __rmatmul__(self, other):
         '''
         other @ self = other @ x @ y.T
         '''
-        if len(other.shape) == 1:
+        if isinstance(other, (MUp, MLow)):
+            return RankMatrix(other @ self.x, self.y, device=self.device)
+        elif isinstance(other, RankMatrix):
+            # other @ self = x_2 @ y_2^T @ x_1 @ y_1^T = dot(y_2, x_1) * x_2 @ y_1^T
+            return torch.dot(other.y, self.x) * RankMatrix(other.x, self.y, device=self.device)
+        elif (len(other.shape) == 1) or (other.shape[1] == 1):
+            # other a vector
             return (other @ self.x) @ self.y.T
         else:
+            # other a matrix
+            # x @ y^T @ other = x @ (other^T @ y)^T
             return RankMatrix(other @ self.x, self.y, device=self.device)
+
 
 class BlockTriangular:
     def __init__(self, diag_blocks, bandwidth, off_diag_blocks=None):
