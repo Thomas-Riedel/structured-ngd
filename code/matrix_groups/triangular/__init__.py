@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import seaborn as sns
 sns.set()
@@ -44,6 +45,16 @@ class MUp:
         self.m_b = self.m_b.to(device)
         self.m_d = self.m_d.reshape((-1, 1)).to(device)
         return self
+
+    def solve(self, b):
+        '''
+        Solve Bx = b
+        '''
+        assert(b.shape[0] == self.d)
+        result = torch.zeros_like(b)
+        result[:self.k] = torch.linalg.solve(self.m_a, b[:self.k]) - torch.linalg.solve(self.m_a, self.m_b @ (b[self.k:] / self.m_d))
+        result[self.k:] = b[self.k:] / self.m_d
+        return result
 
     def inv(self):
         """
@@ -366,10 +377,10 @@ class MUp:
         #                                            self.m_d_inv() * eps_diag), 0)).T
 
         eps = torch.randn((self.d, n), device=self.device)
-        z = mu + (self.inv().t() @ eps)
+        z = mu + self.t().solve(eps)
         return z.T
 
-    def _update(self, beta, eta, N, g, v, gamma=1):
+    def _update(self, beta, eta, n, g, v, gamma=1):
         """Perform update step 
           B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -378,40 +389,50 @@ class MUp:
         computes the update step much more efficiently (see algorithm for details).
         """
         assert(gamma >= 0)
-        factor = gamma * eta / N
-        b_inv = self.inv()
-        m_a_inv = b_inv.m_a
-        m_d_inv = b_inv.m_d
-        AB = m_a_inv @ self.m_b
+        factor = gamma * eta / n
+        m_a_inv = self.m_a_inv()
+        m_d_inv = self.m_d_inv()
+
+        m_a = torch.zeros_like(self.m_a)
+        m_b = torch.zeros_like(self.m_b)
+        m_d = torch.zeros_like(self.m_d)
 
         if self.k == 0:
-            m_a = torch.zeros_like(self.m_a)
-            m_b = torch.zeros_like(self.m_b)
-            BTv = 0
-        else:
-            BTv = self.m_b.T @ v[:, :self.k]
-            BAT = self.m_b.T @ m_a_inv
-            ATv = self.m_a.T @ v[:, :self.k]
-            X = g[:, :self.k].transpose(1, 2) @ m_a_inv.T - g[:, self.k:].transpose(1, 2) @ (m_d_inv * BAT)
-            M = torch.mean(ATv @ X, axis=0)
-            m_a = N/2 * (M + M.T)
+            m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
+        elif self.k == self.d:
+            x_1 = self.m_a.T @ v[:, :self.k]
+            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a.T
 
-            m_b = N/2 * torch.mean(ATv @ (g[:, self.k:] * m_d_inv).transpose(1, 2), axis=0)
-            m_b += N/2 * torch.mean(((BTv + self.m_d * v[:, self.k:]) @ X).transpose(1, 2), axis=0)
+            M = torch.mean(x_1 @ y_1, axis=0)
+            m_a = n/2 * (M + M.T)
 
             if gamma > 0:
                 m_a += factor * m_a_inv.T @ m_a_inv - gamma * torch.eye(self.k, device=self.device)
-                m_b += -factor * m_a_inv.T @ AB * m_d_inv.T
+        else:
+            x_1 = self.m_a.T @ v[:, :self.k]
+            x_2 = self.m_b.T @ v[:, :self.k] + self.m_d * v[:, self.k:]
+            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a.T \
+                  - (g[:, self.k:] / self.m_d).transpose(1, 2) @ (m_d_inv * self.m_b.T @ m_a_inv)
+            y_2 = g[:, self.k:] / self.m_d
 
-        m_d = N * torch.mean((v[:, self.k:] + m_d_inv * BTv) * g[:, self.k:], axis=0)
+            M = torch.mean(x_1 @ y_1, axis=0)
+            m_a = n/2 * (M + M.T)
+            m_b = n/2 * torch.mean(x_1 @ y_2.transpose(1, 2), axis=0)
+            m_b += n/2 * torch.mean(x_2 @ y_1, axis=0).T
+
+            if gamma > 0:
+                m_a += factor * m_a_inv.T @ m_a_inv - gamma * torch.eye(self.k, device=self.device)
+                m_b += -factor * m_a_inv.T @ m_a_inv @ self.m_b * m_d_inv.T
+
+            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) / self.m_d + v[:, self.k:]) * g[:, self.k:], axis=0)
         if gamma > 0:
-            m_d += factor * (m_d_inv ** 2) * (1 + torch.sum(AB ** 2, axis=0)).reshape(-1, 1) - gamma
-        # print(h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
+            m_d += factor * (m_d_inv ** 2) * (1 + torch.sum((m_a_inv @ self.m_b) ** 2, axis=0)).reshape(-1, 1) - gamma
+        # print(f'update: {h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}')
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
-        return self @ h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))
+        return self @ h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))
 
 
 class MLow:
@@ -574,6 +595,16 @@ class MLow:
             result[self.k:] = self.m_c @ x[:self.k] + self.m_d * x[self.k:]
             return result
 
+    def solve(self, b):
+        '''
+        Solve Bx = b
+        '''
+        assert(b.shape[0] == self.d)
+        result = torch.zeros_like(b)
+        result[:self.k] = torch.linalg.solve(self.m_a, b[:self.k])
+        result[self.k:] = -self.m_c @ torch.linalg.solve(self.m_a, b[:self.k]) / self.m_d + b[self.k:] / self.m_d
+        return result
+
     def inv(self):
         """
         Calculate inverse of lower triangular block matrix
@@ -620,7 +651,7 @@ class MLow:
         """
 
         eps = torch.randn((self.d, n), device=self.device)
-        z = mu + (self.inv().t() @ eps)
+        z = mu + self.t().solve(eps)
         return z.T
 
     def _update(self, beta, eta, N, g, v, gamma=1):
@@ -633,9 +664,8 @@ class MLow:
         """
         assert(gamma >= 0)
         factor = gamma * eta / N
-        b_inv = self.inv()
-        m_a_inv = b_inv.m_a
-        m_d_inv = b_inv.m_d
+        m_a_inv = self.m_a_inv()
+        m_d_inv = self.m_d_inv()
 
         # Edge case handling for k = 0 and k = d
         if self.k == 0:
@@ -648,7 +678,6 @@ class MLow:
             y_2 = 0.0
             if self.k == self.d:
                 m_c = torch.zeros_like(self.m_c)
-                m_d = torch.zeros_like(self.m_d)
             else:
                 x_1 += self.m_c.T @ v[:, self.k:]
                 x_2 += self.m_d * v[:, self.k:]
@@ -675,3 +704,75 @@ class MLow:
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
         return self @ h(beta * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
+
+
+class RankMatrix:
+    def __init__(self, x=0, y=0, device='cuda'):
+        '''
+        Representation of x @ y^T
+        '''
+        assert(x.shape[1] == y.shape[1])
+        self.x = x
+        self.y = y
+        self.k = x.shape[1]
+        self.device = device
+
+    def full(self):
+        return self.x @ self.y.T
+
+    def t(self):
+        return RankMatrix(self.y.T, self.x.T, device=self.device)
+
+    def __matmul__(self, other):
+        '''
+        self @ other = x @ y.T @ other
+        '''
+        if len(other.shape) == 1:
+            return self.x @ (self.y.T @ other)
+        elif isinstance(other, (MUp, MLow)):
+            return RankMatrix(self.x, other.t() @ self.y, device=self.device)
+        elif len(other.shape) == 2:
+            return RankMatrix(self.x, other.T @ self.y, device=self.device)
+
+    def __rmatmul__(self, other):
+        '''
+        other @ self = other @ x @ y.T
+        '''
+        if len(other.shape) == 1:
+            return (other @ self.x) @ self.y.T
+        else:
+            return RankMatrix(other @ self.x, self.y, device=self.device)
+
+class BlockTriangular:
+    def __init__(self, diag_blocks, bandwidth, off_diag_blocks=None):
+        self.diag_blocks = diag_blocks
+        self.off_diag_blocks = off_diag_blocks
+        self.bandwidth = bandwidth # width of off-diagonal block
+        self.block_sizes = []
+        for diag in self.diag_blocks:
+            self.block_sizes.append(diag.k)
+
+    def __matmul__(self, other):
+        '''
+        self @ other
+        '''
+        # Chunk other into blocks
+        other_blocked = []
+        for k in self.block_sizes:
+            other_blocked.append(other[:k])
+            other = other[k:]
+
+        # Perform matrix multiplication blockwise first over diagonals, then off-diagonals
+        result = 0
+        for i, diag in enumerate(self.diag_blocks):
+            result += diag @ other_blocked[i]
+        for band in range(self.bandwidth):
+            for i, off_diag in enumerate(self.off_diag_blocks[band]):
+                result += off_diag @ other_blocked[band + 1 + i]
+        return result
+
+    def det(self):
+        return np.prod(list(map(lambda x: x.det(), self.diag_blocks)))
+
+    def trace(self):
+        return np.sum(list(map(lambda x: x.trace(), self.diag_blocks)))
