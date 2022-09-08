@@ -1,12 +1,17 @@
 import numpy as np 
 import torch
+from torch import Tensor
+from torch.nn import Parameter
 from matrix_groups.triangular import MUp, MLow
+from typing import Union, Optional, Tuple, Callable
 from optimizers.noisy_optimizer import *
 
 
 class StructuredNGD(NoisyOptimizer):
-    def __init__(self, params, data_size, k=0, lr=1e-3, momentum_grad=0.9, damping=0.01, mc_samples=1,
-                 prior_precision=0.4, gamma=1, device='cuda', momentum_hess=None, hess_init=None, structure='rank_cov', debias=False):
+    def __init__(self, params, data_size: int, k: int = 0, lr: float = 1e-3, momentum_grad: float = 0.9,
+                 damping: float = 0.01, mc_samples: int = 1, prior_precision: float = 0.4, gamma: float = 1,
+                 device: str = 'cuda', momentum_hess: Union[float] = None,
+                 hess_init: Union[float] = None, structure: str = 'rank_cov', debias: bool = False) -> None:
         assert data_size >= 1
         assert (type(k) == int) and (k >= 0)
         assert lr > 0.0
@@ -39,7 +44,7 @@ class StructuredNGD(NoisyOptimizer):
         print(f"d_i = {self.d_is}")
         print(f"k = {k}; structure = {structure}")
 
-    def _init_momentum_buffers(self, hess_init):
+    def _init_momentum_buffers(self, hess_init: float) -> None:
         self.d_is = []
         for group in self.param_groups:
             params = group['params']
@@ -74,7 +79,7 @@ class StructuredNGD(NoisyOptimizer):
                     raise Warning(f"The rank parameter {k} at layer {i} is bigger than the number of parameters {d_i} "
                                   f"and will be capped, i.e. k_{i} := {d_i}.")
 
-    def _reset_param_and_grad_samples(self):
+    def _reset_param_and_grad_samples(self) -> None:
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
@@ -82,7 +87,7 @@ class StructuredNGD(NoisyOptimizer):
                     self.state[p]['grad_samples'] = []
 
     @torch.no_grad()
-    def step(self, closure=None):
+    def step(self, closure: Callable = None) -> Tuple[float, Tensor]:
         """Performs a single optimization step.
         """
         self._stash_param_averages()
@@ -116,13 +121,13 @@ class StructuredNGD(NoisyOptimizer):
         avg_loss = torch.mean(torch.stack(losses, dim=0))
         return avg_loss, avg_pred
 
-    def _stash_param_averages(self):
+    def _stash_param_averages(self) -> None:
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
                     self.state[p]['param_average'] = p.data
 
-    def _sample_weight_and_collect(self):
+    def _sample_weight_and_collect(self) -> None:
         for group in self.param_groups:
             n = group['data_size']
             damping = group['damping']
@@ -135,20 +140,20 @@ class StructuredNGD(NoisyOptimizer):
                     p.data = p_sample.reshape(p.shape)
                     self.state[p]['param_samples'].append(p_sample.reshape((-1, 1)))
 
-    def _collect_grad_samples(self):
+    def _collect_grad_samples(self) -> None:
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
                     self.state[p]['grad_samples'].append(p.grad.reshape((-1, 1)))
 
-    def _stack_samples(self):
+    def _stack_samples(self) -> None:
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
                     self.state[p]['param_samples'] = torch.stack(self.state[p]['param_samples'], dim=0)
                     self.state[p]['grad_samples'] = torch.stack(self.state[p]['grad_samples'], dim=0)
 
-    def _update(self):
+    def _update(self) -> None:
         self._stack_samples()
         for group in self.param_groups:
             lr = group['lr']
@@ -163,13 +168,14 @@ class StructuredNGD(NoisyOptimizer):
                     self._update_param_averages(p, lr, beta1, beta2, eta, n, damping)
                     self._update_momentum_hess_buffers(p, eta, n, damping, beta2)
 
-    def _update_momentum_grad_buffers(self, p, eta, n, beta1):
+    def _update_momentum_grad_buffers(self, p: Parameter, eta: float, n: int, beta1: float) -> None:
         p_avg = self.state[p]['param_average'].reshape((-1, 1))
         g_bar = torch.mean(self.state[p]['grad_samples'], axis=0)
         g_mu = self.gamma * eta / n * p_avg + g_bar # (3)
         self.state[p]['momentum_grad_buffer'].mul_(beta1).add_((1 - beta1) * g_mu) # (4)
 
-    def _update_param_averages(self, p, lr, beta1, beta2, eta, n, damping):
+    def _update_param_averages(self, p: Parameter, lr: float, beta1: float, beta2: float,
+                               eta: float, n: int, damping: float) -> None:
         m_bar = self.state[p]['momentum_grad_buffer']
         b_bar = self.state[p]['momentum_hess_buffer']
         if self.debias:
@@ -185,21 +191,21 @@ class StructuredNGD(NoisyOptimizer):
         update = b_bar.t().solve(b_bar.solve(m_bar)).reshape(p.shape) # (7)
         self.state[p]['param_average'].add_(-lr * update)
 
-    def _update_momentum_hess_buffers(self, p, eta, n, damping, beta2):
+    def _update_momentum_hess_buffers(self, p: Parameter, eta: float, n: int, damping: float, beta2: float) -> None:
         p_avg = self.state[p]['param_average'].reshape((-1, 1))
         m_hess = self.state[p]['momentum_hess_buffer'].add_id(np.sqrt(damping))
         grad_samples = self.state[p]['grad_samples']
         param_samples = self.state[p]['param_samples']
         self.state[p]['momentum_hess_buffer'] = m_hess._update(beta2, eta, n, grad_samples, param_samples - p_avg) # (6) & (8)
 
-    def _restore_param_averages(self):
+    def _restore_param_averages(self) -> None:
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
                     p.data = self.state[p]['param_average']
                     self.state[p]['param_average'] = None
 
-    def elbo(self, loss_fn):
+    def elbo(self, loss_fn: Callable) -> Callable:
         def f(preds, labels, gamma=1):
             """Compute ELBO: L(mu, Sigma) = E_q[sum l_i] - gamma * KL(q || p)
             """

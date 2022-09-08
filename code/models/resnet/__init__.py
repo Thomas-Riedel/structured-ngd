@@ -1,15 +1,18 @@
-import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn.utils import parameters_to_vector, vector_to_parameters
-from matrix_groups.triangular import MUp
+
+from torch import Tensor
+from torch.utils.data import DataLoader
+from torch.optim import Adam
 from optimizers.noisy_optimizer import *
+
+from typing import Union, Tuple, List, Callable
 
 
 class ResNet(nn.Module):
-    def __init__(self, model_type='resnet18',
-                 num_classes=10,
-                 device='cuda'):
+    def __init__(self, model_type: str = 'resnet18',
+                 num_classes: int = 10,
+                 device: str = 'cuda') -> None:
         super(ResNet, self).__init__()
 
         model_types = ['resnet' + str(n) for n in [18, 34, 50, 101, 152]]
@@ -46,11 +49,12 @@ class ResNet(nn.Module):
         self.num_classes = num_classes
         self.device = device
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         return self.model(x)
 
-    def train(self, data_loader, optimizer, epoch=0, metrics=[], eval_every=1,
-              loss_fn=nn.CrossEntropyLoss()):
+    def train(self, data_loader: DataLoader, optimizer: Union[Adam, NoisyOptimizer],
+              epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 1,
+              loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict]:
         epoch_loss = 0.0
         iter_loss = []
         iter_metrics = {}
@@ -82,8 +86,8 @@ class ResNet(nn.Module):
             running_loss += loss.item()
             epoch_loss += loss.item()
             for metric in metrics:
-                running_metrics[metric.__name__] += metric(preds, labels)
-                iter_metrics[metric.__name__].append(metric(preds, labels))
+                running_metrics[metric.__name__] += metric(preds, labels).detach().numpy()
+                iter_metrics[metric.__name__].append(metric(preds, labels).item())
 
             if i % eval_every == (eval_every - 1):
                 print("===========================================")
@@ -97,9 +101,14 @@ class ResNet(nn.Module):
         return iter_loss, iter_metrics
 
     @torch.no_grad()
-    def evaluate(self, data_loader, loss_fn=nn.CrossEntropyLoss()):
-        acc = 0
-        loss = 0
+    def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
+                 loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict]:
+        if data_loader is None:
+            return None, None
+        loss = 0.0
+        metric_vals = {}
+        for metric in metrics:
+            metric_vals[metric.__name__] = 0.0
         for i, data in enumerate(data_loader, 0):
             images, labels = data
             images = images.to(self.device)
@@ -107,17 +116,19 @@ class ResNet(nn.Module):
 
             preds = self(images)
             loss += loss_fn(preds, labels).item()
-            acc += torch.mean((torch.argmax(preds, 1) == labels).float()).item()
+            for metric in metrics:
+                metric_vals[metric.__name__] += metric(preds, labels).detach().numpy()
 
             # Write to TensorBoard
             # writer.add_scalar("Loss", loss, counter)
 
-        acc /= len(data_loader)
+        for metric in metrics:
+            metric_vals[metric.__name__] /= len(data_loader)
         loss /= len(data_loader)
-        print(acc, loss)
-        return acc, loss
+        print(metric_vals, loss)
+        return loss, metric_vals
 
-    def init_weights(self):
+    def init_weights(self) -> None:
         torch.manual_seed(42)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):

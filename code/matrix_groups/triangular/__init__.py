@@ -2,18 +2,12 @@ import numpy as np
 import torch
 import seaborn as sns
 sns.set()
-
-
-def h(x):
-    """
-    Return quadratic approximation to exponential function
-        I + X + 1/2 X @ X
-    """
-    return x.add_id() + 0.5 * x @ x
+from typing import Union, List
 
 
 class MUp:
-    def __init__(self, m_a, m_b, m_d, k, device='cuda', damping=0):
+    def __init__(self, m_a: np.array, m_b: np.array, m_d: np.array, k: int,
+                 device: str = 'cuda', damping: int = 0) -> None:
         assert(m_a.shape[0] == m_a.shape[1])
         assert(m_a.shape[1] == m_b.shape[0])
         assert(m_b.shape[1] == m_d.shape[0])
@@ -31,14 +25,14 @@ class MUp:
         self.d_inv = None
 
     @staticmethod
-    def eye(d, k, device='cuda'):
+    def eye(d: int, k: int, device: str = 'cuda'):
         return MUp(torch.eye(k, k), torch.zeros(k, d-k), torch.ones(d-k), k, device=device)
 
     @staticmethod
-    def zeros(d, k, device='cuda'):
+    def zeros(d: int, k: int, device: str = 'cuda'):
         return MUp(torch.zeros(k, k), torch.zeros(k, d-k), torch.zeros(d-k), k, device=device)
 
-    def to(self, device):
+    def to(self, device: str):
         # Move all blocks onto device
         self.device = device
         self.m_a = self.m_a.to(device)
@@ -46,7 +40,7 @@ class MUp:
         self.m_d = self.m_d.reshape((-1, 1)).to(device)
         return self
 
-    def solve(self, b):
+    def solve(self, b: np.array) -> np.array:
         '''
         Solve Bx = b
         '''
@@ -74,13 +68,13 @@ class MUp:
                                damping=self.damping)
         return self.inverse
 
-    def m_d_inv(self):
+    def m_d_inv(self) -> np.array:
         # m_d is diagonal matrix
         if self.d_inv is None:
             self.d_inv = 1/(self.m_d + self.damping)
         return self.d_inv
 
-    def m_a_inv(self):
+    def m_a_inv(self) -> np.array:
         """
         Calculate inverse for invertible k x k matrix block m_a
         """
@@ -88,7 +82,7 @@ class MUp:
             self.a_inv = torch.linalg.inv(self.m_a + self.damping * torch.eye(self.k, device=self.device))
         return self.a_inv
 
-    def full(self):
+    def full(self) -> np.array:
         """
         Write full d x d matrix into memory as np.array. 
         For large values of d, this will not be able to fit into memory!
@@ -111,7 +105,7 @@ class MUp:
         """
         return MLow(self.m_a.T, self.m_b.T, self.m_d, self.k, device=self.device)
 
-    def precision(self):
+    def precision(self) -> np.array:
         """
         Full precision as arrowhead matrix as np.array (here, we parametrize S = BB^T).
         This ill not fit into memory for large values of d.
@@ -119,7 +113,7 @@ class MUp:
         prec = self @ self.t()
         return prec
 
-    def rank_matrix(self):
+    def rank_matrix(self) -> np.array:
         """
         Rank k matrix U for which Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2})
         """
@@ -129,7 +123,7 @@ class MUp:
         u_k[self.k:] = self.m_d_inv() * self.m_b.T @ inv.T
         return u_k
 
-    def sigma(self):
+    def sigma(self) -> np.array:
         """
         Full low-rank structured covariance matrix Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2})
         Will not fit into memory for large values of d!
@@ -143,28 +137,28 @@ class MUp:
         b_inv = self.inv()
         return b_inv.t() @ b_inv
 
-    def corr(self):
+    def corr(self) -> np.array:
         cov = self.sigma()
         std = torch.sqrt(torch.diag(cov)).reshape((-1, 1))
         return 1/std * cov * 1/std.T
 
-    def plot_correlation(self):
+    def plot_correlation(self) -> None:
         corr = self.corr().cpu()
         sns.heatmap(corr, vmin=-1.0, vmax=1.0, center=0.0, cmap='coolwarm')
       
-    def plot_covariance(self):
+    def plot_covariance(self) -> None:
         cov = self.sigma().cpu()
         sns.heatmap(cov)
 
-    def plot_precision(self):
+    def plot_precision(self) -> None:
         prec = self.precision().cpu()
         sns.heatmap(prec)
 
-    def plot_rank_update(self):
+    def plot_rank_update(self) -> None:
         rank_matrix = self.rank_matrix().cpu()
         sns.heatmap(rank_matrix)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """
         String representation of class.
         """
@@ -176,7 +170,7 @@ class MUp:
         string += str(self.m_d)
         return string
 
-    def __matmul__(self, x):
+    def __matmul__(self, x: Union[int, float, np.array]) -> np.array:
         """
         Matrix multiplication M @ X
         """
@@ -219,7 +213,7 @@ class MUp:
             result[self.k:] = self.m_d * x[self.k:]
             return result
         
-    def __rmatmul__(self, x):
+    def __rmatmul__(self, x: Union[int, float, np.array]) -> np.array:
         """
         Matrix multiplication X @ M
         """
@@ -250,7 +244,7 @@ class MUp:
 
             return result
 
-    def __mul__(self, x):
+    def __mul__(self, x: Union[int, float, np.array]) -> np.array:
         """
         (Elementwise) Multiplication X * M
         """
@@ -277,10 +271,10 @@ class MUp:
         else:
             raise ValueError()
 
-    def __rmul__(self, x):
+    def __rmul__(self, x: Union[int, float, np.array]) -> np.array:
         return self * x
 
-    def __add__(self, x):
+    def __add__(self, x: Union[int, float, np.array]) -> np.array:
         """
           (Elementwise) Addition X + M
         """
@@ -308,10 +302,10 @@ class MUp:
         else:
             raise ValueError()
 
-    def __radd__(self, x):
+    def __radd__(self, x: Union[int, float, np.array]) -> np.array:
         return self + x
 
-    def __truediv__(self, x):
+    def __truediv__(self, x: Union[int, float]):
         return 1/x * self
 
     def __neg__(self):
@@ -319,7 +313,7 @@ class MUp:
         """
         return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device)
 
-    def add_id(self, alpha=1):
+    def add_id(self, alpha: float = 1):
         """
         Add alpha * I to M, i.e.,
             self + alpha * I
@@ -330,26 +324,26 @@ class MUp:
                    self.k,
                    device=self.device)
 
-    def trace(self):
+    def trace(self) -> float:
         """Compute trace.
             tr(M) = tr(m_a) + tr(m_d) = tr(m_a) + sum(m_d)
         """
         return torch.trace(self.m_a) + torch.sum(self.m_d)
 
-    def det(self):
+    def det(self) -> float:
         """Compute determinant.
             det(M) = det(m_a) * det(m_d) = det(m_a) * (prod m_d)
         """
         return torch.det(self.m_a) * torch.prod(self.m_d)
 
-    def log_det(self):
+    def log_det(self) -> float:
         """Compute log of determinant.
             log(det(M)) = log(det(m_a) * (prod m_d)) = log(det(m_a)) + sum(log(m_d))
         """
         eps = torch.finfo().tiny
         return torch.logdet(self.m_a + eps * torch.eye(self.k)) + torch.sum(torch.log(self.m_d + eps))
 
-    def frobenius_norm(self):
+    def frobenius_norm(self) -> float:
         """Returns squared Frobenius norm of M, i.e.,
             ||M||_F^2 = tr(M^T M) = ||m_a||_F^2 + ||m_b||_F^2 + ||m_d||_F^2"""
         return torch.sum(self.m_a ** 2) + torch.sum(self.m_b ** 2) + torch.sum(self.m_d ** 2)
@@ -361,7 +355,7 @@ class MUp:
                    self.k,
                    device=self.device)
 
-    def sample(self, mu=0, n=1):
+    def sample(self, mu: Union[int, float, np.array] = 0, n: int = 1) -> np.array:
         """
         Sample z ~ N(mu, Sigma) with covariance matrix 
           Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2}):
@@ -380,7 +374,7 @@ class MUp:
         z = mu + self.t().solve(eps)
         return z.T
 
-    def _update(self, beta, eta, n, g, v, gamma=1):
+    def _update(self, beta: float, eta: float, n: int, g: np.array, v: np.array, gamma: float = 1):
         """Perform update step 
           B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -436,7 +430,8 @@ class MUp:
 
 
 class MLow:
-    def __init__(self, m_a, m_c, m_d, k, device='cuda', damping=0):
+    def __init__(self, m_a: np.array, m_c: np.array, m_d: np.array, k: int,
+                 device: str = 'cuda', damping: float = 0) -> None:
         self.k = k
         self.d = m_d.shape[0] + k
         self.device = device
@@ -450,17 +445,17 @@ class MLow:
         self.d_inv = None
 
     @staticmethod
-    def eye(d, k, device='cpu'):
+    def eye(d: int, k: int, device: str = 'cpu'):
         return MLow(torch.eye(k, k), torch.zeros(d-k, k), torch.ones(d-k), k, device=device)
 
     @staticmethod
-    def zeros(d, k, device='cpu'):
+    def zeros(d: int, k: int, device: str = 'cpu'):
         return MLow(torch.zeros(k, k), torch.zeros(d-k, k), torch.zeros(d-k), k, device=device)
 
     def size(self):
         return torch.Size((self.d, self.d))
 
-    def to(self, device):
+    def to(self, device: str):
         """Copy objects to device
         """
         self.device = device
@@ -472,7 +467,7 @@ class MLow:
     def t(self):
         return MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, self.device)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """String representation
         """
         string = "m_a: \n\t"
@@ -483,7 +478,7 @@ class MLow:
         string += str(self.m_d)
         return string
 
-    def __add__(self, x):
+    def __add__(self, x: Union[int, float, np.array]) -> np.array:
         """
           (Elementwise) Addition X + M
         """
@@ -511,10 +506,10 @@ class MLow:
         else:
             raise ValueError()
 
-    def __radd__(self, x):
+    def __radd__(self, x: Union[int, float, np.array]) -> np.array:
         return self + x
 
-    def __truediv__(self, x):
+    def __truediv__(self, x: Union[int, float]) -> np.array:
         return 1/x * self
 
     def __neg__(self):
@@ -522,37 +517,37 @@ class MLow:
         """
         return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device)
 
-    def __mul__(self, X):
-        if isinstance(X, MUp):
-            assert(self.shape == X.shape)
-            assert(X.k == self.k)
-            return MUp(X.m_a * self.m_a,
-                       torch.zeros_like(X.m_b),
-                       X.m_d * self.m_d,
+    def __mul__(self, x: Union[int, float, np.array]) -> np.array:
+        if isinstance(x, MUp):
+            assert(self.shape == x.shape)
+            assert(x.k == self.k)
+            return MUp(x.m_a * self.m_a,
+                       torch.zeros_like(x.m_b),
+                       x.m_d * self.m_d,
                        self.k,
                        device=self.device)
-        elif isinstance(X, MLow):
-            assert(self.shape == X.shape)
-            assert(X.k == self.k)
-            return MLow(X.m_a * self.m_a,
-                        X.m_c * self.m_c,
-                        X.m_d * self.m_d,
+        elif isinstance(x, MLow):
+            assert(self.shape == x.shape)
+            assert(x.k == self.k)
+            return MLow(x.m_a * self.m_a,
+                        x.m_c * self.m_c,
+                        x.m_d * self.m_d,
                         self.k,
                         device=self.device)
-        elif isinstance(X, (int, float)) or (isinstance(X, torch.Tensor) and (X.ndim == 0)):
-            return MLow(X * self.m_a,
-                        X * self.m_c,
-                        X * self.m_d,
+        elif isinstance(x, (int, float)) or (isinstance(x, torch.Tensor) and (x.ndim == 0)):
+            return MLow(x* self.m_a,
+                        x * self.m_c,
+                        x * self.m_d,
                         self.k,
                         device=self.device)
         else:
             # Implement np.array and torch.tensor cases
             raise ValueError()
 
-    def __rmul__(self, x):
+    def __rmul__(self, x: Union[int, float, np.array]) -> np.array:
         return self * x
 
-    def __matmul__(self, x):
+    def __matmul__(self, x: Union[int, float, np.array]) -> np.array:
         """Matrix Multiplication B @ x
         """
         assert(self.shape[1] == x.shape[0])
@@ -595,7 +590,7 @@ class MLow:
             result[self.k:] = self.m_c @ x[:self.k] + self.m_d * x[self.k:]
             return result
 
-    def solve(self, b):
+    def solve(self, b: np.array) -> np.array:
         '''
         Solve Bx = b
         '''
@@ -618,7 +613,7 @@ class MLow:
             self.inverse = MLow(m_a_inv, -m_d_inv * (self.m_c @ m_a_inv), m_d_inv, self.k, device=self.device)
         return self.inverse
 
-    def m_a_inv(self):
+    def m_a_inv(self) -> np.array:
         """
         Calculate inverse for invertible k x k matrix block m_a
         """
@@ -626,13 +621,13 @@ class MLow:
             self.a_inv = torch.linalg.inv(self.m_a + self.damping * torch.eye(self.k, device=self.device))
         return self.a_inv
 
-    def m_d_inv(self):
+    def m_d_inv(self) -> np.array:
         # m_d is diagonal matrix
         if self.d_inv is None:
             self.d_inv = 1/(self.m_d + self.damping)
         return self.d_inv
 
-    def add_id(self, alpha=1):
+    def add_id(self, alpha: float = 1):
         return MLow(
             self.m_a + alpha * torch.eye(self.k, device=self.device),
             self.m_c,
@@ -642,7 +637,7 @@ class MLow:
             self.damping
         )
 
-    def sample(self, mu=0, n=1):
+    def sample(self, mu: Union[float, np.array] = 0, n: int = 1) -> np.array:
         """
         Sample z ~ N(mu, Sigma) with covariance matrix
           Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2}):
@@ -654,7 +649,7 @@ class MLow:
         z = mu + self.t().solve(eps)
         return z.T
 
-    def _update(self, beta, eta, n, g, v, gamma=1):
+    def _update(self, beta: float, eta: float, n: int, g: np.array, v: np.array, gamma: float = 1):
         """Perform update step
           B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -709,7 +704,7 @@ class MLow:
 
 
 class RankMatrix:
-    def __init__(self, x=0, y=0, device='cuda'):
+    def __init__(self, x: np.array = 0, y: np.array = 0, device: str = 'cuda') -> None:
         '''
         Representation of x @ y^T
         '''
@@ -720,7 +715,7 @@ class RankMatrix:
         self.device = device
         self.shape = (x.shape[0], y.shape[0])
 
-    def full(self):
+    def full(self) -> np.array:
         return self.x @ self.y.T
 
     def t(self):
@@ -729,7 +724,7 @@ class RankMatrix:
         '''
         return RankMatrix(self.y, self.x, device=self.device)
 
-    def __matmul__(self, other):
+    def __matmul__(self, other: np.array) -> np.array:
         '''
         self @ other = x @ y.T @ other
         '''
@@ -747,7 +742,7 @@ class RankMatrix:
             # x @ y^T @ other = x @ (other^T @ y)^T
             return RankMatrix(self.x, other.T @ self.y, device=self.device)
 
-    def __rmatmul__(self, other):
+    def __rmatmul__(self, other: np.array) -> np.array:
         '''
         other @ self = other @ x @ y.T
         '''
@@ -766,15 +761,17 @@ class RankMatrix:
 
 
 class BlockTriangular:
-    def __init__(self, diag_blocks, bandwidth, off_diag_blocks=None):
+    def __init__(self, diag_blocks: List[Union[MUp, MLow]], bandwidth: int = 0,
+                 off_diag_blocks: List[List[RankMatrix]] = None) -> None:
         self.diag_blocks = diag_blocks
         self.off_diag_blocks = off_diag_blocks
         self.bandwidth = bandwidth # width of off-diagonal block
         self.block_sizes = []
         for diag in self.diag_blocks:
             self.block_sizes.append(diag.k)
+        assert(((bandwidth == 0) and (off_diag_blocks is None)) or (bandwidth == len(off_diag_blocks)))
 
-    def __matmul__(self, other):
+    def __matmul__(self, other: np.array) -> np.array:
         '''
         self @ other
         '''
@@ -793,8 +790,32 @@ class BlockTriangular:
                 result += off_diag @ other_blocked[band + 1 + i]
         return result
 
-    def det(self):
+    def solve(self, other: np.array) -> np.array:
+        # Chunk other into blocks
+        other_blocked = []
+        solution_blocked = []
+        for k in self.block_sizes:
+            other_blocked.append(other[:k])
+            other = other[k:]
+
+        # Backwards substitution, Thomas algorithm (https://en.wikipedia.org/wiki/Tridiagonal_matrix_algorithm)
+        n = len(self.diag_blocks)
+        solution_blocked.insert(0, self.diag_blocks[n].solve(other_blocked[n]))
+        for i, diag in reversed(enumerate(self.diag_blocks[:-1])):
+            solution_blocked.insert(0, diag.solve(other_blocked[i] - self.off_diag_blocks[i] @ solution_blocked[i+1]))
+        solution = torch.stack(solution_blocked, dim=0)
+        return solution
+
+    def det(self) -> float:
         return np.prod(list(map(lambda x: x.det(), self.diag_blocks)))
 
-    def trace(self):
+    def trace(self) -> float:
         return np.sum(list(map(lambda x: x.trace(), self.diag_blocks)))
+
+
+def h(x: Union[MUp, MLow]) -> Union[MUp, MLow]:
+    """
+    Return quadratic approximation to exponential function
+        I + X + 1/2 X @ X
+    """
+    return x.add_id() + 0.5 * x @ x
