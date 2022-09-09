@@ -3,13 +3,13 @@ import torch
 from torch import Tensor
 from torch.nn import Parameter
 from matrix_groups.triangular import MUp, MLow
-from typing import Union, Optional, Tuple, Callable
+from typing import Union, Tuple, Callable
 from optimizers.noisy_optimizer import *
 
 
 class StructuredNGD(NoisyOptimizer):
     def __init__(self, params, data_size: int, k: int = 0, lr: float = 1e-3, momentum_grad: float = 0.9,
-                 damping: float = 0.01, mc_samples: int = 1, prior_precision: float = 0.4, gamma: float = 1,
+                 damping: float = 0.01, mc_samples: int = 1, prior_precision: float = 100, gamma: float = 1,
                  device: str = 'cuda', momentum_hess: Union[float] = None,
                  hess_init: Union[float] = None, structure: str = 'rank_cov', debias: bool = False) -> None:
         assert data_size >= 1
@@ -22,7 +22,7 @@ class StructuredNGD(NoisyOptimizer):
         if momentum_hess is None:
             momentum_hess = 1.0 - lr
 
-        if not structure in ['rank_cov', 'arrowhead']:
+        if structure not in ['rank_cov', 'arrowhead']:
             raise NotImplementedError()
 
         self.structure = structure
@@ -64,11 +64,13 @@ class StructuredNGD(NoisyOptimizer):
                 if self.structure == 'rank_cov':
                     identity = MUp.eye(d_i,
                                        np.minimum(d_i, k),
-                                       device=self.device)
+                                       device=self.device,
+                                       damping=np.sqrt(damping))
                 else:
                     identity = MLow.eye(d_i,
-                                       np.minimum(d_i, k),
-                                       device=self.device)
+                                        np.minimum(d_i, k),
+                                        device=self.device,
+                                        damping=np.sqrt(damping))
                 if hess_init is None:
                     state['momentum_hess_buffer'] = np.sqrt(eta / n + damping) * identity
                 else:
@@ -102,7 +104,7 @@ class StructuredNGD(NoisyOptimizer):
         losses = []
         outputs = []
         for _ in range(self.mc_samples):
-            self._sample_weight_and_collect() # (2)
+            self._sample_weight_and_collect()  # (2)
             with torch.enable_grad():
                 loss, output = closure()
             losses.append(loss.detach())
@@ -130,13 +132,15 @@ class StructuredNGD(NoisyOptimizer):
     def _sample_weight_and_collect(self) -> None:
         for group in self.param_groups:
             n = group['data_size']
-            damping = group['damping']
             for p in group['params']:
                 if p.requires_grad:
-                    m_hess = self.state[p]['momentum_hess_buffer']
+                    b_bar = self.state[p]['momentum_hess_buffer']
                     p_avg = self.state[p]['param_average'].reshape((-1, 1))
-                    # z_i ~ N(0, n (B B^T)^{-1})
-                    p_sample = (np.sqrt(n) * m_hess).add_id(np.sqrt(damping)).sample(mu=p_avg)
+                    # z_i ~ N(mu, n (B B^T)^{-1})
+                    # z_i = mu + 1/sqrt(n) * B^{-T} eps, with eps ~ N(0, I)
+                    d = int(np.prod(p.shape))
+                    eps = torch.randn((d, 1), device=self.device)
+                    p_sample = p_avg + torch.rsqrt(torch.tensor(n)) * b_bar.t().solve(eps)
                     p.data = p_sample.reshape(p.shape)
                     self.state[p]['param_samples'].append(p_sample.reshape((-1, 1)))
 
@@ -171,8 +175,8 @@ class StructuredNGD(NoisyOptimizer):
     def _update_momentum_grad_buffers(self, p: Parameter, eta: float, n: int, beta1: float) -> None:
         p_avg = self.state[p]['param_average'].reshape((-1, 1))
         g_bar = torch.mean(self.state[p]['grad_samples'], axis=0)
-        g_mu = self.gamma * eta / n * p_avg + g_bar # (3)
-        self.state[p]['momentum_grad_buffer'].mul_(beta1).add_((1 - beta1) * g_mu) # (4)
+        g_mu = self.gamma * eta / n * p_avg + g_bar  # (3)
+        self.state[p]['momentum_grad_buffer'].mul_(beta1).add_((1 - beta1) * g_mu)  # (4)
 
     def _update_param_averages(self, p: Parameter, lr: float, beta1: float, beta2: float,
                                eta: float, n: int, damping: float) -> None:
@@ -181,11 +185,10 @@ class StructuredNGD(NoisyOptimizer):
         if self.debias:
             eps = 1e-9
             t = self.state[p]['step']
-            m_bar = m_bar / (1 - beta1 ** (t + 1)) # (5)
+            m_bar = m_bar / (1 - beta1 ** (t + 1))  # (5)
             b_bar = torch.rsqrt(torch.tensor(1 - beta2 ** t + eps)) * b_bar.add_id(-np.sqrt(eta / n + damping))
             b_bar = b_bar.add_id(np.sqrt(eta / n + damping))
             self.state[p]['step'] += 1
-        b_bar = b_bar.add_id(np.sqrt(damping))
 
         # Evaluate matrix vector products so intermediate results stay in memory
         update = b_bar.t().solve(b_bar.solve(m_bar)).reshape(p.shape) # (7)
@@ -193,10 +196,10 @@ class StructuredNGD(NoisyOptimizer):
 
     def _update_momentum_hess_buffers(self, p: Parameter, eta: float, n: int, damping: float, beta2: float) -> None:
         p_avg = self.state[p]['param_average'].reshape((-1, 1))
-        m_hess = self.state[p]['momentum_hess_buffer'].add_id(np.sqrt(damping))
+        b_bar = self.state[p]['momentum_hess_buffer']
         grad_samples = self.state[p]['grad_samples']
         param_samples = self.state[p]['param_samples']
-        self.state[p]['momentum_hess_buffer'] = m_hess._update(beta2, eta, n, grad_samples, param_samples - p_avg) # (6) & (8)
+        self.state[p]['momentum_hess_buffer'] = b_bar._update(beta2, eta, n, grad_samples, param_samples - p_avg)  # (6) & (8)
 
     def _restore_param_averages(self) -> None:
         for group in self.param_groups:

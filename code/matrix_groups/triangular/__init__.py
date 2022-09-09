@@ -7,7 +7,7 @@ from typing import Union, List
 
 class MUp:
     def __init__(self, m_a: np.array, m_b: np.array, m_d: np.array, k: int,
-                 device: str = 'cuda', damping: int = 0) -> None:
+                 device: str = 'cuda', damping: float = 0.0) -> None:
         assert(m_a.shape[0] == m_a.shape[1])
         assert(m_a.shape[1] == m_b.shape[0])
         assert(m_b.shape[1] == m_d.shape[0])
@@ -25,12 +25,12 @@ class MUp:
         self.d_inv = None
 
     @staticmethod
-    def eye(d: int, k: int, device: str = 'cuda'):
-        return MUp(torch.eye(k, k), torch.zeros(k, d-k), torch.ones(d-k), k, device=device)
+    def eye(d: int, k: int, device: str = 'cuda', damping: float = 0.0):
+        return MUp(torch.eye(k, k), torch.zeros(k, d-k), torch.ones(d-k), k, device=device, damping=damping)
 
     @staticmethod
-    def zeros(d: int, k: int, device: str = 'cuda'):
-        return MUp(torch.zeros(k, k), torch.zeros(k, d-k), torch.zeros(d-k), k, device=device)
+    def zeros(d: int, k: int, device: str = 'cuda', damping: float = 0.0):
+        return MUp(torch.zeros(k, k), torch.zeros(k, d-k), torch.zeros(d-k), k, device=device, damping=damping)
 
     def to(self, device: str):
         # Move all blocks onto device
@@ -42,12 +42,15 @@ class MUp:
 
     def solve(self, b: np.array) -> np.array:
         '''
-        Solve Bx = b
+        Solve (B + damping * I)x = b
         '''
         assert(b.shape[0] == self.d)
-        result = torch.zeros_like(b)
-        result[:self.k] = torch.linalg.solve(self.m_a, b[:self.k]) - torch.linalg.solve(self.m_a, self.m_b @ (b[self.k:] / self.m_d))
-        result[self.k:] = b[self.k:] / self.m_d
+        identity = torch.eye(self.k, device=self.device)
+        m_a = self.m_a + self.damping * identity
+        m_d = self.m_d + self.damping
+        result = torch.zeros_like(b, device=self.device)
+        result[:self.k] = torch.linalg.solve(m_a, b[:self.k]) - torch.linalg.solve(m_a, self.m_b @ (b[self.k:] / m_d))
+        result[self.k:] = b[self.k:] / m_d
         return result
 
     def inv(self):
@@ -79,7 +82,8 @@ class MUp:
         Calculate inverse for invertible k x k matrix block m_a
         """
         if self.a_inv is None:
-            self.a_inv = torch.linalg.inv(self.m_a + self.damping * torch.eye(self.k, device=self.device))
+            identity = torch.eye(self.k, device=self.device)
+            self.a_inv = torch.linalg.inv(self.m_a + self.damping * identity)
         return self.a_inv
 
     def full(self) -> np.array:
@@ -187,7 +191,8 @@ class MUp:
                        self.m_a @ x.m_b + self.m_b * x.m_d.T,
                        self.m_d * x.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         elif isinstance(x, (int, float)):
             return self * x
         elif isinstance(x, MLow):
@@ -254,20 +259,23 @@ class MUp:
                        x.m_b * self.m_b,
                        x.m_d * self.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         elif isinstance(x, (int, float)) or (isinstance(x, torch.Tensor) and (x.ndim == 0)):
             return MUp(x * self.m_a,
                        x * self.m_b,
                        x * self.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         elif len(x.shape) == 2:
             # x an np.array
             return MUp(x[:self.k, :self.k] * self.m_a,
                        x[:self.k, self.k:] * self.m_b,
                        torch.diag(x[self.k:, self.k:]).reshape(-1, 1) * self.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         else:
             raise ValueError()
 
@@ -285,20 +293,23 @@ class MUp:
                        x.m_b + self.m_b,
                        x.m_d + self.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         elif isinstance(x, (int, float)):
             return MUp(x + self.m_a,
                        x + self.m_b,
                        x + self.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         elif len(x.shape) == 2:
             assert(x.shape == self.shape)
             return MUp(x[:self.k, :self.k] + self.m_a,
                        x[:self.k, self.k:] + self.m_b,
                        torch.diag(x[self.k:, self.k:]).reshape(-1, 1) + self.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         else:
             raise ValueError()
 
@@ -311,7 +322,7 @@ class MUp:
     def __neg__(self):
         """Unary minus
         """
-        return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device)
+        return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device, damping=self.damping)
 
     def add_id(self, alpha: float = 1):
         """
@@ -322,7 +333,8 @@ class MUp:
                    self.m_b,
                    self.m_d + alpha,
                    self.k,
-                   device=self.device)
+                   device=self.device,
+                   damping=self.damping)
 
     def trace(self) -> float:
         """Compute trace.
@@ -387,9 +399,9 @@ class MUp:
         m_a_inv = self.m_a_inv()
         m_d_inv = self.m_d_inv()
 
-        m_a = torch.zeros_like(self.m_a)
-        m_b = torch.zeros_like(self.m_b)
-        m_d = torch.zeros_like(self.m_d)
+        m_a = torch.zeros_like(self.m_a, device=self.device)
+        m_b = torch.zeros_like(self.m_b, device=self.device)
+        m_d = torch.zeros_like(self.m_d, device=self.device)
 
         if self.k == 0:
             m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
@@ -406,8 +418,8 @@ class MUp:
             x_1 = self.m_a.T @ v[:, :self.k]
             x_2 = self.m_b.T @ v[:, :self.k] + self.m_d * v[:, self.k:]
             y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a.T \
-                  - (g[:, self.k:] / self.m_d).transpose(1, 2) @ (m_d_inv * self.m_b.T @ m_a_inv)
-            y_2 = g[:, self.k:] / self.m_d
+                  - (g[:, self.k:] * m_d_inv).transpose(1, 2) @ (m_d_inv * self.m_b.T @ m_a_inv)
+            y_2 = g[:, self.k:] * m_d_inv
 
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a = n/2 * (M + M.T)
@@ -418,20 +430,20 @@ class MUp:
                 m_a += factor * m_a_inv.T @ m_a_inv - gamma * torch.eye(self.k, device=self.device)
                 m_b += -factor * m_a_inv.T @ m_a_inv @ self.m_b * m_d_inv.T
 
-            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) / self.m_d + v[:, self.k:]) * g[:, self.k:], axis=0)
+            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) * m_d_inv + v[:, self.k:]) * g[:, self.k:], axis=0)
         if gamma > 0:
             m_d += factor * (m_d_inv ** 2) * (1 + torch.sum((m_a_inv @ self.m_b) ** 2, axis=0)).reshape(-1, 1) - gamma
-        # print(f'update: {h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}')
+        # print(f'update: {h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}')
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
-        return self @ h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))
+        return self @ h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
 
 
 class MLow:
     def __init__(self, m_a: np.array, m_c: np.array, m_d: np.array, k: int,
-                 device: str = 'cuda', damping: float = 0) -> None:
+                 device: str = 'cuda', damping: float = 0.0) -> None:
         self.k = k
         self.d = m_d.shape[0] + k
         self.device = device
@@ -445,11 +457,11 @@ class MLow:
         self.d_inv = None
 
     @staticmethod
-    def eye(d: int, k: int, device: str = 'cpu'):
+    def eye(d: int, k: int, device: str = 'cuda'):
         return MLow(torch.eye(k, k), torch.zeros(d-k, k), torch.ones(d-k), k, device=device)
 
     @staticmethod
-    def zeros(d: int, k: int, device: str = 'cpu'):
+    def zeros(d: int, k: int, device: str = 'cuda'):
         return MLow(torch.zeros(k, k), torch.zeros(d-k, k), torch.zeros(d-k), k, device=device)
 
     def size(self):
@@ -465,7 +477,7 @@ class MLow:
         return self
 
     def t(self):
-        return MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, self.device)
+        return MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, self.device, self.damping)
 
     def __repr__(self) -> str:
         """String representation
@@ -486,23 +498,26 @@ class MLow:
         if isinstance(x, MLow):
             assert((self.size() == x.size()) and (self.k == x.k))
             return MLow(x.m_a + self.m_a,
-                       x.m_c + self.m_c,
-                       x.m_d + self.m_d,
-                       self.k,
-                       device=self.device)
+                        x.m_c + self.m_c,
+                        x.m_d + self.m_d,
+                        self.k,
+                        device=self.device,
+                        damping=self.damping)
         elif isinstance(x, (int, float)):
             return MLow(x + self.m_a,
                         x + self.m_c,
                         x + self.m_d,
                         self.k,
-                        device=self.device)
+                        device=self.device,
+                        damping=self.damping)
         elif len(x.shape) == 2:
             assert(x.shape == self.shape)
             return MLow(x[:self.k, :self.k] + self.m_a,
                         x[self.k:, :self.k] + self.m_c,
                         torch.diag(x[self.k:, self.k:]).reshape(-1, 1) + self.m_d,
                         self.k,
-                        device=self.device)
+                        device=self.device,
+                        damping=self.damping)
         else:
             raise ValueError()
 
@@ -515,17 +530,18 @@ class MLow:
     def __neg__(self):
         """Unary minus
         """
-        return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device)
+        return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device, self.damping)
 
     def __mul__(self, x: Union[int, float, np.array]) -> np.array:
         if isinstance(x, MUp):
             assert(self.shape == x.shape)
             assert(x.k == self.k)
             return MUp(x.m_a * self.m_a,
-                       torch.zeros_like(x.m_b),
+                       torch.zeros_like(x.m_b, device=self.device),
                        x.m_d * self.m_d,
                        self.k,
-                       device=self.device)
+                       device=self.device,
+                       damping=self.damping)
         elif isinstance(x, MLow):
             assert(self.shape == x.shape)
             assert(x.k == self.k)
@@ -533,13 +549,15 @@ class MLow:
                         x.m_c * self.m_c,
                         x.m_d * self.m_d,
                         self.k,
-                        device=self.device)
+                        device=self.device,
+                        damping=self.damping)
         elif isinstance(x, (int, float)) or (isinstance(x, torch.Tensor) and (x.ndim == 0)):
             return MLow(x* self.m_a,
                         x * self.m_c,
                         x * self.m_d,
                         self.k,
-                        device=self.device)
+                        device=self.device,
+                        damping=self.damping)
         else:
             # Implement np.array and torch.tensor cases
             raise ValueError()
@@ -563,7 +581,8 @@ class MLow:
                         self.m_c @ x.m_a + self.m_d * x.m_c,
                         self.m_d * x.m_d,
                         self.k,
-                        device=self.device)
+                        device=self.device,
+                        damping=self.damping)
         if isinstance(x, MUp):
             assert((self.shape[1] == x.shape[0]) and (self.k == x.k))
             """
@@ -592,12 +611,15 @@ class MLow:
 
     def solve(self, b: np.array) -> np.array:
         '''
-        Solve Bx = b
+        Solve (B + damping * I)x = b
         '''
         assert(b.shape[0] == self.d)
-        result = torch.zeros_like(b)
-        result[:self.k] = torch.linalg.solve(self.m_a, b[:self.k])
-        result[self.k:] = -self.m_c @ torch.linalg.solve(self.m_a, b[:self.k]) / self.m_d + b[self.k:] / self.m_d
+        result = torch.zeros_like(b, device=self.device)
+        identity = torch.eye(self.k, device=self.device)
+        m_a = self.m_a + self.damping * identity
+        m_d = self.m_d + self.damping
+        result[:self.k] = torch.linalg.solve(m_a, b[:self.k])
+        result[self.k:] = (-self.m_c @ torch.linalg.solve(m_a, b[:self.k])) / m_d  + b[self.k:] / m_d
         return result
 
     def inv(self):
@@ -662,9 +684,9 @@ class MLow:
         m_a_inv = self.m_a_inv()
         m_d_inv = self.m_d_inv()
 
-        m_a = torch.zeros_like(self.m_a)
-        m_c = torch.zeros_like(self.m_c)
-        m_d = torch.zeros_like(self.m_d)
+        m_a = torch.zeros_like(self.m_a, device=self.device)
+        m_c = torch.zeros_like(self.m_c, device=self.device)
+        m_d = torch.zeros_like(self.m_d, device=self.device)
 
         # Edge case handling for k = 0 and k = d
         if self.k == 0:
@@ -695,9 +717,9 @@ class MLow:
 
         if gamma > 0:
             m_d += factor * (m_d_inv ** 2) - gamma
-        # print(h(beta * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
+        # print(h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
 
-        # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar
+        # We avoid computing C_up * kappa_up(B^{-1} G_S B^{-T}) by simply multiplying the scalar
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
         return self @ h(beta/n * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
@@ -816,6 +838,6 @@ class BlockTriangular:
 def h(x: Union[MUp, MLow]) -> Union[MUp, MLow]:
     """
     Return quadratic approximation to exponential function
-        I + X + 1/2 X @ X
+        I + X + 1/2 * X @ X
     """
     return x.add_id() + 0.5 * x @ x

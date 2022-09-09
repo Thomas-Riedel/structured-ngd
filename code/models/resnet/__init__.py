@@ -7,6 +7,7 @@ from torch.optim import Adam
 from optimizers.noisy_optimizer import *
 
 from typing import Union, Tuple, List, Callable
+import time
 
 
 class ResNet(nn.Module):
@@ -54,10 +55,11 @@ class ResNet(nn.Module):
 
     def train(self, data_loader: DataLoader, optimizer: Union[Adam, NoisyOptimizer],
               epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 1,
-              loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict]:
+              loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict, List[float]]:
         epoch_loss = 0.0
         iter_loss = []
         iter_metrics = {}
+        iter_time = []
         running_loss = 0.0
         running_metrics = {}
         for metric in metrics:
@@ -78,7 +80,10 @@ class ResNet(nn.Module):
                 return loss, preds
 
             # Perform forward pass, compute loss, backpropagate, update parameters
+            start = time.time()
             loss, preds = optimizer.step(closure)
+            end = time.time()
+            iter_time.append(end - start)
             print(loss.item())
 
             # Record losses and metrics
@@ -98,7 +103,7 @@ class ResNet(nn.Module):
                     print(f"\t{name}: {running_metrics[name] / eval_every:.3f}")
                     running_metrics[name] = 0.0
                 print("===========================================")
-        return iter_loss, iter_metrics
+        return iter_loss, iter_metrics, iter_time
 
     @torch.no_grad()
     def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],

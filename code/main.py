@@ -130,7 +130,8 @@ def run(epochs: int, model: str, optimizers: List[Union[StructuredNGD, Adam]],
 				optimizer = optim(model.parameters(), lr=param['lr'])
 			scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-			times = []
+			epoch_times = []
+			iter_times = []
 			val_loss = []
 			val_metrics = {}
 			iter_losses = []
@@ -141,13 +142,14 @@ def run(epochs: int, model: str, optimizers: List[Union[StructuredNGD, Adam]],
 
 			for epoch in range(epochs):
 				start = time.time()
-				iter_loss, iter_metric = model.train(train_loader, optimizer, epoch=epoch,
-													 loss_fn=loss_fn, metrics=metrics,
-													 eval_every=eval_every)
+				iter_loss, iter_metric, iter_time = model.train(train_loader, optimizer, epoch=epoch,
+																loss_fn=loss_fn, metrics=metrics,
+																eval_every=eval_every)
 				if epoch == 0:
-					times.append(0)
+					epoch_times.append(0)
 				else:
-					times.append(time.time() - start)
+					epoch_times.append(time.time() - start)
+				iter_times += iter_time
 
 				loss, metric = model.evaluate(val_loader, metrics=metrics)
 				# Append single validation metric value epoch-wise
@@ -163,20 +165,29 @@ def run(epochs: int, model: str, optimizers: List[Union[StructuredNGD, Adam]],
 				scheduler.step()
 
 			test_metrics, test_loss = model.evaluate(test_loader, metrics=metrics)
+			iter_times[0] = 0.0
+			iter_times = np.cumsum(iter_times)
+			epoch_times = np.cumsum(epoch_times)
+			name = type(optimizer).__name__
+			timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+			print(val_loss)
 
 			runs.append(
 				dict(
-					name=type(optimizer).__name__,
+					name=name,
 					optimizer=optimizer,
 					params=params,
-					times=np.cumsum(times),
+					iter_times=iter_times,
+					epoch_times=epoch_times,
 					val_metrics=val_metrics,
 					val_loss=val_loss,
 					test_loss = test_loss,
 					test_metrics=test_metrics,
 					iter_loss=iter_losses,
 					iter_metrics=iter_metrics,
-					time=datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+					timestamp=timestamp
+				)
+			)
 		print('Finished Training')
 	return runs
 
@@ -188,27 +199,35 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
 	plt.figure(figsize=(12, 8))
 	for run in runs:
 		plt.plot(run['iter_loss'], label=run['name'])
-		plt.ylim(bottom=0)
-		plt.title('Training Curve')
-		plt.xlabel('iterations')
-		plt.legend()
-		plt.savefig(f"plots/{run['time']}_iter_loss")
-		plt.show()
 
 		for metric_key in run['iter_metrics'].keys():
 			plt.plot(run['iter_metrics'][metric_key],
 					 label=f"{run['name']} ({metric_key})")
+	# plt.ylim(bottom=0)
+	plt.title('Training Metrics')
+	plt.xlabel('iterations')
+	plt.legend()
+	plt.savefig(f"plots/{run['timestamp']}_iter_metrics")
+	plt.show()
 
-		plt.ylim(bottom=0)
-		plt.title('Training Metrics')
-		plt.xlabel('iterations')
-		plt.legend()
-		plt.savefig(f"plots/{run['time']}_iter_metrics")
-		plt.show()
+	# Plot loss in terms of computation time
+	plt.figure(figsize=(12, 8))
+	for run in runs:
+		plt.plot(run['iter_times'], run['iter_loss'], label=run['name'])
+
+		for metric_key in run['iter_metrics'].keys():
+			plt.plot(run['iter_times'], run['iter_metrics'][metric_key],
+					 label=f"{run['name']} ({metric_key})")
+	# plt.ylim(bottom=0)
+	plt.title('Training Metrics')
+	plt.xlabel('time (s)')
+	plt.legend()
+	plt.savefig(f"plots/{run['timestamp']}_iter_metrics_time")
+	plt.show()
 
 	# Plot loss and accuracy over epochs and time
+	plt.figure(figsize=(12, 8))
 	for run in runs:
-		plt.figure(figsize=(12, 8))
 		plt.subplot(2, 2, 1)
 		plt.plot(run['val_loss'], label=run['name'])
 		plt.title('Validation Loss')
@@ -217,6 +236,13 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
 		plt.legend()
 
 		plt.subplot(2, 2, 2)
+		plt.plot(run['epoch_times'], run['val_loss'], label=run['name'])
+		plt.title('Validation Loss')
+		plt.xlabel('time (s)')
+		plt.ylim(bottom=0)
+		plt.legend()
+
+		plt.subplot(2, 2, 3)
 		for metric_key in run['val_metrics'].keys():
 			plt.plot(run['val_metrics'][metric_key],
 					 label=f"{run['name']} ({metric_key})")
@@ -226,25 +252,18 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
 		plt.ylim(0, 1)
 		plt.legend()
 
-		plt.subplot(2, 2, 3)
+		plt.subplot(2, 2, 4)
 		for metric_key in run['val_metrics'].keys():
-			plt.plot(run['times'], run['val_metrics'][metric_key],
+			plt.plot(run['epoch_times'], run['val_metrics'][metric_key],
 					 label=f"{run['name']} ({metric_key})")
-		plt.title('Validation Accuracy')
+		plt.title('Validation Metrics')
 		plt.xlabel('time (s)')
 		plt.ylim(0, 1)
 		plt.legend()
 
-		plt.subplot(2, 2, 4)
-		plt.plot(run['times'], run['val_loss'], label=run['name'])
-		plt.title('Validation Loss')
-		plt.xlabel('time (s)')
-		plt.ylim(bottom=0)
-		plt.legend()
-
-		plt.tight_layout()
-		plt.savefig(f"plots/{run['time']}_loss_metrics")
-		plt.show()
+	plt.tight_layout()
+	plt.savefig(f"plots/{run['timestamp']}_loss_metrics")
+	plt.show()
 
 
 def save_runs(runs: Union[dict, List[dict]]) -> None:
@@ -259,7 +278,7 @@ def main() -> None:
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 	EPOCHS, DATASET, MODEL, BATCH_SIZE, LEARNING_RATE, K, MC_SAMPLES, STRUCTURE, EVAL_EVERY = parse_args()
-	metrics = [accuracy, precision, recall, f1_score, calibration_error]
+	metrics = [accuracy, calibration_error] # [accuracy, precision, recall, f1_score, calibration_error]
 
 	train_loader, val_loader, test_loader = load_data(DATASET, BATCH_SIZE)
 	num_classes = len(train_loader.dataset.classes)
