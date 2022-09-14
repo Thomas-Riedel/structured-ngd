@@ -212,10 +212,14 @@ class StructuredNGD(NoisyOptimizer):
             damping = group['damping']
             # For each layer
             for i, p in enumerate(group['params']):
+                verbose = False
                 if p.requires_grad:
+                    if i == 1:
+                        verbose = True
+                        print(self.state[p]['momentum_prec_buffer'])
                     self._update_momentum_grad_buffers(p, eta, n, beta1)
                     self._update_param_averages(p, lr, beta1, beta2, eta, n, damping)
-                    self._update_momentum_prec_buffers(p, eta, n, beta2)
+                    self._update_momentum_prec_buffers(p, eta, n, beta2, verbose)
 
     def _update_momentum_grad_buffers(self, p: Parameter, eta: float, n: int, beta1: float) -> None:
         """Update momentum term:
@@ -258,7 +262,7 @@ class StructuredNGD(NoisyOptimizer):
         update = b_bar.t().solve(b_bar.solve(m_bar)).reshape(p.shape) # (7)
         self.state[p]['param_average'].add_(-lr * update)
 
-    def _update_momentum_prec_buffers(self, p: Parameter, eta: float, n: int, beta2: float) -> None:
+    def _update_momentum_prec_buffers(self, p: Parameter, eta: float, n: int, beta2: float, verbose: bool = False) -> None:
         """Update square root precisions for parameter p
             B <- B @ h((1-beta) * C .* kappa(B^{-1} G_S B^{-T}))
 
@@ -272,7 +276,7 @@ class StructuredNGD(NoisyOptimizer):
         grad_samples = self.state[p]['grad_samples']
         param_samples = self.state[p]['param_samples']
         self.state[p]['momentum_prec_buffer'] = b_bar._update(beta2, eta, n, grad_samples,
-                                                              param_samples - p_avg)  # (6) & (8)
+                                                              param_samples - p_avg, verbose=verbose)  # (6) & (8)
 
     def _restore_param_averages(self) -> None:
         """Save 'param_average' field back to parameters

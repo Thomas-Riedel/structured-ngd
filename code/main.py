@@ -6,6 +6,7 @@ import seaborn as sns
 sns.set()
 import pickle
 import re
+import os
 import itertools
 from typing import Union, List, Tuple
 
@@ -244,6 +245,8 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
 	"""
 	if type(runs) == dict:
 		runs = [runs]
+	if not os.path.exists('plots'):
+		os.mkdir('plots')
 	# Plot loss per iterations
 	plt.figure(figsize=(12, 8))
 	for run in runs:
@@ -322,6 +325,9 @@ def save_runs(runs: Union[dict, List[dict]]) -> None:
 	"""
 	if type(runs) == dict:
 		runs = [runs]
+	if not os.path.exists('runs'):
+		os.mkdir('runs')
+
 	for run in runs:
 		with open(f"runs/{run['timestamp']}.pkl", 'wb') as f:
 			pickle.dump(run, f)
@@ -333,7 +339,7 @@ def main() -> None:
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 	args = parse_args()
-	metrics = [accuracy, calibration_error] # [accuracy, precision, recall, f1_score, calibration_error]
+	metrics = [accuracy, calibration_error]  # [accuracy, precision, recall, f1_score, calibration_error]
 
 	train_loader, val_loader, test_loader = load_data(args['dataset'], args['batch_size'])
 	num_classes = len(train_loader.dataset.classes)
@@ -344,7 +350,7 @@ def main() -> None:
 		for lr, k, mc_samples, structure in zip(args['lr'], args['k'], args['mc_samples'], args['structure'])
 	]
 	adam_params = [dict(lr=lr) for lr in set(args['lr'])]
-	optimizers = [StructuredNGD]
+	optimizers = [Adam, StructuredNGD]
 
 	runs = run(
 		args['epochs'], model, optimizers, train_loader, val_loader, adam_params=adam_params,
