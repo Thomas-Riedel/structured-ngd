@@ -13,7 +13,13 @@ import time
 class ResNet(nn.Module):
     def __init__(self, model_type: str = 'resnet18',
                  num_classes: int = 10,
-                 device: str = 'cuda') -> None:
+                 device: str = None) -> None:
+        """torch.nn.Module class for ResNet
+
+        :param model_type: str, specify what ResNet model to use
+        :param num_classes: int, number of classes in dataset for classification
+        :param device: str, torch device to run operations on (GPU or CPU)
+        """
         super(ResNet, self).__init__()
 
         model_types = ['resnet' + str(n) for n in [18, 34, 50, 101, 152]]
@@ -45,17 +51,36 @@ class ResNet(nn.Module):
             # )
             raise ValueError(f"Model type {model_type} not recognized! "
                              f"Choose one of {model_types}.")
-            
+
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.init_weights()
         self.num_classes = num_classes
         self.device = device
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through model.
+
+        :param x: torch.tensor, argument for forward pass
+        :return: output, Tensor, model output
+        """
         return self.model(x)
 
     def train(self, data_loader: DataLoader, optimizer: Union[Adam, NoisyOptimizer],
-              epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 1,
+              epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 10,
               loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict, List[float]]:
+        """Training loop for one epoch.
+
+        :param data_loader: torch.utils.data.DataLoader, training dataset
+        :param optimizer: Union[Adam, NoisyOptimizer], which optimizer to use
+        :param epoch: int, current epoch (training will be done for only one single epoch!)
+        :param metrics: List[Callable], list of metrics to run for evaluation
+        :param eval_every: int, running losses and metrics will be averaged and displayed after a certain number of
+            iterations
+        :param loss_fn: Callable, loss function to optimize
+        :return: (iter_loss, iter_metrics, iter_time), Tuple[List[float], dict, List[float]], list of iterationwise
+            losses, metrics and computation times for update
+        """
         epoch_loss = 0.0
         iter_loss = []
         iter_metrics = {}
@@ -107,7 +132,14 @@ class ResNet(nn.Module):
 
     @torch.no_grad()
     def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
-                 loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict]:
+                 loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[float, dict]:
+        """Evaluate data on loss function and metrics.
+
+        :param data_loader: torch.utils.data.DataLoader, validation or test dataset
+        :param metrics: List[Callable], list of metrics to run for evaluation
+        :param loss_fn: Callable, loss function to optimize
+        :return: (loss, metric_vals), Tuple[float, dict], tuple of loss and specified metrics on validation set
+        """
         if data_loader is None:
             return None, None
         loss = 0.0
@@ -133,8 +165,12 @@ class ResNet(nn.Module):
         print(metric_vals, loss)
         return loss, metric_vals
 
-    def init_weights(self) -> None:
-        torch.manual_seed(42)
+    def init_weights(self, seed: int = 42) -> None:
+        """Initialize weights.
+
+        :param seed: int, seed for random initialization
+        """
+        torch.manual_seed(seed)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.xavier_normal_(m.weight)

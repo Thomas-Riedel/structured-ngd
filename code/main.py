@@ -1,6 +1,5 @@
 import argparse
 import sys
-import time
 import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -8,7 +7,7 @@ sns.set()
 import pickle
 import re
 import itertools
-from typing import Union, Tuple, List, Callable
+from typing import Union, List, Tuple
 
 from torchvision.datasets import FashionMNIST, MNIST, CIFAR10
 from torch.utils.data import DataLoader
@@ -22,30 +21,55 @@ from models.resnet import *
 from optimizers.rank_k_cov import *
 
 
-def parse_args() -> Tuple[int, str, str, int, List[float], List[int], List[int], str, int]:
+def parse_args() -> dict:
+	"""Parse command line arguments.
+
+	:return: args_dict, dict, parsed arguments from command line
+	"""
 	parser = argparse.ArgumentParser(description='Run noisy optimizers with parameters.')
 	parser.add_argument('--epochs', type=int, default=100)
 	parser.add_argument('--dataset', type=str, default="CIFAR10")
 	parser.add_argument('--model', type=str, default="resnet18")
 	parser.add_argument('--batch_size', type=int, default=64)
-	parser.add_argument('--lr', type=str, default='1e-3')
+	parser.add_argument('--lr', type=str, default='1e-1')
 	parser.add_argument('--k', type=str, default='0')
 	parser.add_argument('--mc_samples', type=str, default='1')
 	parser.add_argument('--structure', type=str, default='rank_cov')
 	parser.add_argument('--eval_every', type=int, default=10)
 
 	args = parser.parse_args(sys.argv[1:])
-	args.lr, args.k, args.mc_samples = parse_vals([args.lr, args.k, args.mc_samples],
-												  [float, int, int])
+	args.lr, args.k, args.mc_samples = parse_vals(
+		[args.lr, args.k, args.mc_samples],
+		[float, int, int]
+	)
 	args.structure = len(args.lr) * [args.structure]
 
-	return args.epochs, args.dataset, args.model, args.batch_size, args.lr, args.k, args.mc_samples, args.structure, args.eval_every
+	args_dict = dict(
+		epochs=args.epochs,
+		dataset=args.dataset,
+		model=args.model,
+		batch_size=args.batch_size,
+		lr=args.lr,
+		k=args.k,
+		mc_samples=args.mc_samples,
+		structure=args.structure,
+		eval_every=args.eval_every
+	)
+	return args_dict
 
 
 def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
+	"""Parse string values from command line, separate and form into list.
+
+	:param args: List[str], list of supplied command line arguments as strings
+	:param types: List[type], list of specified types to parse supplied arguments to
+	:return: result, List[Union[int, float]], list of parsed and separated arguments
+	"""
 	def make_sequence(type):
 		def f(val):
 			if type == int:
+				# argument can be given as "0to11step3" meaning it should be parsed into a list ranging from 0 to 11
+				# including with a step size of 3, i.e. [0, 3, 6, 9]
 				val_list = [type(x) for x in re.split(r'to|step', val)]
 				if len(val_list) == 3:
 					start, end, step = val_list
@@ -74,9 +98,16 @@ def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
 	return result
 
 
-def load_data(dataset: str, batch_size: int) -> Tuple[DataLoader]:
+def load_data(dataset: str, batch_size: int, split: float = 0.8) -> Tuple[DataLoader]:
 	"""Load dataset, prepare for ResNet training, and split into train. validation and test set
+
+	:param dataset: str, dataset to be downloaded (one of MNIST, FashionMNIST, or CIFAR-10)
+	:param batch_size: int, batch size for data
+	:param split: float, split for training and validation data
+	:return: (train_loader, val_loader, test_loader), Tuple[torch.utils.data.DataLoader], list of split and batched
+		dataset
 	"""
+	assert(0 < split < 1)
 
 	# For ResNet, see https://pytorch.org/hub/pytorch_vision_resnet/
 	transform = transforms.Compose([transforms.ToTensor(), 
@@ -97,7 +128,7 @@ def load_data(dataset: str, batch_size: int) -> Tuple[DataLoader]:
 
 	indices = list(range(len(training_data)))
 	np.random.shuffle(indices)
-	split = int(0.8 * len(training_data))
+	split = int(split * len(training_data))
 	train_sampler = SubsetRandomSampler(indices[:split])
 	val_sampler = SubsetRandomSampler(indices[split:])
 
@@ -108,10 +139,25 @@ def load_data(dataset: str, batch_size: int) -> Tuple[DataLoader]:
 	return train_loader, val_loader, test_loader
 
 
-def run(epochs: int, model: str, optimizers: List[Union[StructuredNGD, Adam]],
+def run(epochs: int, model: str, optimizers: List[Union[Adam, StructuredNGD]],
 		train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader = None,
 		adam_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [],
-		eval_every: int = 1) -> List[dict]:
+		eval_every: int = 10) -> List[dict]:
+	"""Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
+
+	:param epochs: int, number of epochs for training
+	:param model: str, ResNet model for experiments
+	:param optimizers: List[Union[Adam, StructuredNGD]], list of models to run experiments on
+	:param train_loader: torch.utils.data.DataLoader, training data
+	:param val_loader: torch.utils.data.DataLoader, validation data
+	:param test_loader: torch.utils.data.DataLoader, test data
+	:param adam_params: List[dict], hyperparameters for Adam
+	:param ngd_params: List[dict], hyperparameters for StructuredNGD
+	:param metrics: List[Callable], list of metrics to run on data for evaluation
+	:param eval_every: int, after a certain number of iterations, running losses and metrics will be averaged and
+		displayed
+	:return: runs, List[dict], list of results
+	"""
 	loss_fn = nn.CrossEntropyLoss()
 	runs = []
 	device = model.device
@@ -141,14 +187,13 @@ def run(epochs: int, model: str, optimizers: List[Union[StructuredNGD, Adam]],
 				iter_metrics[metric.__name__] = []
 
 			for epoch in range(epochs):
-				start = time.time()
 				iter_loss, iter_metric, iter_time = model.train(train_loader, optimizer, epoch=epoch,
 																loss_fn=loss_fn, metrics=metrics,
 																eval_every=eval_every)
 				if epoch == 0:
 					epoch_times.append(0)
 				else:
-					epoch_times.append(time.time() - start)
+					epoch_times.append(np.sum(iter_time))
 				iter_times += iter_time
 
 				loss, metric = model.evaluate(val_loader, metrics=metrics)
@@ -193,6 +238,10 @@ def run(epochs: int, model: str, optimizers: List[Union[StructuredNGD, Adam]],
 
 
 def plot_runs(runs: Union[dict, List[dict]]) -> None:
+	"""Plot runs and save in plots folder.
+
+	:param runs: List[dict], list of runs to be plotted
+	"""
 	if type(runs) == dict:
 		runs = [runs]
 	# Plot loss per iterations
@@ -207,7 +256,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
 	plt.title('Training Metrics')
 	plt.xlabel('iterations')
 	plt.legend()
-	plt.savefig(f"plots/{run['timestamp']}_iter_metrics")
+	plt.savefig(f"plots/{run['timestamp']}_iter_metrics.pdf")
 	plt.show()
 
 	# Plot loss in terms of computation time
@@ -222,7 +271,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
 	plt.title('Training Metrics')
 	plt.xlabel('time (s)')
 	plt.legend()
-	plt.savefig(f"plots/{run['timestamp']}_iter_metrics_time")
+	plt.savefig(f"plots/{run['timestamp']}_iter_metrics_time.pdf")
 	plt.show()
 
 	# Plot loss and accuracy over epochs and time
@@ -262,38 +311,44 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
 		plt.legend()
 
 	plt.tight_layout()
-	plt.savefig(f"plots/{run['timestamp']}_loss_metrics")
+	plt.savefig(f"plots/{run['timestamp']}_loss_metrics.pdf")
 	plt.show()
 
 
 def save_runs(runs: Union[dict, List[dict]]) -> None:
+	"""Save runs in runs folder.
+
+	:param runs: List[dict], list of runs to be individually saved in runs folder
+	"""
 	if type(runs) == dict:
 		runs = [runs]
 	for run in runs:
-		with open(f"runs/{run['time']}.pkl", 'wb') as f:
+		with open(f"runs/{run['timestamp']}.pkl", 'wb') as f:
 			pickle.dump(run, f)
 
 
 def main() -> None:
+	"""Run script.
+	"""
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-	EPOCHS, DATASET, MODEL, BATCH_SIZE, LEARNING_RATE, K, MC_SAMPLES, STRUCTURE, EVAL_EVERY = parse_args()
+	args = parse_args()
 	metrics = [accuracy, calibration_error] # [accuracy, precision, recall, f1_score, calibration_error]
 
-	train_loader, val_loader, test_loader = load_data(DATASET, BATCH_SIZE)
+	train_loader, val_loader, test_loader = load_data(args['dataset'], args['batch_size'])
 	num_classes = len(train_loader.dataset.classes)
 
-	model = ResNet(model_type=MODEL, num_classes=num_classes, device=device)
+	model = ResNet(model_type=args['model'], num_classes=num_classes, device=device)
 	ngd_params = [
 		dict(lr=lr, k=k, mc_samples=mc_samples, structure=structure)
-		for lr, k, mc_samples, structure in zip(LEARNING_RATE, K, MC_SAMPLES, STRUCTURE)
+		for lr, k, mc_samples, structure in zip(args['lr'], args['k'], args['mc_samples'], args['structure'])
 	]
-	adam_params = [dict(lr=lr) for lr in set(LEARNING_RATE)]
-	optimizers = [Adam, StructuredNGD]
+	adam_params = [dict(lr=lr) for lr in set(args['lr'])]
+	optimizers = [StructuredNGD]
 
 	runs = run(
-		EPOCHS, model, optimizers, train_loader, val_loader, adam_params=adam_params,
-		ngd_params=ngd_params, metrics=metrics, eval_every=EVAL_EVERY
+		args['epochs'], model, optimizers, train_loader, val_loader, adam_params=adam_params,
+		ngd_params=ngd_params, metrics=metrics, eval_every=args['eval_every']
 	)
 	save_runs(runs)
 	plot_runs(runs)

@@ -7,10 +7,24 @@ from typing import Union, List
 
 class MUp:
     def __init__(self, m_a: np.array, m_b: np.array, m_d: np.array, k: int,
-                 device: str = 'cuda', damping: float = 0.0) -> None:
+                 device: str = None, damping: float = 0.0) -> None:
+        """Block upper triangular matrix class
+                ( m_a   m_b )
+            M = (           )
+                ( 0     m_d )
+
+        :param m_a: np.array of shape (k, k), first block
+        :param m_b: np.array of shape (k, d-k), second block
+        :param m_d: np.array of shape (d-k), diagonal third block
+        :param k: int, size of first block m_a
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :param damping: float, damping term for inversion or linear system solution
+        """
         assert(m_a.shape[0] == m_a.shape[1])
         assert(m_a.shape[1] == m_b.shape[0])
         assert(m_b.shape[1] == m_d.shape[0])
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.k = k
         self.d = m_d.shape[0] + k
@@ -25,14 +39,39 @@ class MUp:
         self.d_inv = None
 
     @staticmethod
-    def eye(d: int, k: int, device: str = 'cuda', damping: float = 0.0):
+    def eye(d: int, k: int, device: str = None, damping: float = 0.0):
+        """Identity matrix of shape d x d represented as MUp.
+
+        :param d: int, size of matrix
+        :param k: int, size of first block m_a
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :param damping: float, damping term for inversion or linear system solution
+        :return: result: MUp, identity matrix represented as MUp
+        """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
         return MUp(torch.eye(k, k), torch.zeros(k, d-k), torch.ones(d-k), k, device=device, damping=damping)
 
     @staticmethod
-    def zeros(d: int, k: int, device: str = 'cuda', damping: float = 0.0):
+    def zeros(d: int, k: int, device: str = None, damping: float = 0.0):
+        """Zero matrix of shape d x d represented as MUp.
+
+        :param d: int, size of matrix
+        :param k: int, size of first block m_a
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :param damping: float, damping term for inversion or linear system solution
+        :return: result: MUp, zero matrix represented as MUp
+        """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
         return MUp(torch.zeros(k, k), torch.zeros(k, d-k), torch.zeros(d-k), k, device=device, damping=damping)
 
     def to(self, device: str):
+        """Move object onto device.
+        
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :return: self, MUp matrix on specified device
+        """
         # Move all blocks onto device
         self.device = device
         self.m_a = self.m_a.to(device)
@@ -41,24 +80,27 @@ class MUp:
         return self
 
     def solve(self, b: np.array) -> np.array:
-        '''
-        Solve (B + damping * I)x = b
-        '''
+        """Solve (B + damping * I) x = b
+        
+        :param b: np.array of shape (d, 1), Right hand side of linear system of equations
+        :return: result, np.array of shape (d, 1) as solution of dampened linear system
+        """
         assert(b.shape[0] == self.d)
+        # Thomas algorithm, see self.inv() for information 
         identity = torch.eye(self.k, device=self.device)
         m_a = self.m_a + self.damping * identity
         m_d = self.m_d + self.damping
         result = torch.zeros_like(b, device=self.device)
-        result[:self.k] = torch.linalg.solve(m_a, b[:self.k]) - torch.linalg.solve(m_a, self.m_b @ (b[self.k:] / m_d))
         result[self.k:] = b[self.k:] / m_d
+        result[:self.k] = torch.linalg.solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
         return result
 
     def inv(self):
-        """
-        Calculate inverse of upper triangular block matrix
-            ( m_a   m_b )             ( m_a^{-1}   -m_a^{-1} m_b m_d^{-1} )
-        M = (           ) => M^{-1} = (                                   )
-            ( 0     m_d )             (    0                m_d^{-1}      )
+        """Calculate inverse of upper triangular block matrix 
+                ( m_a   m_b )             ( m_a^{-1}   -m_a^{-1} m_b m_d^{-1} )
+            M = (           ) => M^{-1} = (                                   )
+                ( 0     m_d )             (    0                m_d^{-1}      )
+        :return: self.inverse, MUp representation of inverse
         """
         if self.inverse is None:
             m_a_inv = self.m_a_inv()
@@ -71,25 +113,31 @@ class MUp:
                                damping=self.damping)
         return self.inverse
 
+    def m_a_inv(self) -> np.array:
+        """Calculate dampened inverse for invertible k x k matrix block m_a
+        
+        :return: self.a_inv, torch.Tensor, dampened inverse of first block
+        """
+        if self.a_inv is None:
+            identity = torch.eye(self.k, device=self.device)
+            self.a_inv = torch.linalg.pinv(self.m_a + self.damping * identity)
+        return self.a_inv
+
     def m_d_inv(self) -> np.array:
+        """Compute dampened inverse of diagonal block.
+        
+        :return: self.d_inv, torch.Tensor, dampened inverse of diagonal block
+        """
         # m_d is diagonal matrix
         if self.d_inv is None:
             self.d_inv = 1/(self.m_d + self.damping)
         return self.d_inv
 
-    def m_a_inv(self) -> np.array:
-        """
-        Calculate inverse for invertible k x k matrix block m_a
-        """
-        if self.a_inv is None:
-            identity = torch.eye(self.k, device=self.device)
-            self.a_inv = torch.linalg.inv(self.m_a + self.damping * identity)
-        return self.a_inv
-
     def full(self) -> np.array:
-        """
-        Write full d x d matrix into memory as np.array. 
+        """Write full d x d matrix into memory as np.array. 
         For large values of d, this will not be able to fit into memory!
+        
+        :return: result, np.array, dense matrix
         """
         result = torch.zeros((self.d, self.d), device=self.device)
         result[:self.k, :self.k] = self.m_a
@@ -98,28 +146,32 @@ class MUp:
         return result
 
     def size(self):
-        """
-        Return size as torch.Size object
+        """Return size as torch.Size object.
+        
+        :return: size, torch.Size, (d, d) tuple specifying size
         """
         return torch.Size((self.d, self.d))
 
     def t(self):
+        """Return transpose of block matrix which results in block lower triangular matrix.
+        
+        :return: transpose, MLow, transpose of object
         """
-        Return transpose of block matrix which results in block lower triangular matrix
-        """
-        return MLow(self.m_a.T, self.m_b.T, self.m_d, self.k, device=self.device)
+        return MLow(self.m_a.T, self.m_b.T, self.m_d, self.k, device=self.device, damping=self.damping)
 
     def precision(self) -> np.array:
+        """Full precision as arrowhead matrix as np.array (here, we parametrize S = B @ B^T).
+        This will not fit into memory for large values of d.
+        
+        :return: precision, np.array, full representation of precision matrix as B @ B^T
         """
-        Full precision as arrowhead matrix as np.array (here, we parametrize S = BB^T).
-        This ill not fit into memory for large values of d.
-        """
-        prec = self @ self.t()
-        return prec
+        precision = self @ self.t()
+        return precision
 
     def rank_matrix(self) -> np.array:
-        """
-        Rank k matrix U for which Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2})
+        """Rank k matrix U for which Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2})
+
+        :return: u_k, np.array, rank k matrix
         """
         u_k = torch.zeros((self.d, self.k), device=self.device)
         inv = self.m_a_inv()
@@ -128,9 +180,10 @@ class MUp:
         return u_k
 
     def sigma(self) -> np.array:
-        """
-        Full low-rank structured covariance matrix Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2})
+        """Full low-rank structured covariance matrix Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2})
         Will not fit into memory for large values of d!
+
+        :return: sigma, np.array, dense representation of covariance matrix
         """
         # cov = torch.zeros((self.d, self.d), device=self.device)
         # cov[self.k:, self.k:] = torch.diag(self.m_d_inv().reshape(-1)**2)
@@ -142,29 +195,42 @@ class MUp:
         return b_inv.t() @ b_inv
 
     def corr(self) -> np.array:
+        """Normalized correlation matrix
+
+        :return: corr, np.array, normalized correlation matrix
+        """
         cov = self.sigma()
         std = torch.sqrt(torch.diag(cov)).reshape((-1, 1))
         return 1/std * cov * 1/std.T
 
     def plot_correlation(self) -> None:
+        """Plot heatmap of correlation matrix.
+        """
         corr = self.corr().cpu()
         sns.heatmap(corr, vmin=-1.0, vmax=1.0, center=0.0, cmap='coolwarm')
       
     def plot_covariance(self) -> None:
+        """Plot heatmap of covariance matrix.
+        """
         cov = self.sigma().cpu()
         sns.heatmap(cov)
 
     def plot_precision(self) -> None:
+        """Plot heatmap of precision matrix.
+        """
         prec = self.precision().cpu()
         sns.heatmap(prec)
 
     def plot_rank_update(self) -> None:
+        """Plot eatmap of low rank update.
+        """
         rank_matrix = self.rank_matrix().cpu()
         sns.heatmap(rank_matrix)
 
     def __repr__(self) -> str:
-        """
-        String representation of class.
+        """String representation of class including blocks: m_a, m_b, m_d
+
+        :return: string, str, string representation of class
         """
         string = "m_a: \n\t"
         string += str(self.m_a)
@@ -175,8 +241,10 @@ class MUp:
         return string
 
     def __matmul__(self, x: Union[int, float, np.array]) -> np.array:
-        """
-        Matrix multiplication M @ X
+        """Matrix multiplication M @ X
+
+        :param x: Union[int, float, np.array], scalar, vector, or matrix for matrix multiplication
+        :return: result, result of matrix multiplication with B
         """
         assert(self.d == x.shape[0])
         x = x.to(self.device)
@@ -219,8 +287,10 @@ class MUp:
             return result
         
     def __rmatmul__(self, x: Union[int, float, np.array]) -> np.array:
-        """
-        Matrix multiplication X @ M
+        """Matrix multiplication X @ M
+
+        :param x: Union[int, float, np.array], scalar, vector, or matrix for matrix multiplication
+        :return: result, result of matrix multiplication with B
         """
         assert(x.shape[1] == self.shape[0])
         x = x.to(self.device)
@@ -250,8 +320,11 @@ class MUp:
             return result
 
     def __mul__(self, x: Union[int, float, np.array]) -> np.array:
-        """
-        (Elementwise) Multiplication X * M
+        """(Elementwise) Multiplication X * M
+
+        :param x: Union[int, float, np.array, MUp], argument for elementwise multiplication; for scalar,
+            broadcasted multiplication
+        :return: result, MUp, result of multiplication
         """
         if isinstance(x, MUp):
             assert(x.k == self.k)
@@ -280,11 +353,20 @@ class MUp:
             raise ValueError()
 
     def __rmul__(self, x: Union[int, float, np.array]) -> np.array:
+        """(Elementwise) Multiplication X * M
+
+        :param x: Union[int, float, np.array, MUp], argument for elementwise multiplication; for scalar,
+            broadcasted multiplication
+        :return: result, MUp, result of multiplication
+        """
         return self * x
 
     def __add__(self, x: Union[int, float, np.array]) -> np.array:
-        """
-          (Elementwise) Addition X + M
+        """(Elementwise) Addition X + M
+
+        :param x: Union[int, float, np.array, MUp], argument for elementwise addition; for scalar,
+            broadcasted addition
+        :return: result, MUp, result of addition
         """
         x = x.to(self.device)
         if isinstance(x, MUp):
@@ -314,22 +396,39 @@ class MUp:
             raise ValueError()
 
     def __radd__(self, x: Union[int, float, np.array]) -> np.array:
+        """(Elementwise) Addition X + M
+
+        :param x: Union[int, float, np.array, MUp], argument for elementwise addition; for scalar,
+            broadcasted addition
+        :return: result, MUp, result of addition
+        """
         return self + x
 
     def __truediv__(self, x: Union[int, float]):
+        """(Elementwise) Division M / x
+
+        :param x: Union[int, float, np.array, MUp], argument for elementwise division
+        :return: result, MUp, result of division
+        """
         return 1/x * self
 
     def __neg__(self):
-        """Unary minus
+        """Unary minus.
+
+        :return: result, MUp, negated entries
         """
         return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device, damping=self.damping)
 
     def add_id(self, alpha: float = 1):
+        """Add alpha * I to M, i.e.,
+                            ( m_a1 + alpha * I           m_b1     )
+            M + alpha * I = (                                     )
+                            (  0                 m_d1 + alpha * I )
+
+        :param alpha: float, factor to identity matrix to be added to M
+        :return: result, MUp, result of M + alpha * I
         """
-        Add alpha * I to M, i.e.,
-            self + alpha * I
-        """
-        return MUp(self.m_a + alpha * torch.eye(self.k),
+        return MUp(self.m_a + alpha * torch.eye(self.k, device=self.device),
                    self.m_b,
                    self.m_d + alpha,
                    self.k,
@@ -339,43 +438,63 @@ class MUp:
     def trace(self) -> float:
         """Compute trace.
             tr(M) = tr(m_a) + tr(m_d) = tr(m_a) + sum(m_d)
+
+        :return: trace, float, trace of M
         """
         return torch.trace(self.m_a) + torch.sum(self.m_d)
 
     def det(self) -> float:
         """Compute determinant.
             det(M) = det(m_a) * det(m_d) = det(m_a) * (prod m_d)
+
+        :return: det, float, result of determinant of M
         """
         return torch.det(self.m_a) * torch.prod(self.m_d)
 
     def log_det(self) -> float:
         """Compute log of determinant.
             log(det(M)) = log(det(m_a) * (prod m_d)) = log(det(m_a)) + sum(log(m_d))
+
+        :return: log_det, float, result of log(det(M))
         """
         eps = torch.finfo().tiny
         return torch.logdet(self.m_a + eps * torch.eye(self.k)) + torch.sum(torch.log(self.m_d + eps))
 
     def frobenius_norm(self) -> float:
         """Returns squared Frobenius norm of M, i.e.,
-            ||M||_F^2 = tr(M^T M) = ||m_a||_F^2 + ||m_b||_F^2 + ||m_d||_F^2"""
+            ||M||_F^2 = tr(M^T M) = ||m_a||_F^2 + ||m_b||_F^2 + ||m_d||_F^2
+
+        :return: norm, float, squared Frobenius norm of M
+        """
         return torch.sum(self.m_a ** 2) + torch.sum(self.m_b ** 2) + torch.sum(self.m_d ** 2)
 
     def c_up(self):
+        """C_up for Natural Gradient computation
+                   ( 1/2 J_A     J_B   )
+            C_up = (                   )
+                   (    0      1/2 J_D )
+
+        :return: result, MUp, C_up matrix
+        """
         return MUp(0.5 * torch.ones((self.k, self.k)),
                    torch.ones((self.k, self.d - self.k)),
                    0.5 * torch.ones(self.d - self.k),
                    self.k,
                    device=self.device)
 
-    def sample(self, mu: Union[int, float, np.array] = 0, n: int = 1) -> np.array:
+    def sample(self, mu: Union[int, float, np.array] = 0.0, n: int = 1) -> np.array:
         """
-        Sample z ~ N(mu, Sigma) with covariance matrix 
+        Sample z ~ N(mu, Sigma) with covariance matrix
           Sigma = S^{-1} = B^{-T} B^{-1} = U U^T + diag(0_k, m_d^{-2}):
         z = mu + U @ eps_rank + diag(0_k, m_d^{-1} @ eps_diag),
           where eps_rank ~ N(0, I_k), eps_diag ~ N(0, I_{d-k})
         Or:
         z = mu + B^{-T} @ eps
           where eps ~ N(0, I_d)
+
+        :param mu: Union[int, float, np.array], mean value for Normal distribution
+        :param n: int, number of samples to draw from
+        :return: z, np.array of shape (n, d), array of n samples of N(mu, S^{-1})
         """
         # eps_rank = torch.randn((self.k, n), device=self.device)
         # eps_diag = torch.randn((self.d - self.k, n), device=self.device)
@@ -387,12 +506,20 @@ class MUp:
         return z.T
 
     def _update(self, beta: float, eta: float, n: int, g: np.array, v: np.array, gamma: float = 1):
-        """Perform update step 
-          B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
+        """Perform update step
+            B <- B h((1-beta) * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
         by zeroing out entries.
-        This function however avoids storing intermediate d x d matrices and 
+        This function however avoids storing intermediate d x d matrices and
         computes the update step much more efficiently (see algorithm for details).
+
+        :param beta: float, second order momentum strength
+        :param eta: float, prior precision
+        :param n: int, training set size
+        :param g: np.array, gradient samples
+        :param v: np.array, parameter samples (with mean zero, i.e. v ~ N(0, S^{-1})
+        :param gamma: float, regularization parameter in ELBO
+        :return: result, MUp, updated square root precision
         """
         assert(gamma >= 0)
         factor = gamma * eta / n
@@ -407,43 +534,59 @@ class MUp:
             m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
         elif self.k == self.d:
             x_1 = self.m_a.T @ v[:, :self.k]
-            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a.T
+            y_1 = g[:, :self.k].transpose(1, 2) @ m_a_inv.T
 
             M = torch.mean(x_1 @ y_1, axis=0)
-            m_a = n/2 * (M + M.T)
+            m_a += n/2 * (M + M.T)
 
             if gamma > 0:
                 m_a += factor * m_a_inv.T @ m_a_inv - gamma * torch.eye(self.k, device=self.device)
         else:
             x_1 = self.m_a.T @ v[:, :self.k]
             x_2 = self.m_b.T @ v[:, :self.k] + self.m_d * v[:, self.k:]
-            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a.T \
-                  - (g[:, self.k:] * m_d_inv).transpose(1, 2) @ (m_d_inv * self.m_b.T @ m_a_inv)
+            y_1 = g[:, :self.k].transpose(1, 2) @ m_a_inv.T \
+                  - g[:, self.k:].transpose(1, 2) @ (m_d_inv * self.m_b.T @ m_a_inv)
             y_2 = g[:, self.k:] * m_d_inv
 
             M = torch.mean(x_1 @ y_1, axis=0)
-            m_a = n/2 * (M + M.T)
-            m_b = n/2 * torch.mean(x_1 @ y_2.transpose(1, 2), axis=0)
+            m_a += n/2 * (M + M.T)
+            m_b += n/2 * torch.mean(x_1 @ y_2.transpose(1, 2), axis=0)
             m_b += n/2 * torch.mean(x_2 @ y_1, axis=0).T
+            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) * m_d_inv + v[:, self.k:]) * g[:, self.k:], axis=0)
 
             if gamma > 0:
-                m_a += factor * m_a_inv.T @ m_a_inv - gamma * torch.eye(self.k, device=self.device)
+                identity = torch.eye(self.k, device=self.device)
+                m_a += factor * m_a_inv.T @ m_a_inv - gamma * identity
                 m_b += -factor * m_a_inv.T @ m_a_inv @ self.m_b * m_d_inv.T
 
-            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) * m_d_inv + v[:, self.k:]) * g[:, self.k:], axis=0)
         if gamma > 0:
             m_d += factor * (m_d_inv ** 2) * (1 + torch.sum((m_a_inv @ self.m_b) ** 2, axis=0)).reshape(-1, 1) - gamma
-        # print(f'update: {h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}')
+        # print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
-        return self @ h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
+        return self @ h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
 
 
 class MLow:
     def __init__(self, m_a: np.array, m_c: np.array, m_d: np.array, k: int,
-                 device: str = 'cuda', damping: float = 0.0) -> None:
+                 device: str = None, damping: float = 0.0) -> None:
+        """Block lower triangular matrix class
+                ( m_a    0  )
+            M = (           )
+                ( m_c   m_d )
+
+        :param m_a: np.array of shape (k, k), first block
+        :param m_c: np.array of shape (d-k, k), second block
+        :param m_d: np.array of shape (d-k), diagonal third block
+        :param k: int, size of first block m_a
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :param damping: float, damping term for inversion or linear system solution
+        """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
         self.k = k
         self.d = m_d.shape[0] + k
         self.device = device
@@ -457,18 +600,45 @@ class MLow:
         self.d_inv = None
 
     @staticmethod
-    def eye(d: int, k: int, device: str = 'cuda'):
-        return MLow(torch.eye(k, k), torch.zeros(d-k, k), torch.ones(d-k), k, device=device)
+    def eye(d: int, k: int, device: str = None, damping: float = 0.0):
+        """Identity matrix of shape d x d represented as MLow.
+
+        :param d: int, size of matrix
+        :param k: int, size of first block m_a
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :param damping: float, damping term for inversion or linear system solution
+        :return: result: MLow, identity matrix represented as MLow
+        """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        return MLow(torch.eye(k, k), torch.zeros(d-k, k), torch.ones(d-k), k, device=device, damping=damping)
 
     @staticmethod
-    def zeros(d: int, k: int, device: str = 'cuda'):
-        return MLow(torch.zeros(k, k), torch.zeros(d-k, k), torch.zeros(d-k), k, device=device)
+    def zeros(d: int, k: int, device: str = None, damping: float = 0.0):
+        """Zero matrix of shape d x d represented as MLow.
+
+        :param d: int, size of matrix
+        :param k: int, size of first block m_a
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :param damping: float, damping term for inversion or linear system solution
+        :return: result: MLow, zero matrix represented as MLow
+        """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        return MLow(torch.zeros(k, k), torch.zeros(d-k, k), torch.zeros(d-k), k, device=device, damping=damping)
 
     def size(self):
+        """Return size as torch.Size object.
+
+        :return: size, torch.Size, (d, d) tuple specifying size
+        """
         return torch.Size((self.d, self.d))
 
     def to(self, device: str):
-        """Copy objects to device
+        """Move object onto device.
+
+        :param device: str, torch device to run operations on (GPU or CPU)
+        :return: self, MUp matrix on specified device
         """
         self.device = device
         self.m_a = self.m_a.to(device)
@@ -477,10 +647,16 @@ class MLow:
         return self
 
     def t(self):
-        return MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, self.device, self.damping)
+        """Return transpose of block matrix which results in block lower triangular matrix.
+
+        :return: transpose, MUp, transpose of object
+        """
+        return MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, device=self.device, damping=self.damping)
 
     def __repr__(self) -> str:
-        """String representation
+        """String representation of class including blocks: m_a, m_c, m_d
+
+        :return: string, str, string representation of class
         """
         string = "m_a: \n\t"
         string += str(self.m_a)
@@ -491,8 +667,11 @@ class MLow:
         return string
 
     def __add__(self, x: Union[int, float, np.array]) -> np.array:
-        """
-          (Elementwise) Addition X + M
+        """(Elementwise) Addition X + M
+
+        :param x: Union[int, float, np.array, MLow], argument for elementwise addition; for scalar,
+            broadcasted addition
+        :return: result, MLow, result of addition
         """
         x = x.to(self.device)
         if isinstance(x, MLow):
@@ -522,17 +701,36 @@ class MLow:
             raise ValueError()
 
     def __radd__(self, x: Union[int, float, np.array]) -> np.array:
+        """(Elementwise) Addition X + M
+
+        :param x: Union[int, float, np.array, MLow], argument for elementwise addition; for scalar,
+            broadcasted addition
+        :return: result, MLow, result of addition
+        """
         return self + x
 
     def __truediv__(self, x: Union[int, float]) -> np.array:
+        """(Elementwise) Division M / x
+
+        :param x: Union[int, float, np.array, MLow], argument for elementwise division
+        :return: result, MLow, result of division
+        """
         return 1/x * self
 
     def __neg__(self):
-        """Unary minus
+        """Unary minus.
+
+        :return: result, MUp, negated entries
         """
-        return MUp(-self.m_a, -self.m_b, -self.m_d, self.k, self.device, self.damping)
+        return MUp(-self.m_a, -self.m_c, -self.m_d, self.k, self.device, self.damping)
 
     def __mul__(self, x: Union[int, float, np.array]) -> np.array:
+        """(Elementwise) Multiplication X * M
+
+        :param x: Union[int, float, np.array, MLow], argument for elementwise multiplication; for scalar,
+            broadcasted multiplication
+        :return: result, MLow, result of multiplication
+        """
         if isinstance(x, MUp):
             assert(self.shape == x.shape)
             assert(x.k == self.k)
@@ -563,10 +761,19 @@ class MLow:
             raise ValueError()
 
     def __rmul__(self, x: Union[int, float, np.array]) -> np.array:
+        """(Elementwise) Multiplication X * M
+
+        :param x: Union[int, float, np.array, MLow], argument for elementwise multiplication; for scalar,
+            broadcasted multiplication
+        :return: result, MLow, result of multiplication
+        """
         return self * x
 
     def __matmul__(self, x: Union[int, float, np.array]) -> np.array:
-        """Matrix Multiplication B @ x
+        """Matrix multiplication M @ X
+
+        :param x: Union[int, float, np.array], scalar, vector, or matrix for matrix multiplication
+        :return: result, result of matrix multiplication with B
         """
         assert(self.shape[1] == x.shape[0])
 
@@ -610,24 +817,27 @@ class MLow:
             return result
 
     def solve(self, b: np.array) -> np.array:
-        '''
-        Solve (B + damping * I)x = b
-        '''
+        """Solve (B + damping * I) x = b
+
+        :param b: np.array of shape (d, 1), Right hand side of linear system of equations
+        :return: result, np.array of shape (d, 1) as solution of dampened linear system
+        """
         assert(b.shape[0] == self.d)
         result = torch.zeros_like(b, device=self.device)
         identity = torch.eye(self.k, device=self.device)
         m_a = self.m_a + self.damping * identity
         m_d = self.m_d + self.damping
         result[:self.k] = torch.linalg.solve(m_a, b[:self.k])
-        result[self.k:] = (-self.m_c @ torch.linalg.solve(m_a, b[:self.k])) / m_d  + b[self.k:] / m_d
+        result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) / m_d
         return result
 
     def inv(self):
-        """
-        Calculate inverse of lower triangular block matrix
-            ( m_a    0  )             ( m_a^{-1}                     0    )
-        M = (           ) => M^{-1} = (                                   )
-            ( m_c   m_d )             ( -m_d^{-1} m_c m_a^{-1}   m_d^{-1} )
+        """Calculate inverse of lower triangular block matrix
+                ( m_a    0  )             ( m_a^{-1}                     0    )
+            M = (           ) => M^{-1} = (                                   )
+                ( m_c   m_d )             ( -m_d^{-1} m_c m_a^{-1}   m_d^{-1} )
+
+        :return: self.inverse, MUp representation of inverse
         """
         if self.inverse is None:
             m_a_inv = self.m_a_inv()
@@ -636,20 +846,34 @@ class MLow:
         return self.inverse
 
     def m_a_inv(self) -> np.array:
-        """
-        Calculate inverse for invertible k x k matrix block m_a
+        """Calculate dampened inverse for invertible k x k matrix block m_a
+
+        :return: self.a_inv, torch.Tensor, dampened inverse of first block
         """
         if self.a_inv is None:
-            self.a_inv = torch.linalg.inv(self.m_a + self.damping * torch.eye(self.k, device=self.device))
+            identity = torch.eye(self.k, device=self.device)
+            self.a_inv = torch.linalg.pinv(self.m_a + self.damping * identity)
         return self.a_inv
 
     def m_d_inv(self) -> np.array:
+        """Compute dampened inverse of diagonal block.
+
+        :return: self.d_inv, torch.Tensor, dampened inverse of diagonal block
+        """
         # m_d is diagonal matrix
         if self.d_inv is None:
             self.d_inv = 1/(self.m_d + self.damping)
         return self.d_inv
 
     def add_id(self, alpha: float = 1):
+        """Add alpha * I to M, i.e.,
+                            ( m_a1 + alpha * I            0       )
+            M + alpha * I = (                                     )
+                            (       m_c          m_d1 + alpha * I )
+
+        :param alpha: float, factor to identity matrix to be added to M
+        :return: result, MLow, result of M + alpha * I
+        """
         return MLow(
             self.m_a + alpha * torch.eye(self.k, device=self.device),
             self.m_c,
@@ -673,11 +897,19 @@ class MLow:
 
     def _update(self, beta: float, eta: float, n: int, g: np.array, v: np.array, gamma: float = 1):
         """Perform update step
-          B <- B h(lr * C_up .* kappa_up(B^{-1} G_S B^{-T})),
-        where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
+            B <- B h(lr * C_low .* kappa_low(B^{-1} G_S B^{-T})),
+        where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_low
         by zeroing out entries.
         This function however avoids storing intermediate d x d matrices and
         computes the update step much more efficiently (see algorithm for details).
+
+        :param beta: float, second order momentum strength
+        :param eta: float, prior precision
+        :param n: int, training set size
+        :param g: np.array, gradient samples
+        :param v: np.array, parameter samples (with mean zero, i.e. v ~ N(0, S^{-1})
+        :param gamma: float, regularization parameter in ELBO
+        :return: result, MLow, updated square root precision
         """
         assert(gamma >= 0)
         factor = gamma * eta / n
@@ -690,7 +922,7 @@ class MLow:
 
         # Edge case handling for k = 0 and k = d
         if self.k == 0:
-            m_d = n * torch.mean(self.m_d ** 2 * v[:, self.k:] * g[:, self.k:], axis=0)
+            m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
         elif self.k == self.d:
             x_1 = self.m_a.T @ v[:, :self.k]
             y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a
@@ -709,28 +941,32 @@ class MLow:
             m_a = n/2 * (M + M.T)
             m_c += n/2 * torch.mean(x_1 @ y_2, axis=0).T
             m_c += n/2 * torch.mean(x_2 @ y_1, axis=0)
+            m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
 
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)
-                m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ (m_d_inv ** 2 * self.m_c)) @ m_a_inv - gamma * identity
-                m_c += -factor * m_d_inv ** 2 * self.m_c @ m_a_inv
+                m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ ((m_d_inv ** 2) * self.m_c)) @ m_a_inv - gamma * identity
+                m_c += -factor * (m_d_inv ** 2) * self.m_c @ m_a_inv
 
         if gamma > 0:
             m_d += factor * (m_d_inv ** 2) - gamma
-        # print(h(beta/n * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device)))
+        # print(f"update: {h((1-beta) * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device))}")
 
         # We avoid computing C_up * kappa_up(B^{-1} G_S B^{-T}) by simply multiplying the scalar
         # values in the respective blocks
-        # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
-        return self @ h(beta/n * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
+        # This returns B @ h((1-beta) * C_up * kappa_up(B^{-1} G_S B^{-T}))
+        return self @ h((1-beta) * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
 
 
 class RankMatrix:
-    def __init__(self, x: np.array = 0, y: np.array = 0, device: str = 'cuda') -> None:
+    def __init__(self, x: np.array = 0, y: np.array = 0, device: str = None) -> None:
         '''
         Representation of x @ y^T
         '''
         assert(x.shape[1] == y.shape[1])
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
         self.x = x
         self.y = y
         self.k = x.shape[1]
@@ -836,8 +1072,10 @@ class BlockTriangular:
 
 
 def h(x: Union[MUp, MLow]) -> Union[MUp, MLow]:
-    """
-    Return quadratic approximation to exponential function
+    """Return quadratic approximation to exponential function
         I + X + 1/2 * X @ X
+
+    :param x: Union[MUp, MLow], argument
+    :return: result, Union[MUp, MLow], result of quadratic approximation
     """
     return x.add_id() + 0.5 * x @ x
