@@ -116,7 +116,7 @@ class ResNet(nn.Module):
             running_loss += loss.item()
             epoch_loss += loss.item()
             for metric in metrics:
-                running_metrics[metric.__name__] += metric(preds, labels).detach().numpy()
+                running_metrics[metric.__name__] += metric(preds, labels).detach().cpu().numpy()
                 iter_metrics[metric.__name__].append(metric(preds, labels).item())
 
             if i % eval_every == (eval_every - 1):
@@ -154,7 +154,7 @@ class ResNet(nn.Module):
             preds = self(images)
             loss += loss_fn(preds, labels).item()
             for metric in metrics:
-                metric_vals[metric.__name__] += metric(preds, labels).detach().numpy()
+                metric_vals[metric.__name__] += metric(preds, labels).detach().cpu().numpy()
 
             # Write to TensorBoard
             # writer.add_scalar("Loss", loss, counter)

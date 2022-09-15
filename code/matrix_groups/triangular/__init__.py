@@ -505,7 +505,7 @@ class MUp:
         z = mu + self.t().solve(eps)
         return z.T
 
-    def _update(self, beta: float, eta: float, n: int, g: np.array, v: np.array, gamma: float = 1, verbose=False):
+    def _update(self, beta: float, eta: float, n: int, g: np.array, v: np.array, gamma: float = 1):
         """Perform update step
             B <- B h((1-beta) * C_up .* kappa_up(B^{-1} G_S B^{-T})),
         where h(M) := I + M + 1/2 M^2, kappa_up 'projects' to matrix group B_up
@@ -561,8 +561,7 @@ class MUp:
 
         if gamma > 0:
             m_d += factor * (m_d_inv ** 2) * (1 + torch.sum((m_a_inv @ self.m_b) ** 2, axis=0)).reshape(-1, 1) - gamma
-        if verbose:
-            print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
+        # print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
         # values in the respective blocks
