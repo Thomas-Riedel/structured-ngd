@@ -6,11 +6,12 @@ from matrix_groups.triangular import MUp, MLow
 from typing import Union, Tuple, Callable
 from optimizers.noisy_optimizer import *
 
-# start with k = 0, then higher and check NaNs (origin)
+
+# momentum: 0.6-0.7 # lr 1e-1
 class StructuredNGD(NoisyOptimizer):
-    def __init__(self, params, data_size: int, k: int = 0, lr: float = 1e-1, momentum_grad: float = 0.7, # momentum: 0.6-0.7 # lr 1e-1
-                 momentum_prec: Union[float] = None, damping: float = 0.01, mc_samples: int = 1,
-                 prior_precision: float = 0.4, gamma: float = 1, device: str = None,
+    def __init__(self, params, data_size: int, k: int = 0, lr: float = 1e-1, mc_samples: int = 1,
+                 momentum_grad: float = None, momentum_prec: Union[float] = None, damping: float = None,
+                 prior_precision: float = None, gamma: float = None, device: str = None,
                  prec_init: Union[float] = None, structure: str = 'rank_cov', debias: bool = False) -> None:
         """Structured NGD Optimizer inheriting from torch.optim.Optimizer
 
@@ -32,18 +33,27 @@ class StructuredNGD(NoisyOptimizer):
         assert data_size >= 1
         assert (type(k) == int) and (k >= 0)
         assert lr > 0.0
-        assert momentum_grad >= 0.0
         assert mc_samples >= 1
-        assert prior_precision > 0.0
-        assert damping >= 0.0
 
-        if momentum_prec is None:
-            momentum_prec = 1.0 - lr
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
         if structure not in ['rank_cov', 'arrowhead']:
             raise NotImplementedError()
+        if momentum_grad is None:
+            momentum_grad = 0.6
+        if momentum_prec is None:
+            momentum_prec = 1.0 - lr
+        if prior_precision is None:
+            prior_precision = 0.4
+        if damping is None:
+            damping = 0.01
+        if gamma is None:
+            gamma = 1.0
+
+        assert momentum_grad >= 0.0
+        assert momentum_prec >= 0.0
+        assert prior_precision > 0.0
+        assert damping >= 0.0
 
         self.structure = structure
         self.data_size = data_size

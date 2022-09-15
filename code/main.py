@@ -37,6 +37,11 @@ def parse_args() -> dict:
 	parser.add_argument('--mc_samples', type=str, default='1')
 	parser.add_argument('--structure', type=str, default='rank_cov')
 	parser.add_argument('--eval_every', type=int, default=10)
+	parser.add_argument('--momentum_grad', type=float, default=None)
+	parser.add_argument('--momentum_prec', type=float, default=None)
+	parser.add_argument('--prior_precision', type=float, default=None)
+	parser.add_argument('--damping', type=float, default=None)
+	parser.add_argument('--gamma', type=float, default=None)
 
 	args = parser.parse_args(sys.argv[1:])
 	args.lr, args.k, args.mc_samples = parse_vals(
@@ -44,6 +49,11 @@ def parse_args() -> dict:
 		[float, int, int]
 	)
 	args.structure = len(args.lr) * [args.structure]
+	args.momentum_grad = len(args.lr) * [args.momentum_grad]
+	args.momentum_prec = len(args.lr) * [args.momentum_prec]
+	args.prior_precision = len(args.lr) * [args.prior_precision]
+	args.damping = len(args.lr) * [args.damping]
+	args.gamma = len(args.lr) * [args.gamma]
 
 	args_dict = dict(
 		epochs=args.epochs,
@@ -54,7 +64,12 @@ def parse_args() -> dict:
 		k=args.k,
 		mc_samples=args.mc_samples,
 		structure=args.structure,
-		eval_every=args.eval_every
+		eval_every=args.eval_every,
+		momentum_grad=args.momentum_grad,
+		momentum_prec=args.momentum_prec,
+		prior_precision=args.prior_precision,
+		damping=args.damping,
+		gamma=args.gamma
 	)
 	return args_dict
 
@@ -227,7 +242,7 @@ def run(epochs: int, model: str, optimizers: List[Union[Adam, StructuredNGD]],
 					epoch_times=epoch_times,
 					val_metrics=val_metrics,
 					val_loss=val_loss,
-					test_loss = test_loss,
+					test_loss=test_loss,
 					test_metrics=test_metrics,
 					iter_loss=iter_losses,
 					iter_metrics=iter_metrics,
@@ -346,8 +361,17 @@ def main() -> None:
 
 	model = ResNet(model_type=args['model'], num_classes=num_classes, device=device)
 	ngd_params = [
-		dict(lr=lr, k=k, mc_samples=mc_samples, structure=structure)
-		for lr, k, mc_samples, structure in zip(args['lr'], args['k'], args['mc_samples'], args['structure'])
+		dict(
+			lr=lr, k=k, mc_samples=mc_samples, structure=structure,
+			momentum_grad=momentum_grad, momentum_prec=momentum_prec,
+			prior_precision=prior_precision, damping=damping, gamma=gamma
+		)
+		for (lr, k, mc_samples, structure, momentum_grad, momentum_prec, prior_precision, damping, gamma) in
+		zip(
+			args['lr'], args['k'], args['mc_samples'], args['structure'],
+			args['momentum_grad'], args['momentum_prec'],
+			args['prior_precision'], args['damping'], args['gamma']
+		)
 	]
 	adam_params = [dict(lr=lr) for lr in set(args['lr'])]
 	optimizers = [Adam, StructuredNGD]
