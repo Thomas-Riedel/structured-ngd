@@ -42,7 +42,7 @@ class StructuredNGD(NoisyOptimizer):
         if momentum_grad is None:
             momentum_grad = 0.6
         if momentum_prec is None:
-            momentum_prec = 1.0 - lr
+            momentum_prec = 0.999
         if prior_precision is None:
             prior_precision = 0.4
         if damping is None:

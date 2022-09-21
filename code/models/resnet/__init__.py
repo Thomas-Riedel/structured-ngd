@@ -109,7 +109,7 @@ class ResNet(nn.Module):
             loss, preds = optimizer.step(closure)
             end = time.time()
             iter_time.append(end - start)
-            # print(loss.item())
+            print(loss.item())
 
             # Record losses and metrics
             iter_loss.append(loss.item())

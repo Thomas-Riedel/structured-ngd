@@ -1,7 +1,5 @@
 import numpy as np
 import torch
-import seaborn as sns
-sns.set()
 from typing import Union, List
 
 
@@ -92,7 +90,7 @@ class MUp:
         m_d = self.m_d + self.damping
         result = torch.zeros_like(b, device=self.device)
         result[self.k:] = b[self.k:] / m_d
-        result[:self.k] = torch.linalg.solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
+        result[:self.k] = torch.linalg.lstsq(m_a, b[:self.k] - self.m_b @ result[self.k:], driver='gels').solution
         return result
 
     def inv(self):
@@ -120,7 +118,7 @@ class MUp:
         """
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
-            self.a_inv = torch.linalg.pinv(self.m_a + self.damping * identity)
+            self.a_inv = torch.linalg.lstsq(self.m_a + self.damping * identity, identity, driver='gels').solution
         return self.a_inv
 
     def m_d_inv(self) -> np.array:
@@ -206,24 +204,36 @@ class MUp:
     def plot_correlation(self) -> None:
         """Plot heatmap of correlation matrix.
         """
+        import seaborn as sns
+        sns.set()
+
         corr = self.corr().cpu()
         sns.heatmap(corr, vmin=-1.0, vmax=1.0, center=0.0, cmap='coolwarm')
       
     def plot_covariance(self) -> None:
         """Plot heatmap of covariance matrix.
         """
+        import seaborn as sns
+        sns.set()
+
         cov = self.sigma().cpu()
         sns.heatmap(cov)
 
     def plot_precision(self) -> None:
         """Plot heatmap of precision matrix.
         """
+        import seaborn as sns
+        sns.set()
+
         prec = self.precision().cpu()
         sns.heatmap(prec)
 
     def plot_rank_update(self) -> None:
         """Plot eatmap of low rank update.
         """
+        import seaborn as sns
+        sns.set()
+
         rank_matrix = self.rank_matrix().cpu()
         sns.heatmap(rank_matrix)
 
@@ -523,8 +533,12 @@ class MUp:
         """
         assert(gamma >= 0)
         factor = gamma * eta / n
-        m_a_inv = self.m_a_inv()
-        m_d_inv = self.m_d_inv()
+        # m_a_inv = self.m_a_inv()
+        # m_d_inv = self.m_d_inv()
+
+        identity = torch.eye(self.k, device=self.device)
+        m_a_damp = self.m_a + self.damping * identity
+        m_d_damp = self.m_d + self.damping
 
         m_a = torch.zeros_like(self.m_a, device=self.device)
         m_b = torch.zeros_like(self.m_b, device=self.device)
@@ -534,33 +548,34 @@ class MUp:
             m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
         elif self.k == self.d:
             x_1 = self.m_a.T @ v[:, :self.k]
-            y_1 = g[:, :self.k].transpose(1, 2) @ m_a_inv.T
+            y_1 = torch.linalg.lstsq(m_a_damp, g[:, :self.k]).solution.transpose(1, 2)
 
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a += n/2 * (M + M.T)
 
             if gamma > 0:
-                m_a += factor * m_a_inv.T @ m_a_inv - gamma * torch.eye(self.k, device=self.device)
+                # gamma * eta / n * B_A^{-T} B_A^{-1} - gamma * I
+                m_a += factor * torch.linalg.lstsq(m_a_damp @ m_a_damp.T, identity).solution - gamma * identity
         else:
             x_1 = self.m_a.T @ v[:, :self.k]
             x_2 = self.m_b.T @ v[:, :self.k] + self.m_d * v[:, self.k:]
-            y_1 = g[:, :self.k].transpose(1, 2) @ m_a_inv.T \
-                  - g[:, self.k:].transpose(1, 2) @ (m_d_inv * self.m_b.T @ m_a_inv)
-            y_2 = g[:, self.k:] * m_d_inv
+            y_1 = torch.linalg.lstsq(m_a_damp.unsqueeze(0), g[:, :self.k]).solution.transpose(1, 2)
+            y_1 -= torch.linalg.lstsq(m_a_damp.T.unsqueeze(0), self.m_b @ (g[:, self.k:] / m_d_damp)).solution.transpose(1, 2)
+            y_2 = g[:, self.k:] / m_d_damp
 
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a += n/2 * (M + M.T)
             m_b += n/2 * torch.mean(x_1 @ y_2.transpose(1, 2), axis=0)
             m_b += n/2 * torch.mean(x_2 @ y_1, axis=0).T
-            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) * m_d_inv + v[:, self.k:]) * g[:, self.k:], axis=0)
+            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) / m_d_damp + v[:, self.k:]) * g[:, self.k:], axis=0)
 
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)
-                m_a += factor * m_a_inv.T @ m_a_inv - gamma * identity
-                m_b += -factor * m_a_inv.T @ m_a_inv @ self.m_b * m_d_inv.T
+                m_a += factor * torch.linalg.lstsq(m_a_damp @ m_a_damp.T, identity).solution - gamma * identity
+                m_b += -factor * torch.linalg.lstsq(m_a_damp @ m_a_damp.T, self.m_b / m_d_damp.T).solution
 
         if gamma > 0:
-            m_d += factor * (m_d_inv ** 2) * (1 + torch.sum((m_a_inv @ self.m_b) ** 2, axis=0)).reshape(-1, 1) - gamma
+            m_d += factor * (1 + torch.sum(torch.linalg.lstsq(m_a_damp, self.m_b).solution ** 2, axis=0)).reshape(-1, 1) / (m_d_damp ** 2) - gamma
         # print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
@@ -827,7 +842,7 @@ class MLow:
         identity = torch.eye(self.k, device=self.device)
         m_a = self.m_a + self.damping * identity
         m_d = self.m_d + self.damping
-        result[:self.k] = torch.linalg.solve(m_a, b[:self.k])
+        result[:self.k] = torch.linalg.lstsq(m_a, b[:self.k], driver='gels').solution
         result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) / m_d
         return result
 
@@ -852,7 +867,8 @@ class MLow:
         """
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
-            self.a_inv = torch.linalg.pinv(self.m_a + self.damping * identity)
+            self.a_inv = torch.linalg.lstsq(self.m_a + self.damping * identity, identity, driver='gels')
+
         return self.a_inv
 
     def m_d_inv(self) -> np.array:
