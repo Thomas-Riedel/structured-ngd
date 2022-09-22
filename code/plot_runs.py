@@ -250,22 +250,22 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             print(val_loss)
 
-            runs.append(
-                dict(
-                    name=name,
-                    optimizer=optimizer,
-                    params=params,
-                    iter_times=iter_times,
-                    epoch_times=epoch_times,
-                    val_metrics=val_metrics,
-                    val_loss=val_loss,
-                    test_loss=test_loss,
-                    test_metrics=test_metrics,
-                    iter_loss=iter_losses,
-                    iter_metrics=iter_metrics,
-                    timestamp=timestamp
-                )
+            run = dict(
+                name=name,
+                # optimizer=optimizer,
+                params=params,
+                iter_times=iter_times,
+                epoch_times=epoch_times,
+                val_metrics=val_metrics,
+                val_loss=val_loss,
+                test_loss=test_loss,
+                test_metrics=test_metrics,
+                iter_loss=iter_losses,
+                iter_metrics=iter_metrics,
+                timestamp=timestamp
             )
+            runs.append(run)
+            save_runs(run)
         print('Finished Training')
     return runs
 

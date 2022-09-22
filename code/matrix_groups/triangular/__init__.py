@@ -90,7 +90,7 @@ class MUp:
         m_d = self.m_d + self.damping
         result = torch.zeros_like(b, device=self.device)
         result[self.k:] = b[self.k:] / m_d
-        result[:self.k] = torch.linalg.lstsq(m_a, b[:self.k] - self.m_b @ result[self.k:], driver='gels').solution
+        result[:self.k], _ = torch.lstsq(b[:self.k] - self.m_b @ result[self.k:], m_a)
         return result
 
     def inv(self):
@@ -118,7 +118,7 @@ class MUp:
         """
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
-            self.a_inv = torch.linalg.lstsq(self.m_a + self.damping * identity, identity, driver='gels').solution
+            self.a_inv, _ = torch.lstsq(identity, self.m_a + self.damping * identity)
         return self.a_inv
 
     def m_d_inv(self) -> np.array:
@@ -548,19 +548,23 @@ class MUp:
             m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
         elif self.k == self.d:
             x_1 = self.m_a.T @ v[:, :self.k]
-            y_1 = torch.linalg.lstsq(m_a_damp, g[:, :self.k]).solution.transpose(1, 2)
+            y_1, _ = torch.lstsq(g[:, :self.k], m_a_damp)
+            y_1 = y_1.transpose(1, 2)
 
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a += n/2 * (M + M.T)
 
             if gamma > 0:
                 # gamma * eta / n * B_A^{-T} B_A^{-1} - gamma * I
-                m_a += factor * torch.linalg.lstsq(m_a_damp @ m_a_damp.T, identity).solution - gamma * identity
+                x, _ = torch.lstsq(identity, m_a_damp @ m_a_damp.T)
+                m_a += factor * x - gamma * identity
         else:
             x_1 = self.m_a.T @ v[:, :self.k]
             x_2 = self.m_b.T @ v[:, :self.k] + self.m_d * v[:, self.k:]
-            y_1 = torch.linalg.lstsq(m_a_damp.unsqueeze(0), g[:, :self.k]).solution.transpose(1, 2)
-            y_1 -= torch.linalg.lstsq(m_a_damp.T.unsqueeze(0), self.m_b @ (g[:, self.k:] / m_d_damp)).solution.transpose(1, 2)
+            y_1, _ = torch.lstsq(g[:, :self.k], m_a_damp.unsqueeze(0))
+            y_1 = y_1.transpose(1, 2)
+            x, _ = torch.lstsq(self.m_b @ (g[:, self.k:] / m_d_damp), m_a_damp.T.unsqueeze(0))
+            y_1 -= x.transpose(1, 2)
             y_2 = g[:, self.k:] / m_d_damp
 
             M = torch.mean(x_1 @ y_1, axis=0)
@@ -571,11 +575,14 @@ class MUp:
 
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)
-                m_a += factor * torch.linalg.lstsq(m_a_damp @ m_a_damp.T, identity).solution - gamma * identity
-                m_b += -factor * torch.linalg.lstsq(m_a_damp @ m_a_damp.T, self.m_b / m_d_damp.T).solution
+                x, _ = torch.lstsq(identity, m_a_damp @ m_a_damp.T)
+                m_a += factor * x - gamma * identity
+                x, _ = torch.lstsq(self.m_b / m_d_damp.T, m_a_damp @ m_a_damp.T)
+                m_b += -factor * x
 
         if gamma > 0:
-            m_d += factor * (1 + torch.sum(torch.linalg.lstsq(m_a_damp, self.m_b).solution ** 2, axis=0)).reshape(-1, 1) / (m_d_damp ** 2) - gamma
+            x, _ = torch.lstsq(self.m_b, m_a_damp)
+            m_d += factor * (1 + torch.sum(x ** 2, axis=0)).reshape(-1, 1) / (m_d_damp ** 2) - gamma
         # print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
@@ -842,7 +849,7 @@ class MLow:
         identity = torch.eye(self.k, device=self.device)
         m_a = self.m_a + self.damping * identity
         m_d = self.m_d + self.damping
-        result[:self.k] = torch.linalg.lstsq(m_a, b[:self.k], driver='gels').solution
+        result[:self.k], _ = torch.lstsq(b[:self.k], m_a)
         result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) / m_d
         return result
 
@@ -867,7 +874,7 @@ class MLow:
         """
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
-            self.a_inv = torch.linalg.lstsq(self.m_a + self.damping * identity, identity, driver='gels')
+            self.a_inv, _ = torch.lstsq(identity, self.m_a + self.damping * identity)
 
         return self.a_inv
 
