@@ -17,7 +17,7 @@ def main() -> None:
 	train_loader, val_loader, test_loader = load_data(args['dataset'], args['batch_size'], args['data_split'])
 	num_classes = len(train_loader.dataset.classes)
 	model = ResNet(model_type=args['model'], num_classes=num_classes, device=device)
-	optimizers = [StructuredNGD]
+	optimizers = [Adam, StructuredNGD]
 
 	params = get_params(args)
 	runs = run(

@@ -3,10 +3,14 @@ import torch
 from typing import Union, List
 
 
-def solve(A, b):
-    eps = 1e-12
-    norm = torch.linalg.norm(b) + eps
-    return norm * torch.linalg.lstsq(A, b / norm).solution
+def solve(A, b, method='lstsq'):
+    if method == 'lstsq':
+        return torch.linalg.lstsq(A, b).solution
+    elif method == 'linear_solve':
+        return torch.linalg.solve(A, b)
+    else:
+        return torch.lstsq(b, A).solution
+
 
 class MUp:
     def __init__(self, m_a: np.array, m_b: np.array, m_d: np.array, k: int,
@@ -89,13 +93,18 @@ class MUp:
         :return: result, np.array of shape (d, 1) as solution of dampened linear system
         """
         assert(b.shape[0] == self.d)
+        if len(b.shape) == 1:
+            b = b.unsqueeze(1)
         # Thomas algorithm, see self.inv() for information 
         identity = torch.eye(self.k, device=self.device)
         m_a = self.m_a + self.damping * identity
         m_d = self.m_d + self.damping
         result = torch.zeros_like(b, device=self.device)
         result[self.k:] = b[self.k:] / m_d
-        result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
+        if self.a_inv is None:
+            result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
+        else:
+            self.a_inv @ (b[:self.k] - self.m_b @ result[self.k:])
         return result
 
     def inv(self):
@@ -551,21 +560,25 @@ class MUp:
 
         if self.k == 0:
             m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
+            if gamma > 0:
+                m_d += factor / (m_d_damp ** 2) - gamma
         elif self.k == self.d:
+            m_a_inv = self.m_a_inv()
             x_1 = self.m_a.T @ v[:, :self.k]
-            y_1 = solve(m_a_damp, g[:, :self.k]).transpose(1, 2)
+            y_1 = (m_a_inv @ g[:, :self.k]).transpose(1, 2)
 
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a += n/2 * (M + M.T)
 
             if gamma > 0:
                 # gamma * eta / n * B_A^{-T} B_A^{-1} - gamma * I
-                m_a += factor * solve(m_a_damp @ m_a_damp.T, identity) - gamma * identity
+                m_a += factor * m_a_inv @ m_a_inv - gamma * identity
         else:
+            m_a_inv = self.m_a_inv()
             x_1 = self.m_a.T @ v[:, :self.k]
             x_2 = self.m_b.T @ v[:, :self.k] + self.m_d * v[:, self.k:]
-            y_1 = solve(m_a_damp.unsqueeze(0), g[:, :self.k]).transpose(1, 2)
-            y_1 -= solve(m_a_damp.T.unsqueeze(0), self.m_b @ (g[:, self.k:] / m_d_damp)).transpose(1, 2)
+            y_1 = (m_a_inv @ g[:, :self.k]).transpose(1, 2)
+            y_1 -= (m_a_inv.T @ self.m_b @ (g[:, self.k:] / m_d_damp)).transpose(1, 2)
             y_2 = g[:, self.k:] / m_d_damp
 
             M = torch.mean(x_1 @ y_1, axis=0)
@@ -576,12 +589,11 @@ class MUp:
 
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)
-                m_a += factor * solve(m_a_damp @ m_a_damp.T, identity) - gamma * identity
-                m_b -= factor * solve(m_a_damp @ m_a_damp.T, self.m_b / m_d_damp.T)
+                m_a += factor * m_a_inv @ m_a_inv.T - gamma * identity
+                m_b -= factor * m_a_inv @ m_a_inv.T @ (self.m_b / m_d_damp.T)
+                x = m_a_inv @ self.m_b
+                m_d += factor * (1 + torch.sum(x ** 2, axis=0)).reshape(-1, 1) / (m_d_damp ** 2) - gamma
 
-        if gamma > 0:
-            x = solve(m_a_damp, self.m_b)
-            m_d += factor * (1 + torch.sum(x ** 2, axis=0)).reshape(-1, 1) / (m_d_damp ** 2) - gamma
         # print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
 
         # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
@@ -844,11 +856,16 @@ class MLow:
         :return: result, np.array of shape (d, 1) as solution of dampened linear system
         """
         assert(b.shape[0] == self.d)
+        if len(b.shape) == 1:
+            b = b.unsqueeze(1)
         result = torch.zeros_like(b, device=self.device)
         identity = torch.eye(self.k, device=self.device)
         m_a = self.m_a + self.damping * identity
         m_d = self.m_d + self.damping
-        result[:self.k] = solve(m_a, b[:self.k])
+        if self.a_inv is None:
+            result[:self.k] = solve(m_a, b[:self.k])
+        else:
+            result[:self.k] = self.a_inv @ b[:self.k]
         result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) / m_d
         return result
 
@@ -945,6 +962,8 @@ class MLow:
         # Edge case handling for k = 0 and k = d
         if self.k == 0:
             m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
+            if gamma < 0:
+                m_d += factor * (m_d_inv ** 2) - gamma
         elif self.k == self.d:
             x_1 = self.m_a.T @ v[:, :self.k]
             y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a
@@ -969,9 +988,8 @@ class MLow:
                 identity = torch.eye(self.k, device=self.device)
                 m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ ((m_d_inv ** 2) * self.m_c)) @ m_a_inv - gamma * identity
                 m_c += -factor * (m_d_inv ** 2) * self.m_c @ m_a_inv
+                m_d += factor * (m_d_inv ** 2) - gamma
 
-        if gamma > 0:
-            m_d += factor * (m_d_inv ** 2) - gamma
         # print(f"update: {h((1-beta) * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device))}")
 
         # We avoid computing C_up * kappa_up(B^{-1} G_S B^{-T}) by simply multiplying the scalar
