@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -182,6 +183,98 @@ class ResNet(nn.Module):
         preds = preds.detach().cpu().numpy()
         logits = logits.detach().cpu().numpy()
         return labels, preds, logits
+
+    def compute_calibration(self, data_loader, num_bins=10):
+        """Collects predictions into bins used to draw a reliability diagram.
+            Adapted code snippet by https://github.com/hollance/reliability-diagrams
+
+        Arguments:
+            true_labels: the true labels for the test examples
+            pred_labels: the predicted labels for the test examples
+            confidences: the predicted confidences for the test examples
+            num_bins: number of bins
+
+        The true_labels, pred_labels, confidences arguments must be NumPy arrays;
+        pred_labels and true_labels may contain numeric or string labels.
+
+        For a multi-class model, the predicted label and confidence should be those
+        of the highest scoring class.
+
+        Returns a dictionary containing the following NumPy arrays:
+            accuracies: the average accuracy for each bin
+            confidences: the average confidence for each bin
+            counts: the number of examples in each bin
+            bins: the confidence thresholds for each bin
+            avg_accuracy: the accuracy over the entire test set
+            avg_confidence: the average confidence over the entire test set
+            expected_calibration_error: a weighted average of all calibration gaps
+            max_calibration_error: the largest calibration gap across all bins
+        """
+        # assert(len(confidences) == len(pred_labels))
+        # assert(len(confidences) == len(true_labels))
+        assert(num_bins > 0)
+
+        bin_accuracies = np.zeros(num_bins, dtype=float)
+        bin_confidences = np.zeros(num_bins, dtype=float)
+        bin_counts = np.zeros(num_bins, dtype=int)
+        bins = np.linspace(0.0, 1.0, num_bins + 1)
+        avg_acc = 0.0
+        avg_conf = 0.0
+        ece = 0.0
+        mce = 0.0
+
+        for data in data_loader:
+            image, true_label = data
+            image.to(self.device)
+            true_label.to(self.device)
+            confidence = self(image)
+            pred_label = torch.argmax(confidence, axis=1)
+
+            true_label = true_label.detach().cpu().numpy()
+            confidence = confidence.detach().cpu().numpy()
+            pred_label = pred_label.detach().cpu().numpy()
+
+            bin_size = 1.0 / num_bins
+            indices = np.digitize(confidence, bins, right=True)
+
+            bin_accuracy = np.zeros(num_bins, dtype=float)
+            bin_confidence = np.zeros(num_bins, dtype=float)
+            bin_count = np.zeros(num_bins, dtype=int)
+
+            for b in range(num_bins):
+                selected = np.where(indices == b + 1)[0]
+                if len(selected) > 0:
+                    bin_accuracy[b] = np.mean(true_label[selected] == pred_label[selected])
+                    bin_confidence[b] = np.mean(confidence[selected])
+                    bin_count[b] = len(selected)
+
+            bin_accuracies += bin_accuracy
+            bin_confidences += bin_confidence
+            bin_counts += bin_count
+
+            avg_acc += np.sum(bin_accuracy * bin_count) / np.sum(bin_count)
+            avg_conf += np.sum(bin_confidence * bin_count) / np.sum(bin_count)
+
+            gaps = np.abs(bin_accuracy - bin_confidence)
+            ece += np.sum(gaps * bin_count) / np.sum(bin_count)
+            mce += np.max(gaps)
+
+        n = len(data_loader)
+        bin_accuracies /= n
+        bin_confidences /= n
+        avg_acc /= n
+        avg_conf /= n
+        ece /= n
+        mce /= n
+
+        return { "accuracies": bin_accuracies,
+                 "confidences": bin_confidences,
+                 "counts": bin_counts,
+                 "bins": bins,
+                 "avg_accuracy": avg_acc,
+                 "avg_confidence": avg_conf,
+                 "expected_calibration_error": ece,
+                 "max_calibration_error": mce}
 
     def init_weights(self, seed: int = 42) -> None:
         """Initialize weights.

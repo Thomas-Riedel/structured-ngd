@@ -11,8 +11,8 @@ class ECE:
 		self.n_bins = n_bins
 		self.__name__ = 'ece'
 
-	def __call__(self, preds, labels):
-		return calibration_error(preds, labels, n_bins=self.n_bins, norm='l1')
+	def __call__(self, logits, labels):
+		return calibration_error(logits, labels, n_bins=self.n_bins, norm='l1')
 
 
 class MCE:
@@ -20,8 +20,8 @@ class MCE:
 		self.n_bins = n_bins
 		self.__name__ = 'mce'
 
-	def __call__(self, preds, labels):
-		return calibration_error(preds, labels, n_bins=self.n_bins, norm='max')
+	def __call__(self, logits, labels):
+		return calibration_error(logits, labels, n_bins=self.n_bins, norm='max')
 
 
 def main() -> None:
@@ -42,7 +42,7 @@ def main() -> None:
 
 	params = get_params(args)
 	runs = run(
-		args['epochs'], model, optimizers, train_loader, val_loader, adam_params=params['adam'],
+		args['epochs'], model, optimizers, train_loader, val_loader, test_loader, adam_params=params['adam'],
 		ngd_params=params['ngd'], metrics=metrics, eval_every=args['eval_every']
 	)
 	save_runs(runs)

@@ -189,8 +189,7 @@ def _reliability_diagram_combined(bin_data,
     if return_fig: return fig
 
 
-def reliability_diagram(true_labels, pred_labels, confidences, num_bins=10,
-                        draw_ece=True, draw_mce=True, draw_bin_importance=False,
+def reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importance=False,
                         draw_averages=True, title="Reliability Diagram",
                         figsize=(6, 6), dpi=72, return_fig=False):
     """Draws a reliability diagram and confidence histogram in a single plot.
@@ -233,7 +232,7 @@ def reliability_diagram(true_labels, pred_labels, confidences, num_bins=10,
         dpi: setting for matplotlib
         return_fig: if True, returns the matplotlib Figure object
     """
-    bin_data = compute_calibration(true_labels, pred_labels, confidences, num_bins)
+    # bin_data = compute_calibration(true_labels, pred_labels, confidences, num_bins)
     return _reliability_diagram_combined(bin_data, draw_ece, draw_mce, draw_bin_importance,
                                          draw_averages, title, figsize=figsize,
                                          dpi=dpi, return_fig=return_fig)

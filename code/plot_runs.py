@@ -176,7 +176,7 @@ def get_params(args: dict) -> dict:
 
 
 def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNGD]],
-        train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader = None,
+        train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
         adam_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [],
         eval_every: int = 10) -> List[dict]:
     """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
@@ -253,9 +253,8 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             iter_times = np.cumsum(iter_times)
             epoch_times = np.cumsum(epoch_times)
             name = type(optimizer).__name__
+            bin_data = model.compute_calibration(test_loader)
             timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
-            test_labels, test_preds, test_logits = model.collect(test_loader)
 
             run = dict(
                 name=name,
@@ -268,9 +267,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 val_metrics=val_metrics,
                 test_loss=test_loss,
                 test_metrics=test_metrics,
-                test_labels=test_labels,
-                test_preds=test_preds,
-                test_logits=test_logits,
+                bin_data=bin_data,
                 iter_loss=iter_losses,
                 iter_metrics=iter_metrics,
                 timestamp=timestamp
@@ -433,11 +430,8 @@ def plot_generalization_gap(runs):
 def plot_reliability_diagram(runs, n_bins=10):
     for run in runs:
         plt.figure(figsize=(12, 8))
-        labels = run['test_labels']
-        preds = run['test_preds']
-        logits = run['test_logits']
-        reliability_diagram(labels, preds, logits, num_bins=n_bins,
-                            draw_ece=True, draw_mce=True,
+        bin_data = run['bin_data']
+        reliability_diagram(bin_data, draw_ece=True, draw_mce=True,
                             draw_bin_importance="alpha", draw_averages=True,
                             figsize=(6, 6), dpi=100,
                             return_fig=True)
