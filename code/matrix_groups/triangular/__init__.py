@@ -93,18 +93,18 @@ class MUp:
         :return: result, np.array of shape (d, 1) as solution of dampened linear system
         """
         assert(b.shape[0] == self.d)
-        if len(b.shape) == 1:
-            b = b.unsqueeze(1)
-        # Thomas algorithm, see self.inv() for information 
-        identity = torch.eye(self.k, device=self.device)
-        m_a = self.m_a + self.damping * identity
+        # Thomas algorithm, see self.inv() for information
         m_d = self.m_d + self.damping
         result = torch.zeros_like(b, device=self.device)
         result[self.k:] = b[self.k:] / m_d
-        if self.a_inv is None:
-            result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
-        else:
-            self.a_inv @ (b[:self.k] - self.m_b @ result[self.k:])
+        if self.k > 0:
+            # if self.a_inv is None:
+            #     identity = torch.eye(self.k, device=self.device)
+            #     m_a = self.m_a + self.damping * identity
+            #     result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
+            # else:
+            self.m_a_inv()
+            result[:self.k] = self.a_inv @ (b[:self.k] - self.m_b @ result[self.k:])
         return result
 
     def inv(self):
@@ -123,6 +123,8 @@ class MUp:
                                self.k,
                                device=self.device,
                                damping=self.damping)
+            self.inverse.a_inv = self.m_a
+            self.inverse.d_inv = self.m_d
         return self.inverse
 
     def m_a_inv(self) -> np.array:
@@ -132,7 +134,8 @@ class MUp:
         """
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
-            self.a_inv = solve(self.m_a + self.damping * identity, identity)
+            m_a = self.m_a + self.damping * identity
+            self.a_inv = torch.linalg.inv(m_a) # solve(self.m_a + self.damping * identity, identity)
         return self.a_inv
 
     def m_d_inv(self) -> np.array:
@@ -169,7 +172,11 @@ class MUp:
         
         :return: transpose, MLow, transpose of object
         """
-        return MLow(self.m_a.T, self.m_b.T, self.m_d, self.k, device=self.device, damping=self.damping)
+        result = MLow(self.m_a.T, self.m_b.T, self.m_d, self.k, device=self.device, damping=self.damping)
+        if not self.a_inv is None:
+            result.a_inv = self.a_inv.T
+        result.d_inv = self.d_inv
+        return result
 
     def precision(self) -> np.array:
         """Full precision as arrowhead matrix as np.array (here, we parametrize S = B @ B^T).
@@ -684,7 +691,11 @@ class MLow:
 
         :return: transpose, MUp, transpose of object
         """
-        return MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, device=self.device, damping=self.damping)
+        result = MUp(self.m_a.T, self.m_c.T, self.m_d, self.k, device=self.device, damping=self.damping)
+        if not self.a_inv is None:
+            result.a_inv = self.a_inv.T
+        result.d_inv = self.d_inv
+        return result
 
     def __repr__(self) -> str:
         """String representation of class including blocks: m_a, m_c, m_d
@@ -856,15 +867,15 @@ class MLow:
         :return: result, np.array of shape (d, 1) as solution of dampened linear system
         """
         assert(b.shape[0] == self.d)
-        if len(b.shape) == 1:
-            b = b.unsqueeze(1)
         result = torch.zeros_like(b, device=self.device)
-        identity = torch.eye(self.k, device=self.device)
-        m_a = self.m_a + self.damping * identity
         m_d = self.m_d + self.damping
-        if self.a_inv is None:
-            result[:self.k] = solve(m_a, b[:self.k])
-        else:
+        if self.k > 0:
+            # if self.a_inv is None:
+            #     identity = torch.eye(self.k, device=self.device)
+            #     m_a = self.m_a + self.damping * identity
+            #     result[:self.k] = solve(m_a, b[:self.k])
+            # else:
+            self.m_a_inv()
             result[:self.k] = self.a_inv @ b[:self.k]
         result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) / m_d
         return result
@@ -880,7 +891,12 @@ class MLow:
         if self.inverse is None:
             m_a_inv = self.m_a_inv()
             m_d_inv = self.m_d_inv()
-            self.inverse = MLow(m_a_inv, -m_d_inv * (self.m_c @ m_a_inv), m_d_inv, self.k, device=self.device)
+            self.inverse = MLow(m_a_inv,
+                                -m_d_inv * (self.m_c @ m_a_inv),
+                                m_d_inv, self.k,
+                                device=self.device)
+            self.inverse.a_inv = self.m_a
+            self.inverse.d_inv = self.m_d
         return self.inverse
 
     def m_a_inv(self) -> np.array:
@@ -890,7 +906,8 @@ class MLow:
         """
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
-            self.a_inv = solve(self.m_a + self.damping * identity, identity)
+            m_a = self.m_a + self.damping * identity
+            self.a_inv = torch.linalg.inv(m_a) # solve(self.m_a + self.damping * identity, identity)
 
         return self.a_inv
 

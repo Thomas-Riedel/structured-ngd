@@ -5,6 +5,7 @@ from torch.nn import Parameter
 from matrix_groups.triangular import MUp, MLow
 from typing import Union, Tuple, Callable
 from optimizers.noisy_optimizer import *
+import time
 
 
 # momentum: 0.6-0.7 # lr 1e-1
@@ -145,6 +146,7 @@ class StructuredNGD(NoisyOptimizer):
 
         losses = []
         outputs = []
+        start = time.time()
         for _ in range(self.mc_samples):
             self._sample_weight_and_collect()  # (2)
             with torch.enable_grad():
@@ -153,6 +155,8 @@ class StructuredNGD(NoisyOptimizer):
             outputs.append(output.detach())
             self._collect_grad_samples()
         # Update parameters
+        end = time.time()
+        print(f"Sample time: {end - start}")
         self._update()
 
         # Restore model parameters to original state

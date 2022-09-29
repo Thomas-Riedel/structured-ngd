@@ -25,7 +25,7 @@ class ResNet(nn.Module):
         model_types = ['resnet' + str(n) for n in [18, 34, 50, 101, 152]]
         if model_type.lower() in model_types:
             self.model = torch.hub.load('pytorch/vision:v0.10.0', 
-                                        model_type, pretrained=False, 
+                                        model_type, pretrained=False,
                                         num_classes=num_classes).to(device)
         else:
             # self.model = nn.Sequential(
@@ -146,7 +146,7 @@ class ResNet(nn.Module):
         metric_vals = {}
         for metric in metrics:
             metric_vals[metric.__name__] = 0.0
-        for i, data in enumerate(data_loader, 0):
+        for i, data in enumerate(data_loader):
             images, labels = data
             images = images.to(self.device)
             labels = labels.to(self.device)
@@ -162,8 +162,26 @@ class ResNet(nn.Module):
         for metric in metrics:
             metric_vals[metric.__name__] /= len(data_loader)
         loss /= len(data_loader)
-        print(metric_vals, loss)
+        print(loss, metric_vals)
         return loss, metric_vals
+
+    def collect(self, data_loader):
+        for i, data in enumerate(data_loader, 0):
+            image, label = data
+            image = image.to(self.device)
+            logit = self(image)
+            pred = torch.argmax(logit, axis=1)
+            if i == 0:
+                labels, preds, logits = label, pred, logit
+            else:
+                labels = torch.cat((labels, label), dim=0)
+                preds = torch.cat((preds, pred), dim=0)
+                logits = torch.cat((logits, logit), dim=0)
+
+        labels = labels.detach().cpu().numpy()
+        preds = preds.detach().cpu().numpy()
+        logits = logits.detach().cpu().numpy()
+        return labels, preds, logits
 
     def init_weights(self, seed: int = 42) -> None:
         """Initialize weights.
