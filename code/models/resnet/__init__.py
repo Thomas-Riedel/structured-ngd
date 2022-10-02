@@ -1,19 +1,22 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.optim import Adam
 from optimizers.noisy_optimizer import *
+from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
+from torchsummary import summary
 
 from typing import Union, Tuple, List, Callable
 import time
 
 
-class ResNet(nn.Module):
-    def __init__(self, model_type: str = 'resnet18',
-                 num_classes: int = 10,
+class Model(nn.Module):
+    def __init__(self, model_type: str = 'resnet20',
+                 num_classes: int = 10, input_shape=(3, 32, 32),
                  device: str = None) -> None:
         """torch.nn.Module class for ResNet
 
@@ -21,13 +24,20 @@ class ResNet(nn.Module):
         :param num_classes: int, number of classes in dataset for classification
         :param device: str, torch device to run operations on (GPU or CPU)
         """
-        super(ResNet, self).__init__()
+        super(Model, self).__init__()
 
-        model_types = ['resnet' + str(n) for n in [18, 34, 50, 101, 152]]
-        if model_type.lower() in model_types:
-            self.model = torch.hub.load('pytorch/vision:v0.10.0', 
-                                        model_type, pretrained=False,
-                                        num_classes=num_classes).to(device)
+        model_type = model_type.lower()
+        model_types_imagenet = ['resnet' + str(n) for n in [18, 34, 50, 101, 152]]
+        model_types_cifar10 = ['resnet' + str(n) for n in [20, 32, 44, 56, 110, 1202]]
+        if model_type in model_types_cifar10:
+            print(f"Using {model_type} designed for CIFAR-10.")
+            self.model = eval(f"{model_type}(num_classes=num_classes).to(device)")
+            # torch.hub.load('pytorch/vision:v0.10.0',
+            #                model_type, pretrained=False,
+            #                num_classes=num_classes).to(device)
+        elif model_type in model_types_imagenet:
+            print(f"Using {model_type} designed for ImageNet.")
+            self.model = eval(f"{model_type}(pretrained=False, num_classes=num_classes).to(device)")
         else:
             # self.model = nn.Sequential(
             #     nn.Conv2d(input_shape[1], dim // 4, (3, 3)),
@@ -50,6 +60,7 @@ class ResNet(nn.Module):
             #     nn.Linear(dim // 4, num_classes),
             #     nn.Softmax(dim=1)
             # )
+            model_types = model_types_imagenet + model_types_cifar10
             raise ValueError(f"Model type {model_type} not recognized! "
                              f"Choose one of {model_types}.")
 
@@ -58,6 +69,10 @@ class ResNet(nn.Module):
         self.init_weights()
         self.num_classes = num_classes
         self.device = device
+
+        self.__name__ = model_type
+        self.summary = summary(self.model, input_shape)
+        self.num_params = np.sum(p.numel() for p in self.parameters())
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass through model.
@@ -82,14 +97,17 @@ class ResNet(nn.Module):
         :return: (iter_loss, iter_metrics, iter_time), Tuple[List[float], dict, List[float]], list of iterationwise
             losses, metrics and computation times for update
         """
+        # Set model to training mode!
+        self.model.train()
+
         epoch_loss = 0.0
-        iter_loss = []
-        iter_metrics = {}
-        iter_time = []
+        epoch_metrics = {}
+        epoch_time = 0.0
+
         running_loss = 0.0
         running_metrics = {}
         for metric in metrics:
-            iter_metrics[metric.__name__] = []
+            epoch_metrics[metric.__name__] = 0.0
             running_metrics[metric.__name__] = 0.0
 
         for i, data in enumerate(data_loader):
@@ -109,16 +127,15 @@ class ResNet(nn.Module):
             start = time.time()
             loss, preds = optimizer.step(closure)
             end = time.time()
-            iter_time.append(end - start)
+            epoch_time += end - start
             # print(loss.item())
 
             # Record losses and metrics
-            iter_loss.append(loss.item())
             running_loss += loss.item()
             epoch_loss += loss.item()
             for metric in metrics:
                 running_metrics[metric.__name__] += metric(preds, labels).detach().cpu().numpy()
-                iter_metrics[metric.__name__].append(metric(preds, labels).item())
+                epoch_metrics[metric.__name__] += metric(preds, labels).detach().cpu().numpy()
 
             if i % eval_every == (eval_every - 1):
                 print("===========================================")
@@ -129,7 +146,11 @@ class ResNet(nn.Module):
                     print(f"\t{name}: {running_metrics[name] / eval_every:.3f}")
                     running_metrics[name] = 0.0
                 print("===========================================")
-        return iter_loss, iter_metrics, iter_time
+
+        for metric in metrics:
+            epoch_metrics[metric.__name__] /= len(data_loader)
+        epoch_loss /= len(data_loader)
+        return epoch_loss, epoch_metrics, epoch_time
 
     @torch.no_grad()
     def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
@@ -143,6 +164,10 @@ class ResNet(nn.Module):
         """
         if data_loader is None:
             return None, None
+
+        # Set model to evaluation mode!
+        self.model.eval()
+
         loss = 0.0
         metric_vals = {}
         for metric in metrics:
@@ -184,7 +209,8 @@ class ResNet(nn.Module):
         logits = logits.detach().cpu().numpy()
         return labels, preds, logits
 
-    def compute_calibration(self, data_loader, num_bins=10):
+    @torch.no_grad()
+    def compute_calibration(self, data_loader, n_bins=10):
         """Collects predictions into bins used to draw a reliability diagram.
             Adapted code snippet by https://github.com/hollance/reliability-diagrams
 
@@ -192,7 +218,7 @@ class ResNet(nn.Module):
             true_labels: the true labels for the test examples
             pred_labels: the predicted labels for the test examples
             confidences: the predicted confidences for the test examples
-            num_bins: number of bins
+            n_bins: number of bins
 
         The true_labels, pred_labels, confidences arguments must be NumPy arrays;
         pred_labels and true_labels may contain numeric or string labels.
@@ -212,69 +238,56 @@ class ResNet(nn.Module):
         """
         # assert(len(confidences) == len(pred_labels))
         # assert(len(confidences) == len(true_labels))
-        assert(num_bins > 0)
+        assert(n_bins > 0)
 
-        bin_accuracies = np.zeros(num_bins, dtype=float)
-        bin_confidences = np.zeros(num_bins, dtype=float)
-        bin_counts = np.zeros(num_bins, dtype=int)
-        bins = np.linspace(0.0, 1.0, num_bins + 1)
-        avg_acc = 0.0
-        avg_conf = 0.0
-        ece = 0.0
-        mce = 0.0
+        # Set model to evaluation mode!
+        self.model.eval()
+
+        bin_accuracies = np.zeros(n_bins, dtype=float)
+        bin_confidences = np.zeros(n_bins, dtype=float)
+        bin_counts = np.zeros(n_bins, dtype=int)
+        bins = np.linspace(0.0, 1.0, n_bins + 1)
 
         for data in data_loader:
-            image, true_label = data
-            image.to(self.device)
-            true_label.to(self.device)
-            confidence = self(image)
-            pred_label = torch.argmax(confidence, axis=1)
+            images, true_labels = data
+            images = images.to(self.device)
+            true_labels = true_labels.to(self.device)
+            confidences = torch.max(F.softmax(self(images), dim=1), axis=1)
+            pred_labels = confidences.indices
+            confidences = confidences.values
 
-            true_label = true_label.detach().cpu().numpy()
-            confidence = confidence.detach().cpu().numpy()
-            pred_label = pred_label.detach().cpu().numpy()
+            true_labels = true_labels.detach().cpu().numpy()
+            confidences = confidences.detach().cpu().numpy()
+            pred_labels = pred_labels.detach().cpu().numpy()
 
-            bin_size = 1.0 / num_bins
-            indices = np.digitize(confidence, bins, right=True)
+            indices = np.digitize(confidences, bins, right=True)
 
-            bin_accuracy = np.zeros(num_bins, dtype=float)
-            bin_confidence = np.zeros(num_bins, dtype=float)
-            bin_count = np.zeros(num_bins, dtype=int)
-
-            for b in range(num_bins):
+            for b in range(n_bins):
                 selected = np.where(indices == b + 1)[0]
                 if len(selected) > 0:
-                    bin_accuracy[b] = np.mean(true_label[selected] == pred_label[selected])
-                    bin_confidence[b] = np.mean(confidence[selected])
-                    bin_count[b] = len(selected)
+                    bin_accuracies[b] += np.sum(true_labels[selected] == pred_labels[selected])
+                    bin_confidences[b] += np.sum(confidences[selected])
+                    bin_counts[b] += len(selected)
 
-            bin_accuracies += bin_accuracy
-            bin_confidences += bin_confidence
-            bin_counts += bin_count
+        # Divide each bin by its bin count and avoid division by zero!
+        bin_accuracies /= np.where(bin_counts > 0, bin_counts, 1)
+        bin_confidences /= np.where(bin_counts > 0, bin_counts, 1)
+        avg_acc = np.sum(bin_accuracies * bin_counts) / np.sum(bin_counts)
+        avg_conf = np.sum(bin_confidences * bin_counts) / np.sum(bin_counts)
+        gaps = np.abs(bin_accuracies - bin_confidences)
+        ece = np.sum(gaps * bin_counts) / np.sum(bin_counts)
+        mce = np.max(gaps)
 
-            avg_acc += np.sum(bin_accuracy * bin_count) / np.sum(bin_count)
-            avg_conf += np.sum(bin_confidence * bin_count) / np.sum(bin_count)
-
-            gaps = np.abs(bin_accuracy - bin_confidence)
-            ece += np.sum(gaps * bin_count) / np.sum(bin_count)
-            mce += np.max(gaps)
-
-        n = len(data_loader)
-        bin_accuracies /= n
-        bin_confidences /= n
-        avg_acc /= n
-        avg_conf /= n
-        ece /= n
-        mce /= n
-
-        return { "accuracies": bin_accuracies,
-                 "confidences": bin_confidences,
-                 "counts": bin_counts,
-                 "bins": bins,
-                 "avg_accuracy": avg_acc,
-                 "avg_confidence": avg_conf,
-                 "expected_calibration_error": ece,
-                 "max_calibration_error": mce}
+        return {
+            "accuracies": bin_accuracies,
+            "confidences": bin_confidences,
+            "counts": bin_counts,
+            "bins": bins,
+            "avg_accuracy": avg_acc,
+            "avg_confidence": avg_conf,
+            "expected_calibration_error": ece,
+            "max_calibration_error": mce
+        }
 
     def init_weights(self, seed: int = 42) -> None:
         """Initialize weights.
@@ -290,3 +303,147 @@ class ResNet(nn.Module):
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
+
+
+# Code by https://github.com/akamaster/pytorch_resnet_cifar10
+'''
+Properly implemented ResNet-s for CIFAR10 as described in paper [1].
+
+The implementation and structure of this file is hugely influenced by [2]
+which is implemented for ImageNet and doesn't have option A for identity.
+Moreover, most of the implementations on the web is copy-paste from
+torchvision's resnet and has wrong number of params.
+
+Proper ResNet-s for CIFAR10 (for fair comparision and etc.) has following
+number of layers and parameters:
+
+name      | layers | params
+ResNet20  |    20  | 0.27M
+ResNet32  |    32  | 0.46M
+ResNet44  |    44  | 0.66M
+ResNet56  |    56  | 0.85M
+ResNet110 |   110  |  1.7M
+ResNet1202|  1202  | 19.4m
+
+which this implementation indeed has.
+
+Reference:
+[1] Kaiming He, Xiangyu Zhang, Shaoqing Ren, Jian Sun
+    Deep Residual Learning for Image Recognition. arXiv:1512.03385
+[2] https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
+
+If you use this implementation in you work, please don't forget to mention the
+author, Yerlan Idelbayev.
+'''
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.nn.init as init
+
+from torch.autograd import Variable
+
+__all__ = ['ResNet', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110', 'resnet1202']
+
+def _weights_init(m):
+    classname = m.__class__.__name__
+    #print(classname)
+    if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+        init.kaiming_normal_(m.weight)
+
+class LambdaLayer(nn.Module):
+    def __init__(self, lambd):
+        super(LambdaLayer, self).__init__()
+        self.lambd = lambd
+
+    def forward(self, x):
+        return self.lambd(x)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1, option='A'):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != planes:
+            if option == 'A':
+                """
+                For CIFAR10 ResNet paper uses option A.
+                """
+                self.shortcut = LambdaLayer(lambda x:
+                                            F.pad(x[:, :, ::2, ::2], (0, 0, 0, 0, planes//4, planes//4), "constant", 0))
+            elif option == 'B':
+                self.shortcut = nn.Sequential(
+                    nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                    nn.BatchNorm2d(self.expansion * planes)
+                )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10):
+        super(ResNet, self).__init__()
+        self.in_planes = 16
+
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        self.linear = nn.Linear(64, num_classes)
+
+        self.apply(_weights_init)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = F.avg_pool2d(out, out.size()[3])
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+def resnet20(num_classes=10, *args, **kwargs):
+    return ResNet(BasicBlock, [3, 3, 3], num_classes)
+
+
+def resnet32(num_classes=10, *args, **kwargs):
+    return ResNet(BasicBlock, [5, 5, 5], num_classes)
+
+
+def resnet44(num_classes=10, *args, **kwargs):
+    return ResNet(BasicBlock, [7, 7, 7], num_classes)
+
+
+def resnet56(num_classes=10, *args, **kwargs):
+    return ResNet(BasicBlock, [9, 9, 9], num_classes)
+
+
+def resnet110(num_classes=10, *args, **kwargs):
+    return ResNet(BasicBlock, [18, 18, 18], num_classes)
+
+
+def resnet1202(num_classes=10, *args, **kwargs):
+    return ResNet(BasicBlock, [200, 200, 200], num_classes)

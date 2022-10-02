@@ -94,17 +94,42 @@ class MUp:
         """
         assert(b.shape[0] == self.d)
         # Thomas algorithm, see self.inv() for information
-        m_d = self.m_d + self.damping
+        m_a_inv = self.m_a_inv()
+        m_d_inv = self.m_d_inv()
+        if len(b.shape) == 1:
+            m_d_inv = m_d_inv.reshape(-1)
         result = torch.zeros_like(b, device=self.device)
-        result[self.k:] = b[self.k:] / m_d
+        result[self.k:] = b[self.k:] * m_d_inv
         if self.k > 0:
             # if self.a_inv is None:
             #     identity = torch.eye(self.k, device=self.device)
             #     m_a = self.m_a + self.damping * identity
             #     result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
             # else:
-            self.m_a_inv()
-            result[:self.k] = self.a_inv @ (b[:self.k] - self.m_b @ result[self.k:])
+            result[:self.k] = m_a_inv @ (b[:self.k] - self.m_b @ result[self.k:])
+        return result
+
+    def transpose_solve(self, b: np.array) -> np.array:
+        """Solve (B^T + damping * I) x = b
+
+        :param b: np.array of shape (d, 1), Right hand side of linear system of equations
+        :return: result, np.array of shape (d, 1) as solution of dampened linear system
+        """
+        assert(b.shape[0] == self.d)
+        # Thomas algorithm, see Mlow.inv() for information
+        m_a_inv = self.m_a_inv()
+        m_d_inv = self.m_d_inv()
+        if len(b.shape) == 1:
+            m_d_inv = m_d_inv.reshape(-1)
+        result = torch.zeros_like(b, device=self.device)
+        if self.k > 0:
+            # if self.a_inv is None:
+            #     identity = torch.eye(self.k, device=self.device)
+            #     m_a = self.m_a + self.damping * identity
+            #     result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
+            # else:
+            result[:self.k] = m_a_inv.T @ b[:self.k]
+        result[self.k:] = (-self.m_b.T @ result[:self.k] + b[self.k:]) * m_d_inv
         return result
 
     def inv(self):
@@ -554,21 +579,20 @@ class MUp:
         """
         assert(gamma >= 0)
         factor = gamma * eta / n
-        # m_a_inv = self.m_a_inv()
-        # m_d_inv = self.m_d_inv()
 
         identity = torch.eye(self.k, device=self.device)
-        m_a_damp = self.m_a + self.damping * identity
-        m_d_damp = self.m_d + self.damping
+        # m_a_damp = self.m_a + self.damping * identity
+        # m_d_damp = self.m_d + self.damping
 
         m_a = torch.zeros_like(self.m_a, device=self.device)
         m_b = torch.zeros_like(self.m_b, device=self.device)
         m_d = torch.zeros_like(self.m_d, device=self.device)
 
         if self.k == 0:
+            m_d_inv = self.m_d_inv()
             m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
             if gamma > 0:
-                m_d += factor / (m_d_damp ** 2) - gamma
+                m_d += factor * (m_d_inv ** 2) - gamma
         elif self.k == self.d:
             m_a_inv = self.m_a_inv()
             x_1 = self.m_a.T @ v[:, :self.k]
@@ -582,24 +606,25 @@ class MUp:
                 m_a += factor * m_a_inv @ m_a_inv - gamma * identity
         else:
             m_a_inv = self.m_a_inv()
+            m_d_inv = self.m_d_inv()
             x_1 = self.m_a.T @ v[:, :self.k]
             x_2 = self.m_b.T @ v[:, :self.k] + self.m_d * v[:, self.k:]
             y_1 = (m_a_inv @ g[:, :self.k]).transpose(1, 2)
-            y_1 -= (m_a_inv.T @ self.m_b @ (g[:, self.k:] / m_d_damp)).transpose(1, 2)
-            y_2 = g[:, self.k:] / m_d_damp
+            y_1 -= (m_a_inv.T @ self.m_b @ (g[:, self.k:] * m_d_inv)).transpose(1, 2)
+            y_2 = g[:, self.k:] * m_d_inv
 
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a += n/2 * (M + M.T)
             m_b += n/2 * torch.mean(x_1 @ y_2.transpose(1, 2), axis=0)
             m_b += n/2 * torch.mean(x_2 @ y_1, axis=0).T
-            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) / m_d_damp + v[:, self.k:]) * g[:, self.k:], axis=0)
+            m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) * m_d_inv + v[:, self.k:]) * g[:, self.k:], axis=0)
 
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)
                 m_a += factor * m_a_inv @ m_a_inv.T - gamma * identity
-                m_b -= factor * m_a_inv @ m_a_inv.T @ (self.m_b / m_d_damp.T)
+                m_b -= factor * m_a_inv @ m_a_inv.T @ (self.m_b * m_d_inv.T)
                 x = m_a_inv @ self.m_b
-                m_d += factor * (1 + torch.sum(x ** 2, axis=0)).reshape(-1, 1) / (m_d_damp ** 2) - gamma
+                m_d += factor * (1 + torch.sum(x ** 2, axis=0)).reshape(-1, 1) * (m_d_inv ** 2) - gamma
 
         # print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
 
@@ -868,16 +893,40 @@ class MLow:
         """
         assert(b.shape[0] == self.d)
         result = torch.zeros_like(b, device=self.device)
-        m_d = self.m_d + self.damping
+        m_d_inv = self.m_d_inv()
+        if len(b.shape) == 1:
+            m_d_inv = m_d_inv.reshape(-1)
         if self.k > 0:
             # if self.a_inv is None:
             #     identity = torch.eye(self.k, device=self.device)
             #     m_a = self.m_a + self.damping * identity
             #     result[:self.k] = solve(m_a, b[:self.k])
             # else:
-            self.m_a_inv()
-            result[:self.k] = self.a_inv @ b[:self.k]
-        result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) / m_d
+            m_a_inv = self.m_a_inv()
+            result[:self.k] = m_a_inv @ b[:self.k]
+        result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) * m_d_inv
+        return result
+
+    def transpose_solve(self, b: np.array) -> np.array:
+        """Solve (B^T + damping * I) x = b
+
+        :param b: np.array of shape (d, 1), Right hand side of linear system of equations
+        :return: result, np.array of shape (d, 1) as solution of dampened linear system
+        """
+        assert(b.shape[0] == self.d)
+        result = torch.zeros_like(b, device=self.device)
+        m_d_inv = self.m_d_inv()
+        if len(b.shape) == 1:
+            m_d_inv = m_d_inv.reshape(-1)
+        result[self.k:] = b[self.k:] * m_d_inv
+        if self.k > 0:
+            # if self.a_inv is None:
+            #     identity = torch.eye(self.k, device=self.device)
+            #     m_a = self.m_a + self.damping * identity
+            #     result[:self.k] = solve(m_a, b[:self.k])
+            # else:
+            m_a_inv = self.m_a_inv()
+            result[:self.k] = m_a_inv.T @ (b[:self.k] - self.m_c.T @ result[self.k:])
         return result
 
     def inv(self):
@@ -969,8 +1018,6 @@ class MLow:
         """
         assert(gamma >= 0)
         factor = gamma * eta / n
-        m_a_inv = self.m_a_inv()
-        m_d_inv = self.m_d_inv()
 
         m_a = torch.zeros_like(self.m_a, device=self.device)
         m_c = torch.zeros_like(self.m_c, device=self.device)
@@ -978,18 +1025,22 @@ class MLow:
 
         # Edge case handling for k = 0 and k = d
         if self.k == 0:
+            m_d_inv = self.m_d_inv()
             m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
             if gamma < 0:
                 m_d += factor * (m_d_inv ** 2) - gamma
         elif self.k == self.d:
+            m_a_inv = self.m_a_inv()
             x_1 = self.m_a.T @ v[:, :self.k]
             y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a
             M = torch.mean(x_1 @ y_1, axis=0)
             m_a += n/2 * (M + M.T)
             if gamma > 0:
                 identity = torch.eye(self.k, device=self.device)
-                m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ (m_d_inv ** 2 * self.m_c)) @ m_a_inv - gamma * identity
+                m_a += factor * m_a_inv.T @ m_a_inv - gamma * identity
         else:
+            m_a_inv = self.m_a_inv()
+            m_d_inv = self.m_d_inv()
             x_1 = self.m_a.T @ v[:, :self.k] + self.m_c.T @ v[:, self.k:]
             x_2 = self.m_d * v[:, self.k:]
             y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a + g[:, self.k:].transpose(1, 2) @ self.m_c

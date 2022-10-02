@@ -26,14 +26,14 @@ def parse_args() -> dict:
     parser = argparse.ArgumentParser(description='Run noisy optimizers with parameters.')
     parser.add_argument('-e', '--epochs', type=int, default=1)
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10")
-    parser.add_argument('-m', '--model', type=str, default="resnet18")
+    parser.add_argument('-m', '--model', type=str, default="resnet20")
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=str, default='1e-1')
     parser.add_argument('--k', type=str, default='0')
     parser.add_argument('--mc_samples', type=str, default='1')
     parser.add_argument('--structure', type=str, default='rank_cov')
     parser.add_argument('--eval_every', type=int, default=10)
-    parser.add_argument('--momentum_grad', type=float, default=0.6)
+    parser.add_argument('--momentum_grad', type=float, default=0.9)
     parser.add_argument('--momentum_prec', type=float, default=0.999)
     parser.add_argument('--prior_precision', type=float, default=0.4)
     parser.add_argument('--damping', type=float, default=0.01)
@@ -129,7 +129,10 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8) -> Tuple[DataLo
     # For ResNet, see https://pytorch.org/hub/pytorch_vision_resnet/
     transform = transforms.Compose([transforms.ToTensor(),
                                     transforms.Normalize((0.485, 0.456, 0.406),
-                                                         (0.229, 0.224, 0.225))])
+                                                         (0.229, 0.224, 0.225)),
+                                    transforms.RandomHorizontalFlip(p=0.5),
+                                    transforms.RandomPerspective(distortion_scale=0.5, p=0.5)
+                                    ])
 
     if dataset.lower() == "mnist":
         training_data = MNIST('data/mnist/train', download=True, train=True, transform=transform)
@@ -149,14 +152,14 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8) -> Tuple[DataLo
     train_sampler = SubsetRandomSampler(indices[:split])
     val_sampler = SubsetRandomSampler(indices[split:])
 
-    train_loader = DataLoader(training_data, sampler=train_sampler, batch_size=batch_size, num_workers=4)
-    val_loader = DataLoader(training_data, sampler=val_sampler, batch_size=batch_size, num_workers=4)
-    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=True, num_workers=4)
+    train_loader = DataLoader(training_data, sampler=train_sampler, batch_size=batch_size, num_workers=2)
+    val_loader = DataLoader(training_data, sampler=val_sampler, batch_size=batch_size, num_workers=2)
+    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=True, num_workers=2)
 
     return train_loader, val_loader, test_loader
 
 
-def get_params(args: dict) -> dict:
+def get_params(args: dict, add_weight_decay=True, n=1) -> dict:
     ngd = [
         dict(
             lr=lr, k=k, mc_samples=mc_samples, structure=structure,
@@ -170,7 +173,8 @@ def get_params(args: dict) -> dict:
             args['prior_precision'], args['damping'], args['gamma']
         )
     ]
-    adam = [dict(lr=lr) for lr in set(args['lr'])]
+    adam = [dict(lr=lr, weight_decay=add_weight_decay * prior_precision / n)
+            for lr, prior_precision in zip(set(args['lr']), set(args['prior_precision']))]
     params = dict(ngd=ngd, adam=adam)
     return params
 
@@ -178,7 +182,7 @@ def get_params(args: dict) -> dict:
 def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
         adam_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [],
-        eval_every: int = 10) -> List[dict]:
+        eval_every: int = 10, n_bins: int = 10) -> List[dict]:
     """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
 
     :param epochs: int, number of epochs for training
@@ -209,67 +213,66 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             if optim is StructuredNGD:
                 optimizer = optim(model.parameters(), len(train_loader.dataset), device=device, **param)
             else:
-                optimizer = optim(model.parameters(), lr=param['lr'])
+                optimizer = optim(model.parameters(), **param)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
             epoch_times = []
-            iter_times = []
             train_loss = []
+            train_metrics = {}
             val_loss = []
             val_metrics = {}
-            iter_losses = []
-            iter_metrics = {}
             for metric in metrics:
                 val_metrics[metric.__name__] = []
-                iter_metrics[metric.__name__] = []
+                train_metrics[metric.__name__] = []
 
             for epoch in range(epochs):
-                iter_loss, iter_metric, iter_time = model.train(train_loader, optimizer, epoch=epoch,
-                                                                loss_fn=loss_fn, metrics=metrics,
-                                                                eval_every=eval_every)
+                # Train for one epoch
+                loss, metric, comp_time = model.train(train_loader, optimizer, epoch=epoch,
+                                                                   loss_fn=loss_fn, metrics=metrics,
+                                                                   eval_every=eval_every)
+                # Record epoch times, loss and metrics for epoch
                 if epoch == 0:
-                    epoch_times.append(0)
+                    epoch_times.append(0.0)
                 else:
-                    epoch_times.append(np.sum(iter_time))
-                iter_times += iter_time
-
-                loss, metric = model.evaluate(val_loader, metrics=metrics)
-                # Append single validation metric value epoch-wise
-                for metric_key in metric.keys():
-                    val_metrics[metric_key].append(metric[metric_key])
-                val_loss.append(loss)
-
-                iter_losses += iter_loss
-                # Append multiple values iteration-wise
-                for metric_key in iter_metric.keys():
-                    iter_metrics[metric_key] += iter_metric[metric_key]
-
-                loss, _ = model.evaluate(train_loader, metrics=[])
+                    epoch_times.append(comp_time)
                 train_loss.append(loss)
+                for key in metric.keys():
+                    train_metrics[key].append(metric[key])
+
+                # Record loss and metrics for epoch
+                loss, metric = model.evaluate(val_loader, metrics=metrics)
+                val_loss.append(loss)
+                for key in metric.keys():
+                    val_metrics[key].append(metric[key])
+
                 scheduler.step()
 
             test_loss, test_metrics = model.evaluate(test_loader, metrics=metrics)
-            iter_times[0] = 0.0
-            iter_times = np.cumsum(iter_times)
+            bin_data = model.compute_calibration(test_loader, n_bins=n_bins)
             epoch_times = np.cumsum(epoch_times)
-            name = type(optimizer).__name__
-            bin_data = model.compute_calibration(test_loader)
+
+            optimizer_name = type(optimizer).__name__
+            model_name = model.__name__
+            num_params = model.num_params
+            model_summary = model.summary
+
             timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
             run = dict(
-                name=name,
                 # optimizer=optimizer,
+                optimizer_name=optimizer_name,
+                model_name=model_name,
+                num_params=num_params,
+                model_summary=model_summary,
                 params=param,
-                iter_times=iter_times,
                 epoch_times=epoch_times,
                 train_loss=train_loss,
+                train_metrics=train_metrics,
                 val_loss=val_loss,
                 val_metrics=val_metrics,
                 test_loss=test_loss,
                 test_metrics=test_metrics,
                 bin_data=bin_data,
-                iter_loss=iter_losses,
-                iter_metrics=iter_metrics,
                 timestamp=timestamp
             )
             runs.append(run)
@@ -293,7 +296,7 @@ def save_runs(runs: Union[dict, List[dict]]) -> None:
             pickle.dump(run, f)
 
 
-def load_runs(dir: str = 'runs'):
+def load_runs(dir: str = 'runs') -> List[dict]:
     runs = []
     for run in os.listdir(dir):
         if run.endswith(".pkl"):
@@ -317,38 +320,39 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     plot_reliability_diagram(runs)
 
 
-def plot_loss(runs):
-    # Plot training loss in terms of iterations and computation time
+def plot_loss(runs: Union[dict, List[dict]]) -> None:
+    if type(runs) == dict:
+        runs = [runs]
+    # Plot training loss in terms of epochs and computation time
     plt.figure(figsize=(12, 8))
     for run in runs:
-        label = run['name']
+        label = run['optimizer_name']
         if label == 'StructuredNGD':
-            label += f" (k = {run['params']['k']})"
+            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
         plt.subplot(2, 1, 1)
-        plt.plot(run['iter_loss'], label=label)
+        plt.plot(run['train_loss'], label=label)
 
         # plt.ylim(bottom=0)
-        plt.title('Training Loss w.r.t. Iterations')
-        plt.xlabel('iterations')
+        plt.title('Training Loss w.r.t. Epochs')
+        plt.xlabel('epochs')
         plt.yscale('log')
 
         plt.subplot(2, 1, 2)
-        plt.plot(run['iter_times'], run['iter_loss'], label=label)
+        plt.plot(run['epoch_times'], run['train_loss'], label=label)
 
-        # plt.ylim(bottom=0)
         plt.title('Training Loss w.r.t Time')
         plt.xlabel('time (s)')
         plt.legend()
         plt.yscale('log')
     plt.tight_layout()
-    plt.savefig('plots/iter_losses.pdf')
+    plt.savefig('plots/train_losses.pdf')
 
     # Plot validation loss over epochs and computation time
     plt.figure(figsize=(12, 8))
     for run in runs:
-        label = run['name']
+        label = run['optimizer_name']
         if label == 'StructuredNGD':
-            label += f" (k = {run['params']['k']})"
+            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
         plt.subplot(2, 1, 1)
         plt.plot(run['val_loss'], label=label)
         plt.title('Validation Loss')
@@ -366,47 +370,58 @@ def plot_loss(runs):
     plt.savefig('plots/val_losses.pdf')
 
 
-def plot_metrics(runs):
-    # Plot metrics
-    plt.figure(figsize=(12, 8))
+def plot_metrics(runs: Union[dict, List[dict]]) -> None:
+    if type(runs) == dict:
+        runs = [runs]
     for run in runs:
-        plt.subplot(2, 1, 1)
-        label = run['name']
+        # Plot metrics for training validation set wrt epochs
+        plt.figure(figsize=(12, 8))
+        label = run['optimizer_name']
         if label == 'StructuredNGD':
-            label += f" (k = {run['params']['k']})"
-        for metric_key in run['val_metrics'].keys():
-            plt.plot(run['val_metrics'][metric_key],
-                     label=f"{label}; ({metric_key})")
+            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
+        plt.subplot(2, 1, 1)
+        for key in run['val_metrics'].keys():
+            plt.plot(run['train_metrics'][key],
+                     label=f"Train Data ({key})")
+            plt.plot(run['val_metrics'][key],
+                     label=f"Validation Data ({key})")
 
-        plt.title('Validation Metrics w.r.t. Epochs')
+        plt.title(f"Metrics w.r.t. Epochs ({label})")
         plt.xlabel('epochs')
         plt.ylim(0, 1)
+        # plt.legend()
+        # plt.savefig(f"plots/{run['timestamp']}_metrics.pdf")
 
+        # Plot metrics for training validation set wrt computation time
+        # plt.figure(figsize=(12, 8))
         plt.subplot(2, 1, 2)
-        for metric_key in run['val_metrics'].keys():
-            plt.plot(run['epoch_times'], run['val_metrics'][metric_key],
-                     label=f"{label}; ({metric_key})")
-        plt.title('Validation Metrics w.r.t. Time')
+        for key in run['val_metrics'].keys():
+            plt.plot(run['epoch_times'], run['train_metrics'][key],
+                     label=f"Train Data ({key})")
+            plt.plot(run['epoch_times'], run['val_metrics'][key],
+                     label=f"Validation Data ({key})")
+        plt.title(f"Metrics w.r.t. Time ({label})")
         plt.xlabel('time (s)')
         plt.ylim(0, 1)
         plt.legend()
-
-    plt.tight_layout()
-    plt.savefig('plots/val_metrics.pdf')
+        plt.savefig(f"plots/{run['timestamp']}_metrics.pdf")
 
 
-def smooth(x):
-    pass
+def plot_generalization_gap(runs: Union[dict, List[dict]]) -> None:
+    """Plot generalization gap for each run.
 
-
-def plot_generalization_gap(runs):
+    :param runs:
+    :return:
+    """
+    if type(runs) == dict:
+        runs = [runs]
     for run in runs:
-        plt.figure(figsize=(12, 8))
-        label = run['name']
+        label = run['optimizer_name']
         if label == 'StructuredNGD':
-            label += f" (k = {run['params']['k']})"
+            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
 
         # Plot generalization gap in terms wrt epochs
+        plt.figure(figsize=(12, 8))
         min_index = np.argmin(run['val_loss'])
         ymax = np.concatenate((run['train_loss'], run['val_loss'])).max()
         plt.plot(run['train_loss'], label='Train Data')
@@ -417,24 +432,38 @@ def plot_generalization_gap(runs):
         plt.title(f"Generalization Gap ({label})")
 
         # # Plot generalization gap in terms wrt time
+        # plt.figure(figsize=(12, 8))
         # plt.plot(run['epoch_times'], run['train_loss'], label='Train Data')
         # plt.plot(run['epoch_times'], run['val_loss'], label='Validation Data')
         # plt.vlines(run['epoch_times'][min_index], ymin=0, ymax=ymax, colors='r', linestyle='dashed')
         # plt.xlabel('time (s)')
         # plt.ylabel('Loss')
         # plt.title('Generalization Gap')
+        # plt.legend()
+        # plt.savefig(f"plots/{run['timestamp']}_generalization_gap.pdf")
+
         plt.legend()
         plt.savefig(f"plots/{run['timestamp']}_generalization_gap.pdf")
 
 
-def plot_reliability_diagram(runs, n_bins=10):
+def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
+    """Plot reliability diagram for each run and save in plots folder.
+    The function 'reliability_diagram' is adapted from https://github.com/hollance/reliability-diagrams
+
+    :param runs:
+    """
+    if type(runs) == dict:
+        runs = [runs]
     for run in runs:
+        label = run['optimizer_name']
+        if label == 'StructuredNGD':
+            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
+        title = f"Reliability Diagram ({label})"
         plt.figure(figsize=(12, 8))
         bin_data = run['bin_data']
         reliability_diagram(bin_data, draw_ece=True, draw_mce=True,
-                            draw_bin_importance="alpha", draw_averages=True,
-                            figsize=(6, 6), dpi=100,
-                            return_fig=True)
+                            title=title, draw_averages=True,
+                            figsize=(6, 6), dpi=100)
         plt.savefig(f"plots/{run['timestamp']}_reliability_diagram.pdf")
 
 

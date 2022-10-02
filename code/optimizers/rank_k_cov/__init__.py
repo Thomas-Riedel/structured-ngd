@@ -91,7 +91,7 @@ class StructuredNGD(NoisyOptimizer):
                 state = self.state[p]
                 d_i = int(np.prod(p.shape))
                 self.d_is.append(d_i)
-                state['momentum_grad_buffer'] = torch.zeros(d_i, 1, device=self.device)
+                state['momentum_grad_buffer'] = torch.zeros(d_i, device=self.device)
 
                 # Initialize precision S to prior precision eta / N * I,
                 # i.e., B = sqrt(eta / N) * I
@@ -122,8 +122,8 @@ class StructuredNGD(NoisyOptimizer):
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
-                    self.state[p]['param_samples'] = []
-                    self.state[p]['grad_samples'] = []
+                    self.state[p]['param_samples'] = torch.zeros((self.mc_samples, np.prod(p.shape)), device=self.device)
+                    self.state[p]['grad_samples'] = torch.zeros((self.mc_samples, np.prod(p.shape)), device=self.device)
 
     @torch.no_grad()
     def step(self, closure: Callable = None) -> Tuple[float, Tensor]:
@@ -146,17 +146,17 @@ class StructuredNGD(NoisyOptimizer):
 
         losses = []
         outputs = []
-        start = time.time()
-        for _ in range(self.mc_samples):
-            self._sample_weight_and_collect()  # (2)
+
+        # TODO: Turn into a single function call and sample all MC samples "once"
+        for i in range(self.mc_samples):
+            self._sample_weight_and_collect(i)  # (2)
             with torch.enable_grad():
                 loss, output = closure()
             losses.append(loss.detach())
             outputs.append(output.detach())
-            self._collect_grad_samples()
+            self._collect_grad_samples(i)
+
         # Update parameters
-        end = time.time()
-        print(f"Sample time: {end - start}")
         self._update()
 
         # Restore model parameters to original state
@@ -178,7 +178,7 @@ class StructuredNGD(NoisyOptimizer):
                 if p.requires_grad:
                     self.state[p]['param_average'] = p.data
 
-    def _sample_weight_and_collect(self) -> None:
+    def _sample_weight_and_collect(self, sample_index: int) -> None:
         """Sample parameters from posterior distribution according to
             z_i = p_avg + 1/sqrt(n) * B^{-T} eps ~ N(p_avg, n * (B B^T)^{-1}),
         where eps ~ N(0, I) and save in 'param_samples'.
@@ -188,36 +188,35 @@ class StructuredNGD(NoisyOptimizer):
             for p in group['params']:
                 if p.requires_grad:
                     b_bar = self.state[p]['momentum_prec_buffer']
-                    p_avg = self.state[p]['param_average'].reshape((-1, 1))
+                    p_avg = self.state[p]['param_average'].reshape(-1)
                     # z_i ~ N(mu, n (B B^T)^{-1})
                     # z_i = mu + 1/sqrt(n) * B^{-T} eps, with eps ~ N(0, I)
                     d = int(np.prod(p.shape))
-                    eps = torch.randn((d, 1), device=self.device)
-                    p_sample = p_avg + torch.rsqrt(torch.tensor(n)) * b_bar.t().solve(eps)
+                    eps = torch.randn(d, device=self.device)
+                    p_sample = p_avg + torch.rsqrt(torch.tensor(n)) * b_bar.transpose_solve(eps)
                     p.data = p_sample.reshape(p.shape)
-                    self.state[p]['param_samples'].append(p_sample.reshape((-1, 1)))
+                    self.state[p]['param_samples'][sample_index] = p_sample.reshape(-1)
 
-    def _collect_grad_samples(self) -> None:
+    def _collect_grad_samples(self, sample_index: int) -> None:
         """Collect a single gradient sample for all parameters and save it in 'grad_samples'
         """
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
-                    self.state[p]['grad_samples'].append(p.grad.reshape((-1, 1)))
+                    self.state[p]['grad_samples'][sample_index] = p.grad.reshape(-1)
 
-    def _stack_samples(self) -> None:
-        """Stack gradient and parameter samples from a list of samples into a torch.tensor
-        """
-        for group in self.param_groups:
-            for p in group['params']:
-                if p.requires_grad:
-                    self.state[p]['param_samples'] = torch.stack(self.state[p]['param_samples'], dim=0)
-                    self.state[p]['grad_samples'] = torch.stack(self.state[p]['grad_samples'], dim=0)
+    # def _stack_samples(self) -> None:
+    #     """Stack gradient and parameter samples from a list of samples into a torch.tensor
+    #     """
+    #     for group in self.param_groups:
+    #         for p in group['params']:
+    #             if p.requires_grad:
+    #                 self.state[p]['param_samples'] = torch.stack(self.state[p]['param_samples'], dim=0)
+    #                 self.state[p]['grad_samples'] = torch.stack(self.state[p]['grad_samples'], dim=0)
 
     def _update(self) -> None:
         """Update momentum, parameter averages and square root precisions
         """
-        self._stack_samples()
         for group in self.param_groups:
             lr = group['lr']
             beta1, beta2 = group['momentum_grad'], group['momentum_prec']
@@ -240,7 +239,7 @@ class StructuredNGD(NoisyOptimizer):
         :param n: int, training set size
         :param beta1: float, first order momentum strength
         """
-        p_avg = self.state[p]['param_average'].reshape((-1, 1))
+        p_avg = self.state[p]['param_average'].reshape(-1)
         g_bar = torch.mean(self.state[p]['grad_samples'], axis=0)
         g_mu = self.gamma * eta / n * p_avg + g_bar  # (3)
         self.state[p]['momentum_grad_buffer'].mul_(beta1).add_((1 - beta1) * g_mu)  # (4)
@@ -269,7 +268,7 @@ class StructuredNGD(NoisyOptimizer):
             self.state[p]['step'] += 1
 
         # Evaluate matrix vector products so intermediate results stay in memory
-        update = b_bar.t().solve(b_bar.solve(m_bar)).reshape(p.shape) # (7)
+        update = b_bar.transpose_solve(b_bar.solve(m_bar)).reshape(p.shape) # (7)
         self.state[p]['param_average'].add_(-lr * update)
 
     def _update_momentum_prec_buffers(self, p: Parameter, eta: float, n: int, beta2: float) -> None:
@@ -283,8 +282,8 @@ class StructuredNGD(NoisyOptimizer):
         """
         p_avg = self.state[p]['param_average'].reshape((-1, 1))
         b_bar = self.state[p]['momentum_prec_buffer']
-        grad_samples = self.state[p]['grad_samples']
-        param_samples = self.state[p]['param_samples']
+        grad_samples = self.state[p]['grad_samples'].unsqueeze(-1)
+        param_samples = self.state[p]['param_samples'].unsqueeze(-1)
         self.state[p]['momentum_prec_buffer'] = b_bar._update(beta2, eta, n, grad_samples,
                                                               param_samples - p_avg)  # (6) & (8)
 
