@@ -1,8 +1,5 @@
 from torchmetrics.functional import accuracy, precision, recall, f1_score, calibration_error
-from torch.optim import Adam
-
 from models.resnet import Model
-from optimizers.rank_k_cov import *
 from plot_runs import *
 
 
@@ -40,11 +37,10 @@ def main() -> None:
 	n = len(train_loader.dataset)
 	input_shape = iter(train_loader).next()[0].shape[1:]
 	model = Model(model_type=args['model'], num_classes=num_classes, device=device, input_shape=input_shape)
-	optimizers = [StructuredNGD]
 
 	params = get_params(args, n=n)
 	runs = run(
-		args['epochs'], model, optimizers, train_loader, val_loader, test_loader, adam_params=params['adam'],
+		args['epochs'], model, args['optimizers'], train_loader, val_loader, test_loader, adam_params=params['adam'],
 		ngd_params=params['ngd'], metrics=metrics, eval_every=args['eval_every'], n_bins=args['n_bins']
 	)
 	save_runs(runs)

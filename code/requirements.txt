@@ -4,3 +4,4 @@ seaborn
 torch
 torchvision
 torchmetrics
+torchsummary

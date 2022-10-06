@@ -100,13 +100,7 @@ class MUp:
             m_d_inv = m_d_inv.reshape(-1)
         result = torch.zeros_like(b, device=self.device)
         result[self.k:] = b[self.k:] * m_d_inv
-        if self.k > 0:
-            # if self.a_inv is None:
-            #     identity = torch.eye(self.k, device=self.device)
-            #     m_a = self.m_a + self.damping * identity
-            #     result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
-            # else:
-            result[:self.k] = m_a_inv @ (b[:self.k] - self.m_b @ result[self.k:])
+        result[:self.k] = m_a_inv @ (b[:self.k] - self.m_b @ result[self.k:])
         return result
 
     def transpose_solve(self, b: np.array) -> np.array:
@@ -122,13 +116,7 @@ class MUp:
         if len(b.shape) == 1:
             m_d_inv = m_d_inv.reshape(-1)
         result = torch.zeros_like(b, device=self.device)
-        if self.k > 0:
-            # if self.a_inv is None:
-            #     identity = torch.eye(self.k, device=self.device)
-            #     m_a = self.m_a + self.damping * identity
-            #     result[:self.k] = solve(m_a, b[:self.k] - self.m_b @ result[self.k:])
-            # else:
-            result[:self.k] = m_a_inv.T @ b[:self.k]
+        result[:self.k] = m_a_inv.T @ b[:self.k]
         result[self.k:] = (-self.m_b.T @ result[:self.k] + b[self.k:]) * m_d_inv
         return result
 
@@ -160,12 +148,12 @@ class MUp:
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
             m_a = self.m_a + self.damping * identity
-            self.a_inv = torch.linalg.inv(m_a) # solve(self.m_a + self.damping * identity, identity)
+            self.a_inv = solve(m_a, identity)
         return self.a_inv
 
     def m_d_inv(self) -> np.array:
         """Compute dampened inverse of diagonal block.
-        
+
         :return: self.d_inv, torch.Tensor, dampened inverse of diagonal block
         """
         # m_d is diagonal matrix
@@ -176,7 +164,7 @@ class MUp:
     def full(self) -> np.array:
         """Write full d x d matrix into memory as np.array. 
         For large values of d, this will not be able to fit into memory!
-        
+
         :return: result, np.array, dense matrix
         """
         result = torch.zeros((self.d, self.d), device=self.device)
@@ -187,7 +175,7 @@ class MUp:
 
     def size(self):
         """Return size as torch.Size object.
-        
+
         :return: size, torch.Size, (d, d) tuple specifying size
         """
         return torch.Size((self.d, self.d))
@@ -255,7 +243,7 @@ class MUp:
 
         corr = self.corr().cpu()
         sns.heatmap(corr, vmin=-1.0, vmax=1.0, center=0.0, cmap='coolwarm')
-      
+
     def plot_covariance(self) -> None:
         """Plot heatmap of covariance matrix.
         """
@@ -341,7 +329,7 @@ class MUp:
             result[:self.k] = self.m_a @ x[:self.k] + self.m_b @ x[self.k:]
             result[self.k:] = self.m_d * x[self.k:]
             return result
-        
+
     def __rmatmul__(self, x: Union[int, float, np.array]) -> np.array:
         """Matrix multiplication X @ M
 
@@ -893,17 +881,11 @@ class MLow:
         """
         assert(b.shape[0] == self.d)
         result = torch.zeros_like(b, device=self.device)
+        m_a_inv = self.m_a_inv()
         m_d_inv = self.m_d_inv()
         if len(b.shape) == 1:
             m_d_inv = m_d_inv.reshape(-1)
-        if self.k > 0:
-            # if self.a_inv is None:
-            #     identity = torch.eye(self.k, device=self.device)
-            #     m_a = self.m_a + self.damping * identity
-            #     result[:self.k] = solve(m_a, b[:self.k])
-            # else:
-            m_a_inv = self.m_a_inv()
-            result[:self.k] = m_a_inv @ b[:self.k]
+        result[:self.k] = m_a_inv @ b[:self.k]
         result[self.k:] = (-self.m_c @ result[:self.k] + b[self.k:]) * m_d_inv
         return result
 
@@ -915,18 +897,12 @@ class MLow:
         """
         assert(b.shape[0] == self.d)
         result = torch.zeros_like(b, device=self.device)
+        m_a_inv = self.m_a_inv()
         m_d_inv = self.m_d_inv()
         if len(b.shape) == 1:
             m_d_inv = m_d_inv.reshape(-1)
         result[self.k:] = b[self.k:] * m_d_inv
-        if self.k > 0:
-            # if self.a_inv is None:
-            #     identity = torch.eye(self.k, device=self.device)
-            #     m_a = self.m_a + self.damping * identity
-            #     result[:self.k] = solve(m_a, b[:self.k])
-            # else:
-            m_a_inv = self.m_a_inv()
-            result[:self.k] = m_a_inv.T @ (b[:self.k] - self.m_c.T @ result[self.k:])
+        result[:self.k] = m_a_inv.T @ (b[:self.k] - self.m_c.T @ result[self.k:])
         return result
 
     def inv(self):
@@ -956,8 +932,7 @@ class MLow:
         if self.a_inv is None:
             identity = torch.eye(self.k, device=self.device)
             m_a = self.m_a + self.damping * identity
-            self.a_inv = torch.linalg.inv(m_a) # solve(self.m_a + self.damping * identity, identity)
-
+            self.a_inv = solve(m_a, identity)
         return self.a_inv
 
     def m_d_inv(self) -> np.array:

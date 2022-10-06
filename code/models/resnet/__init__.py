@@ -39,27 +39,6 @@ class Model(nn.Module):
             print(f"Using {model_type} designed for ImageNet.")
             self.model = eval(f"{model_type}(pretrained=False, num_classes=num_classes).to(device)")
         else:
-            # self.model = nn.Sequential(
-            #     nn.Conv2d(input_shape[1], dim // 4, (3, 3)),
-            #     nn.BatchNorm2d(dim // 4),
-            #     nn.ReLU(0.2),
-            #     nn.MaxPool2d(2, 2),
-            #     nn.Conv2d(dim // 4, dim // 2, (3, 3)),
-            #     nn.BatchNorm2d(dim // 2),
-            #     nn.ReLU(),
-            #     nn.MaxPool2d(2, 2),
-            #     nn.Conv2d(dim // 2, dim, (3, 3)),
-            #     nn.BatchNorm2d(dim),
-            #     nn.ReLU(),
-            #     nn.MaxPool2d(2, 2),
-            #     nn.Flatten(),
-            #     nn.Linear(dim, dim // 2),
-            #     nn.ReLU(),
-            #     nn.Linear(dim // 2, dim // 4),
-            #     nn.ReLU(),
-            #     nn.Linear(dim // 4, num_classes),
-            #     nn.Softmax(dim=1)
-            # )
             model_types = model_types_imagenet + model_types_cifar10
             raise ValueError(f"Model type {model_type} not recognized! "
                              f"Choose one of {model_types}.")
@@ -83,7 +62,7 @@ class Model(nn.Module):
         return self.model(x)
 
     def train(self, data_loader: DataLoader, optimizer: Union[Adam, NoisyOptimizer],
-              epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 10,
+              epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 100,
               loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict, List[float]]:
         """Training loop for one epoch.
 
@@ -134,8 +113,8 @@ class Model(nn.Module):
             running_loss += loss.item()
             epoch_loss += loss.item()
             for metric in metrics:
-                running_metrics[metric.__name__] += metric(preds, labels).detach().cpu().numpy()
-                epoch_metrics[metric.__name__] += metric(preds, labels).detach().cpu().numpy()
+                running_metrics[metric.__name__] += metric(preds, labels).item()
+                epoch_metrics[metric.__name__] += metric(preds, labels).item()
 
             if i % eval_every == (eval_every - 1):
                 print("===========================================")
@@ -180,7 +159,7 @@ class Model(nn.Module):
             preds = self(images)
             loss += loss_fn(preds, labels).item()
             for metric in metrics:
-                metric_vals[metric.__name__] += metric(preds, labels).detach().cpu().numpy()
+                metric_vals[metric.__name__] += metric(preds, labels).item()
 
             # Write to TensorBoard
             # writer.add_scalar("Loss", loss, counter)
@@ -252,9 +231,7 @@ class Model(nn.Module):
             images, true_labels = data
             images = images.to(self.device)
             true_labels = true_labels.to(self.device)
-            confidences = torch.max(F.softmax(self(images), dim=1), axis=1)
-            pred_labels = confidences.indices
-            confidences = confidences.values
+            confidences, preds = self(images).softmax(1).max(1)
 
             true_labels = true_labels.detach().cpu().numpy()
             confidences = confidences.detach().cpu().numpy()

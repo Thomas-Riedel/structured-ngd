@@ -5,10 +5,9 @@ from torch.nn import Parameter
 from matrix_groups.triangular import MUp, MLow
 from typing import Union, Tuple, Callable
 from optimizers.noisy_optimizer import *
-import time
+import warnings
 
 
-# momentum: 0.6-0.7 # lr 1e-1
 class StructuredNGD(NoisyOptimizer):
     def __init__(self, params, data_size: int, k: int = 0, lr: float = 1e-1, mc_samples: int = 1,
                  momentum_grad: float = None, momentum_prec: Union[float] = None, damping: float = None,
@@ -62,7 +61,7 @@ class StructuredNGD(NoisyOptimizer):
         self.gamma = gamma
         self.device = device
         self.debias = debias
-        
+
         defaults = dict(lr=lr, data_size=data_size, k=k, momentum_grad=momentum_grad, mc_samples=mc_samples,
                         momentum_prec=momentum_prec, damping=damping, prior_precision=prior_precision)
         super(NoisyOptimizer, self).__init__(params, defaults)
@@ -89,7 +88,7 @@ class StructuredNGD(NoisyOptimizer):
             damping = group['damping']
             for i, p in enumerate(params):
                 state = self.state[p]
-                d_i = int(np.prod(p.shape))
+                d_i = p.nelement()
                 self.d_is.append(d_i)
                 state['momentum_grad_buffer'] = torch.zeros(d_i, device=self.device)
 
@@ -100,20 +99,20 @@ class StructuredNGD(NoisyOptimizer):
                     identity = MUp.eye(d_i,
                                        np.minimum(d_i, k),
                                        device=self.device,
-                                       damping=np.sqrt(damping))
+                                       damping=damping)
                 else:
                     identity = MLow.eye(d_i,
                                         np.minimum(d_i, k),
                                         device=self.device,
-                                        damping=np.sqrt(damping))
+                                        damping=damping)
                 if prec_init is None:
-                    state['momentum_prec_buffer'] = np.sqrt(eta / n + self.debias * damping) * identity
+                    state['momentum_prec_buffer'] = torch.sqrt(torch.tensor(eta / n + self.debias * damping)) * identity
                 else:
                     state['momentum_prec_buffer'] = prec_init * identity
                 # t counter
                 state['step'] = 0
                 if k > d_i:
-                    raise Warning(f"The rank parameter {k} at layer {i} is bigger than the number of parameters {d_i} "
+                    warnings.warn(f"The rank parameter {k} at layer {i} is bigger than the number of parameters {d_i} "
                                   f"and will be capped, i.e. k_{i} := {d_i}.")
 
     def _reset_param_and_grad_samples(self) -> None:
@@ -122,8 +121,8 @@ class StructuredNGD(NoisyOptimizer):
         for group in self.param_groups:
             for p in group['params']:
                 if p.requires_grad:
-                    self.state[p]['param_samples'] = torch.zeros((self.mc_samples, np.prod(p.shape)), device=self.device)
-                    self.state[p]['grad_samples'] = torch.zeros((self.mc_samples, np.prod(p.shape)), device=self.device)
+                    self.state[p]['param_samples'] = torch.zeros((self.mc_samples, p.nelement()), device=self.device)
+                    self.state[p]['grad_samples'] = torch.zeros((self.mc_samples, p.nelement()), device=self.device)
 
     @torch.no_grad()
     def step(self, closure: Callable = None) -> Tuple[float, Tensor]:
@@ -191,7 +190,7 @@ class StructuredNGD(NoisyOptimizer):
                     p_avg = self.state[p]['param_average'].reshape(-1)
                     # z_i ~ N(mu, n (B B^T)^{-1})
                     # z_i = mu + 1/sqrt(n) * B^{-T} eps, with eps ~ N(0, I)
-                    d = int(np.prod(p.shape))
+                    d = p.nelement()
                     eps = torch.randn(d, device=self.device)
                     p_sample = p_avg + torch.rsqrt(torch.tensor(n)) * b_bar.transpose_solve(eps)
                     p.data = p_sample.reshape(p.shape)
@@ -204,15 +203,6 @@ class StructuredNGD(NoisyOptimizer):
             for p in group['params']:
                 if p.requires_grad:
                     self.state[p]['grad_samples'][sample_index] = p.grad.reshape(-1)
-
-    # def _stack_samples(self) -> None:
-    #     """Stack gradient and parameter samples from a list of samples into a torch.tensor
-    #     """
-    #     for group in self.param_groups:
-    #         for p in group['params']:
-    #             if p.requires_grad:
-    #                 self.state[p]['param_samples'] = torch.stack(self.state[p]['param_samples'], dim=0)
-    #                 self.state[p]['grad_samples'] = torch.stack(self.state[p]['grad_samples'], dim=0)
 
     def _update(self) -> None:
         """Update momentum, parameter averages and square root precisions
@@ -263,8 +253,8 @@ class StructuredNGD(NoisyOptimizer):
             eps = 1e-9
             t = self.state[p]['step']
             m_bar = m_bar / (1 - beta1 ** (t + 1))  # (5)
-            b_bar = torch.rsqrt(torch.tensor(1 - beta2 ** t + eps)) * b_bar.add_id(-np.sqrt(eta / n + damping))
-            b_bar = b_bar.add_id(np.sqrt(eta / n + damping))
+            b_bar = torch.rsqrt(torch.tensor(1 - beta2 ** t + eps)) * b_bar.add_id(-torch.sqrt(eta / n + damping))
+            b_bar = b_bar.add_id(torch.sqrt(eta / n + damping))
             self.state[p]['step'] += 1
 
         # Evaluate matrix vector products so intermediate results stay in memory
