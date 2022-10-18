@@ -50,7 +50,7 @@ def parse_args() -> dict:
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size for data loaders (default: 128)')
     parser.add_argument('--lr', type=str, default='1e-3',
-                        help='Learning rate (default: 0.1)')
+                        help='Learning rate (default: 0.001)')
     parser.add_argument('--k', type=str, default='0',
                         help='Rank parameter for StructuredNGD (default: 0)')
     parser.add_argument('--mc_samples', type=str, default='1',
@@ -71,8 +71,8 @@ def parse_args() -> dict:
                         help='Regularization parameter in ELBO (default: 1.0)')
     parser.add_argument('-s', '--data_split', type=float, default=0.8,
                         help='Data split for training and validation set (default: 0.8)')
-    parser.add_argument('--n_bins', type=int, default=20,
-                        help='Number of bins for reliability diagrams (default: 20)')
+    parser.add_argument('--n_bins', type=int, default=10,
+                        help='Number of bins for reliability diagrams (default: 10)')
     parser.add_argument('--mc_samples_eval', type=int, default=64,
                         help='Number of MC samples during evaluation (default: 64)')
 
@@ -334,7 +334,6 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
             run = dict(
-                # optimizer=optimizer,
                 optimizer_name=optimizer_name,
                 model_name=model_name,
                 dataset=dataset,
@@ -379,8 +378,8 @@ def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
         if file.endswith(".pkl"):
             with open(os.path.join(directory, file), 'rb') as f:
                 run = pickle.load(f)
-            if ((run['optimizer_name'] == optimizer.__name__) and
-                    (run['model_name'] == model.__name__) and
+            if ((run['optimizer_name'] == optimizer) and
+                    (run['model_name'] == model) and
                     (run['dataset'] == dataset)):
                 return run
     return None
@@ -569,7 +568,11 @@ def plot_corrupted_results(runs, plot_values=['mce', 'ece', 'accuracy']):
 
     # Plot corrupted reliability diagrams for each dataset, model and optimizer
     plot_corrupted_reliability_diagrams(runs)
+
+    # Plot corruption errors per dataset and optimizer and grouped by model and error
     plot_corrupted_results(runs, plot_values)
+
+    # Plot robustness of all optimizers for each dataset, model and corruption type
     plot_robustness(runs)
 
 
@@ -684,35 +687,58 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
                 plt.show()
 
 
-# def make_csv(directory: str = 'runs'):
-#     runs = load_runs(directory)
-#     results = pd.DataFrame(columns=['Name', 'k', 'Structure', 'Training Loss',
-#                                     'Test Loss', 'Accuracy', 'ECE', 'MCE', 'Time'])
-#     models = list(set(run['model_name'] for run in runs))
-#     for model in models:
-#         for run in runs:
-#             if not run['model_name'] == model:
-#                 continue
-#             new_row = pd.DataFrame(columns=results.columns,
-#                                    data=[[run['optimizer_name'], None, None,
-#                                           run['train_loss'][-1], run['test_loss'],
-#                                           run['test_metrics']['accuracy'],
-#                                           run['bin_data']['expected_calibration_error'],
-#                                           run['bin_data']['max_calibration_error'],
-#                                           run['epoch_times'][-1]]])
-#             if run['optimizer_name'] == 'Adam':
-#                 adam_run = run
-#             else:
-#                 new_row['k'] = run['params']['k']
-#                 new_row['Structure'] = run['params']['structure']
-#
-#             results = results.append(new_row, ignore_index=True)
-#         for run in runs:
-#             if not run['model_name'] == model:
-#                 continue
-#             if run['optimizer_name'] != 'Adam':
-#                 new_row = pd.DataFrame([[run['optimizer_name',], run['train_loss'][-1], ])
-#     return
+def make_csv(directory: str = 'runs'):
+    runs = load_all_runs(directory)
+    results = pd.DataFrame(columns=['Dataset', 'Model', 'Optimizer',
+                                    'Training Loss', 'Test Loss', 'Test Accuracy', 'ECE', 'MCE', 'Time'])
+    for run in runs:
+        dataset = run['dataset']
+        model = run['model_name']
+        optimizer = run['optimizer_name']
+
+        adam_run = load_run(dataset, model, 'Adam', directory)
+        train_loss = run['train_loss'][-1]
+        test_loss = run['test_loss']
+        test_accuracy = run['test_metrics']['accuracy']
+        ece = run['bin_data']['expected_calibration_error']
+        mce = run['bin_data']['max_calibration_error']
+        comp_time = run['epoch_times'][-1]
+        if run['optimizer_name'] == 'Adam':
+            train_loss = compare(train_loss)
+            test_loss = compare(test_loss)
+            test_accuracy = compare(test_accuracy)
+            ece = compare(ece)
+            mce = compare(mce)
+            comp_time = compare(comp_time / 3600)
+        else:
+            train_loss = compare(train_loss, adam_run['train_loss'][-1])
+            test_loss = compare(test_loss, adam_run['test_loss'])
+            test_accuracy = compare(test_accuracy, adam_run['test_metrics']['accuracy'])
+            ece = compare(ece, adam_run['bin_data']['expected_calibration_error'])
+            mce = compare(mce, adam_run['bin_data']['max_calibration_error'])
+            comp_time = compare(comp_time / 3600, adam_run['epoch_times'][-1])
+
+        result = pd.DataFrame([{
+            'Dataset': dataset,
+            'Model': model,
+            'Optimizer': optimizer,
+            'Training Loss': train_loss,
+            'Test Loss': test_loss,
+            'Test Accuracy': test_accuracy,
+            'ECE': ece, 'MCE': mce,
+            'Time (h)': comp_time
+        }])
+        results = results.append(result)
+    results.sort_values(by=['Dataset', 'Model', 'Optimizer'], inplace=True)
+    return results
+
+
+def compare(x, y=None, f='{:.3f}'):
+    if y is None:
+        return f.format(x)
+    sign = ['+', '', ''][1 - np.sign(x - y).astype(int)]
+    relative_diff = 100 * (x / y - 1)
+    return f"{f.format(x)} ({sign}{f.format(relative_diff)}%)"
 
 
 if __name__ == '__main__':
