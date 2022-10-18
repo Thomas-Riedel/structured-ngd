@@ -3,20 +3,34 @@ import sys
 import datetime
 import pickle
 import re
-import os
 import itertools
-from typing import List, Any
+from typing import Any
 
-import pandas as pd
 import torch.nn as nn
-from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100
-from torch.utils.data import DataLoader
+import torch.utils.data
+from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100, STL10, SVHN
 from torch.utils.data.sampler import SubsetRandomSampler
 from torchvision import transforms
 
 from optimizers.rank_k_cov import *
-from torch.optim import Adam, SGD, RMSprop
+from torch.optim import *
 from reliability_diagrams import reliability_diagram
+from corruption import *
+from metrics import *
+
+CIFAR_TRANSFORM_AUGMENTED = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.Normalize((0.485, 0.456, 0.406),
+                         (0.229, 0.224, 0.225))]
+)
+
+CIFAR_TRANSFORM = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.485, 0.456, 0.406),
+                         (0.229, 0.224, 0.225))]
+)
 
 
 def parse_args() -> dict:
@@ -30,17 +44,17 @@ def parse_args() -> dict:
     parser.add_argument('-e', '--epochs', type=int, default=1,
                         help='Number of epochs to train models on data (default: 1)')
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10",
-                        help='Dataset for training, one of CIFAR10, MNIST, FashionMNIST (default: CIFAR10)')
+                        help='Dataset for training, one of CIFAR10, CIFAR100, MNIST, FashionMNIST (default: CIFAR10)')
     parser.add_argument('-m', '--model', type=str, default="resnet20",
                         help='ResNet model (default: resnet20)')
-    parser.add_argument('--batch_size', type=int, default=64,
-                        help='Batch size for data loaders (default: 64)')
-    parser.add_argument('--lr', type=str, default='1e-1',
+    parser.add_argument('--batch_size', type=int, default=128,
+                        help='Batch size for data loaders (default: 128)')
+    parser.add_argument('--lr', type=str, default='1e-3',
                         help='Learning rate (default: 0.1)')
     parser.add_argument('--k', type=str, default='0',
                         help='Rank parameter for StructuredNGD (default: 0)')
     parser.add_argument('--mc_samples', type=str, default='1',
-                        help='Number of MC samples (default: 1)')
+                        help='Number of MC samples during training (default: 1)')
     parser.add_argument('--structure', type=str, default='rank_cov',
                         help='Covariance structure (default: rank_cov)')
     parser.add_argument('--eval_every', type=int, default=100,
@@ -59,6 +73,8 @@ def parse_args() -> dict:
                         help='Data split for training and validation set (default: 0.8)')
     parser.add_argument('--n_bins', type=int, default=20,
                         help='Number of bins for reliability diagrams (default: 20)')
+    parser.add_argument('--mc_samples_eval', type=int, default=64,
+                        help='Number of MC samples during evaluation (default: 64)')
 
     args = parser.parse_args(sys.argv[1:])
     args.lr, args.k, args.mc_samples = parse_vals(
@@ -91,7 +107,8 @@ def parse_args() -> dict:
         damping=args.damping,
         gamma=args.gamma,
         data_split=args.data_split,
-        n_bins=args.n_bins
+        n_bins=args.n_bins,
+        mc_samples_eval=args.mc_samples_eval
     )
     return args_dict
 
@@ -103,6 +120,7 @@ def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
     :param types: List[type], list of specified types to parse supplied arguments to
     :return: result, List[Union[int, float]], list of parsed and separated arguments
     """
+
     def make_sequence(type):
         def f(val):
             if type == int:
@@ -123,7 +141,9 @@ def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
                 return list(range(start, end, step))
             else:
                 return [type(val)]
+
         return f
+
     result = []
     for arg, type in zip(args, types):
         result.append(list(sorted(set(itertools.chain.from_iterable(map(make_sequence(type), arg.split(',')))))))
@@ -136,8 +156,8 @@ def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
     return result
 
 
-def load_data(dataset: str, batch_size: int, split: float = 0.8) -> Tuple[
-    DataLoader[Any], DataLoader[Any], DataLoader[Any]]:
+def load_data(dataset: str, batch_size: int, split: float = 0.8) -> \
+        Tuple[DataLoader[Any], DataLoader[Any], DataLoader[Any]]:
     """Load dataset, prepare for ResNet training, and split into train. validation and test set
 
     :param dataset: str, dataset to be downloaded (one of MNIST, FashionMNIST, or CIFAR-10)
@@ -146,34 +166,50 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8) -> Tuple[
     :return: (train_loader, val_loader, test_loader), Tuple[torch.utils.data.DataLoader], list of split and batched
         dataset
     """
-    assert(0 < split < 1)
+    assert (0 < split < 1)
 
-    # For ResNet, see https://pytorch.org/hub/pytorch_vision_resnet/
-    train_transform = transforms.Compose([transforms.ToTensor(),
-                                    transforms.Normalize((0.485, 0.456, 0.406),
-                                                         (0.229, 0.224, 0.225)),
-                                    transforms.RandomHorizontalFlip(p=0.5),
-                                    transforms.RandomPerspective(distortion_scale=0.5, p=0.5)
-                                    ])
-    test_transform = transforms.Compose([transforms.ToTensor(),
-                                         transforms.Normalize((0.485, 0.456, 0.406),
-                                                              (0.229, 0.224, 0.225)),
-                                         ])
+    if dataset.lower().startswith('cifar'):
+        transform_augmented = CIFAR_TRANSFORM_AUGMENTED
+        transform = CIFAR_TRANSFORM
+    else:
+        transform_augmented = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.Normalize((0.5, 0.5, 0.5),
+                                 (0.5, 0.5, 0.5)), ]
+        )
+
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5),
+                                 (0.5, 0.5, 0.5))]
+        )
 
     if dataset.lower() == "mnist":
-        training_data = MNIST('data/mnist/train', download=True, train=True, transform=train_transform)
-        test_data = MNIST('data/mnist/test', download=True, train=False, transform=test_transform)
+        training_data = MNIST('data/mnist/train', download=True, train=True, transform=transform_augmented)
+        test_data = MNIST('data/mnist/test', download=True, train=False, transform=transform)
     elif dataset.lower() == "fmnist":
-        training_data = FashionMNIST('data/fmnist/train', download=True, train=True, transform=train_transform)
-        test_data = FashionMNIST('data/fmnist/test', download=True, train=False, transform=test_transform)
+        training_data = FashionMNIST('data/fmnist/train', download=True, train=True, transform=transform_augmented)
+        test_data = FashionMNIST('data/fmnist/test', download=True, train=False, transform=transform)
     elif dataset.lower() == "cifar10":
-        training_data = CIFAR10('data/cifar10/train', download=True, train=True, transform=train_transform)
-        test_data = CIFAR10('data/cifar10/test', download=True, train=False, transform=test_transform)
+        training_data = CIFAR10('data/cifar10/train', download=True, train=True, transform=transform_augmented)
+        test_data = CIFAR10('data/cifar10/test', download=True, train=False, transform=transform)
     elif dataset.lower() == "cifar100":
-        training_data = CIFAR100('data/cifar100/train', download=True, train=True, transform=train_transform)
-        test_data = CIFAR100('data/cifar100/test', download=True, train=False, transform=test_transform)
+        training_data = CIFAR100('data/cifar100/train', download=True, train=True, transform=transform_augmented)
+        test_data = CIFAR100('data/cifar100/test', download=True, train=False, transform=transform)
+    elif dataset.lower() == "stl10":
+        training_data = STL10('data/stl10/train', download=True, split='train', transform=transform_augmented)
+        test_data = STL10('data/stl10/test', download=True, split='test', transform=transform)
+    elif dataset.lower() == "imagenet":
+        training_data = STL10('data/imagenet/train', download=True, split='train', transform=transform_augmented)
+        test_data = STL10('data/imagenet/test', download=True, split='val', transform=transform)
+    elif dataset.lower() == "svhn":
+        training_data = SVHN('data/svhn/train', download=True, split='train', transform=transform_augmented)
+        test_data = SVHN('data/svhn/test', download=True, split='test', transform=transform)
     else:
-        raise ValueError(f"Dataset {dataset} not recognized! Choose one of [mnist, fmnist, cifar10, cifar100]")
+        raise ValueError(f"Dataset {dataset} not recognized! Choose one of "
+                         f"[mnist, fmnist, cifar10, cifar100, stl10, imagenet, svhn]")
 
     indices = list(range(len(training_data)))
     np.random.shuffle(indices)
@@ -181,8 +217,12 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8) -> Tuple[
     train_sampler = SubsetRandomSampler(indices[:split])
     val_sampler = SubsetRandomSampler(indices[split:])
 
-    train_loader = DataLoader(training_data, sampler=train_sampler, batch_size=batch_size, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(training_data, sampler=val_sampler, batch_size=batch_size, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(
+        training_data, sampler=train_sampler, batch_size=batch_size, num_workers=4, pin_memory=True
+    )
+    val_loader = DataLoader(
+        training_data, sampler=val_sampler, batch_size=batch_size, num_workers=4, pin_memory=True
+    )
     test_loader = DataLoader(test_data, batch_size=batch_size, num_workers=4, pin_memory=True)
 
     return train_loader, val_loader, test_loader
@@ -210,8 +250,8 @@ def get_params(args: dict, add_weight_decay=True, n=1) -> dict:
 
 def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
-        adam_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [],
-        eval_every: int = 10, n_bins: int = 10) -> List[dict]:
+        adam_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
+        eval_every: int = 100, n_bins: int = 10, mc_samples: int = 64) -> List[dict]:
     """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
 
     :param epochs: int, number of epochs for training
@@ -229,7 +269,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
     """
     loss_fn = nn.CrossEntropyLoss()
     runs = []
-    device = model.device
+    dataset = train_loader.dataset.root.split('/')[1]
 
     for optim in optimizers:
         if optim is StructuredNGD:
@@ -240,19 +280,19 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             print(optim.__name__, param)
             model.init_weights()
             if optim is StructuredNGD:
-                optimizer = optim(model.parameters(), len(train_loader.dataset), device=device, **param)
+                optimizer = optim(model.parameters(), len(train_loader.dataset), **param)
             else:
                 optimizer = optim(model.parameters(), **param)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
             # Initialize computation times, losses and metrics for recording
-            loss, metric = model.evaluate(train_loader, metrics)
+            loss, metric = model.evaluate(train_loader, metrics, optimizer=optimizer, mc_samples=mc_samples)
             epoch_times = [0.0]
             train_loss = []
             train_metrics = {}
             train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
-            loss, metric = model.evaluate(val_loader, metrics=metrics)
+            loss, metric = model.evaluate(val_loader, metrics=metrics, optimizer=optimizer, mc_samples=mc_samples)
             val_loss = []
             val_metrics = {}
             val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
@@ -260,22 +300,32 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             for epoch in range(epochs):
                 # Train for one epoch
                 loss, metric, comp_time = model.train(train_loader, optimizer, epoch=epoch,
-                                                                   loss_fn=loss_fn, metrics=metrics,
-                                                                   eval_every=eval_every)
+                                                      loss_fn=loss_fn, metrics=metrics,
+                                                      eval_every=eval_every)
                 # Record epoch times, loss and metrics for epoch
                 epoch_times.append(comp_time)
                 train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
                 # Record loss and metrics for epoch
-                loss, metric = model.evaluate(val_loader, metrics=metrics)
+                loss, metric = model.evaluate(val_loader, metrics=metrics,
+                                              optimizer=optimizer, mc_samples=mc_samples)
                 val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
                 scheduler.step()
 
-            test_loss, test_metrics = model.evaluate(test_loader, metrics=metrics)
-            bin_data = model.compute_calibration(test_loader, n_bins=n_bins)
-            epoch_times = np.cumsum(epoch_times)
+            test_loss, test_metrics = model.evaluate(test_loader, metrics=metrics,
+                                                     optimizer=optimizer, mc_samples=mc_samples)
+            bin_data = model.compute_calibration(test_loader, n_bins=n_bins,
+                                                 optimizer=optimizer, mc_samples=mc_samples)
+            clean_results = dict(
+                test_loss=test_loss,
+                test_metrics=test_metrics,
+                bin_data=bin_data
+            )
+            corrupted_results = get_corrupted_results(dataset, model, metrics,
+                                                      clean_results, mc_samples, n_bins)
 
+            epoch_times = np.cumsum(epoch_times)
             optimizer_name = type(optimizer).__name__
             model_name = model.__name__
             num_params = model.num_params
@@ -287,6 +337,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 # optimizer=optimizer,
                 optimizer_name=optimizer_name,
                 model_name=model_name,
+                dataset=dataset,
                 num_params=num_params,
                 model_summary=model_summary,
                 params=param,
@@ -298,10 +349,12 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 test_loss=test_loss,
                 test_metrics=test_metrics,
                 bin_data=bin_data,
+                corrupted_results=corrupted_results,
                 timestamp=timestamp
             )
             runs.append(run)
             save_runs(run)
+            torch.save(model, f"models/{timestamp}")
         print('Finished Training')
     return runs
 
@@ -321,11 +374,23 @@ def save_runs(runs: Union[dict, List[dict]]) -> None:
             pickle.dump(run, f)
 
 
-def load_runs(dir: str = 'runs') -> List[dict]:
+def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
+    for file in os.listdir(directory):
+        if file.endswith(".pkl"):
+            with open(os.path.join(directory, file), 'rb') as f:
+                run = pickle.load(f)
+            if ((run['optimizer_name'] == optimizer.__name__) and
+                    (run['model_name'] == model.__name__) and
+                    (run['dataset'] == dataset)):
+                return run
+    return None
+
+
+def load_all_runs(directory: str = 'runs') -> List[dict]:
     runs = []
-    for run in os.listdir(dir):
-        if run.endswith(".pkl"):
-            with open(os.path.join(dir, run), 'rb') as f:
+    for file in os.listdir(directory):
+        if file.endswith(".pkl"):
+            with open(os.path.join(directory, file), 'rb') as f:
                 runs.append(pickle.load(f))
     return runs
 
@@ -343,6 +408,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     plot_metrics(runs)
     plot_generalization_gap(runs)
     plot_reliability_diagram(runs)
+    plot_corrupted_results(runs)
 
 
 def plot_loss(runs: Union[dict, List[dict]]) -> None:
@@ -352,15 +418,13 @@ def plot_loss(runs: Union[dict, List[dict]]) -> None:
     plt.figure(figsize=(12, 8))
     for run in runs:
         label = run['optimizer_name']
-        if label == 'StructuredNGD':
-            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
         plt.subplot(2, 1, 1)
         plt.plot(run['train_loss'], label=label)
 
         # plt.ylim(bottom=0)
         plt.title('Training Loss w.r.t. Epochs')
         plt.xlabel('epochs')
-        # plt.yscale('log')
+        plt.yscale('log')
 
         plt.subplot(2, 1, 2)
         plt.plot(run['epoch_times'], run['train_loss'], label=label)
@@ -368,7 +432,7 @@ def plot_loss(runs: Union[dict, List[dict]]) -> None:
         plt.title('Training Loss w.r.t Time')
         plt.xlabel('time (s)')
         plt.legend()
-        # plt.yscale('log')
+        plt.yscale('log')
     plt.tight_layout()
     plt.savefig('plots/train_losses.pdf')
 
@@ -376,19 +440,19 @@ def plot_loss(runs: Union[dict, List[dict]]) -> None:
     plt.figure(figsize=(12, 8))
     for run in runs:
         label = run['optimizer_name']
-        if label == 'StructuredNGD':
-            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
         plt.subplot(2, 1, 1)
         plt.plot(run['val_loss'], label=label)
         plt.title('Validation Loss')
         plt.xlabel('epochs')
-        plt.ylim(bottom=0)
+        # plt.ylim(bottom=0)
+        plt.yscale('log')
 
         plt.subplot(2, 1, 2)
         plt.plot(run['epoch_times'], run['val_loss'], label=label)
         plt.title('Validation Loss')
         plt.xlabel('time (s)')
-        plt.ylim(bottom=0)
+        # plt.ylim(bottom=0)
+        plt.yscale('log')
         plt.legend()
 
     plt.tight_layout()
@@ -402,8 +466,6 @@ def plot_metrics(runs: Union[dict, List[dict]]) -> None:
         # Plot metrics for training validation set wrt epochs
         plt.figure(figsize=(12, 8))
         label = run['optimizer_name']
-        if label == 'StructuredNGD':
-            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
         plt.subplot(2, 1, 1)
         for key in run['val_metrics'].keys():
             plt.plot(run['train_metrics'][key],
@@ -444,8 +506,6 @@ def plot_generalization_gap(runs: Union[dict, List[dict]]) -> None:
         runs = [runs]
     for run in runs:
         label = run['optimizer_name']
-        if label == 'StructuredNGD':
-            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
 
         # Plot generalization gap in terms wrt epochs
         plt.figure(figsize=(12, 8))
@@ -483,8 +543,6 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
         runs = [runs]
     for run in runs:
         label = run['optimizer_name']
-        if label == 'StructuredNGD':
-            label += f" (structure = {run['params']['structure']}, k = {run['params']['k']})"
         title = f"Reliability Diagram ({label})"
         plt.figure(figsize=(12, 8))
         bin_data = run['bin_data']
@@ -497,16 +555,137 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
 def record_loss_and_metrics(losses, metrics, loss, metric):
     if len(metrics.keys()) == 0:
         for key in metric:
-            metrics[key] == []
-    assert(metrics.keys() == metric.keys())
+            metrics[key] = []
+    assert (metrics.keys() == metric.keys())
     losses.append(loss)
     for key in metric.keys():
         metrics[key].append(metric[key])
     return losses, metrics
 
 
-# def make_csv(dir: str = 'runs'):
-#     runs = load_runs(dir)
+def plot_corrupted_results(runs, plot_values=['mce', 'ece', 'accuracy']):
+    if type(runs) == dict:
+        runs = [runs]
+
+    # Plot corrupted reliability diagrams for each dataset, model and optimizer
+    plot_corrupted_reliability_diagrams(runs)
+    plot_corrupted_results(runs, plot_values)
+    plot_robustness(runs)
+
+
+def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
+    if type(runs) == dict:
+        runs = [runs]
+    for run in runs:
+        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
+            continue
+        dataset = run['dataset']
+        model = run['model_name']
+        optimizer = run['optimizer_name']
+
+        corrupted_results = run['corrupted_results']
+        clean_bin_data = run['bin_data']
+        corrupted_bin_data = corrupted_results['bin_data']
+        label = corrupted_results['optimizer']
+
+        plt.figure(figsize=(12, 8))
+        plt.title(f"Reliability Diagram {label}")
+        nrows = len(CORRUPTION_TYPES)
+        ncols = 6
+
+        # Plot clean bin data (repeatedly in first column)
+        plt.figure(figsize=(12, 8))
+        severity = 0
+        corruption_type = 'clean'
+        for i in range(ncols):
+            plt.subplot(nrows, ncols, (severity + 1) + nrows * i)
+            title = f"severity = {severity}, corruption = {corruption_type}"
+            reliability_diagram(clean_bin_data, draw_ece=True, draw_mce=True,
+                                title=title, draw_averages=True,
+                                figsize=(6, 6), dpi=100)
+        # Plot corrupted data for each severity level with severity levels along the x-axis
+        # and corruption type along the y-axis
+        for severity, corruption_type in corrupted_bin_data.keys():
+            index = (severity + 1) + nrows * CORRUPTION_TYPES.index(corruption_type)
+            plt.subplot(nrows, ncols, index)
+            title = f"severity = {severity}, corruption = {corruption_type}"
+            reliability_diagram(corrupted_bin_data[(severity, corruption_type)], draw_ece=True, draw_mce=True,
+                                title=title, draw_averages=True,
+                                figsize=(6, 6), dpi=100)
+        corruption_types = ', '.join('clean', *CORRUPTION_TYPES.keys())
+        plt.title(f"Reliability Diagrams ({dataset}; {model}; {optimizer})")
+        # ; (→: severity (0-6); ↓: corruption_type: ({corruption_types}))")
+        plt.tight_layout()
+        plt.savefig(f"plots/{run['timestamp']}_reliability_diagram_{dataset}_{model}_{optimizer}.pdf")
+
+
+def plot_corrupted_results(runs: Union[List[dict], dict], plot_values=['ece', 'mce', 'accuracy']) -> None:
+    corrupted_results_df = collect_corrupted_results_df(runs)
+    for dataset in corrupted_results_df['dataset'].unique():
+        # plot corruption errors per dataset and optimizer grouped by model and error (ECE, accuracy, etc.)
+        # 2 x len(plot_values) grid of plots
+        for model in corrupted_results_df['dataset' == dataset]['model'].unique():
+            plt.figure(figsize=(12, 8))
+            sub_df = corrupted_results_df[(corrupted_results_df['dataset'] == dataset) &
+                                          (corrupted_results_df['model'] == model)].copy()
+            for i, value in enumerate(plot_values):
+                legend = False
+                if i == len(plot_values) - 1:
+                    legend = True
+                plt.subplot(2, len(plot_values), i)
+                sns.barplot(sub_df, x='severity', y=value, hue='corruption_type', errorbar='sd', legend=legend)
+                plt.subplot(2, len(plot_values), i + len(plot_values))
+                sns.barplot(sub_df, x='severity', y=value, hue='optimizer', errorbar='sd', legend=legend)
+            plt.tight_layout()
+            plt.title(f"Corruption Errors on {dataset.upper()} for {model}")
+            plt.savefig(f"plots/corrupted_results_{dataset}_{model}.pdf")
+            plt.show()
+
+
+def plot_robustness(runs: Union[List[dict], dict]) -> None:
+    corrupted_results_df = collect_corrupted_results_df(runs)
+    corruption_errors = collect_corruption_errors(runs)
+    rel_corruption_errors = collect_rel_corruption_errors(runs)
+    mce = collect_mce(runs)
+    rmce = collect_rmce(runs)
+
+    print('Corrupted Results')
+    print(corrupted_results_df)
+    print()
+    print('Corruption Errors')
+    print(corruption_errors)
+    print()
+    print('Relative Corruption Errors')
+    print(rel_corruption_errors)
+    print()
+    print('Mean Corruption Errors')
+    print(mce)
+    print()
+    print('Relative Mean Corruption Errors')
+    print(rmce)
+
+    # Plot corruption errors and relative corruption errors as a function of optimizer accuracy
+    for dataset in mce['dataset'].unique():
+        for model in mce[mce['dataset'] == dataset].unique():
+            for type in CORRUPTION_TYPES.keys():
+                sub_mce = mce[(mce['dataset'] == dataset) & (mce['model'] == model)].copy()
+                sub_rmce = rmce[(rmce['dataset'] == dataset) & (rmce['model'] == model)].copy()
+
+                plt.figure(figsize=(12, 8))
+                plt.plot(100 * sub_mce['accuracy'], 100 * sub_mce[type]['mean'], label='mCE')
+                for label, x, y in zip(sub_mce['optimizer'], sub_mce['accuracy'], sub_mce[type]):
+                    plt.annotate(label, (x, y), textcoords="offset points", xytext=(0, -10), ha='center')
+                plt.plot(100 * sub_rmce['accuracy'], 100 * sub_rmce[type]['mean'], label='Relative mCE')
+                plt.title(f"Robustness of Optimizers on {dataset} for {model} and corruption type {type}")
+                plt.xlabel('Test Accuracy (%)')
+                plt.ylabel('%')
+                plt.legend()
+                plt.savefig(f"plots/robustness_{dataset}_{model}_{type}.pdf")
+                plt.show()
+
+
+# def make_csv(directory: str = 'runs'):
+#     runs = load_runs(directory)
 #     results = pd.DataFrame(columns=['Name', 'k', 'Structure', 'Training Loss',
 #                                     'Test Loss', 'Accuracy', 'ECE', 'MCE', 'Time'])
 #     models = list(set(run['model_name'] for run in runs))
@@ -539,7 +718,8 @@ def record_loss_and_metrics(losses, metrics, loss, metric):
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import seaborn as sns
+
     sns.set()
 
-    runs = load_runs()
+    runs = load_all_runs()
     plot_runs(runs)

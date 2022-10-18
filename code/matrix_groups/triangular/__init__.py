@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from typing import Union, List
+from torch.profiler import profile, record_function, ProfilerActivity
 
 
 def solve(A, b, method='lstsq'):
@@ -57,7 +58,9 @@ class MUp:
         """
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        return MUp(torch.eye(k, k), torch.zeros(k, d-k), torch.ones(d-k), k, device=device, damping=damping)
+        return MUp(torch.eye(k, k, device=device),
+                   torch.zeros(k, d-k, device=device),
+                   torch.ones(d-k, device=device), k, device=device, damping=damping)
 
     @staticmethod
     def zeros(d: int, k: int, device: str = None, damping: float = 0.0):
@@ -578,20 +581,16 @@ class MUp:
 
         if self.k == 0:
             m_d_inv = self.m_d_inv()
-            m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0)
-            if gamma > 0:
-                m_d += factor * (m_d_inv ** 2) - gamma
+            m_d += n * torch.mean(v[:, self.k:] * g[:, self.k:], axis=0) \
+                   + factor * (m_d_inv ** 2) - gamma
         elif self.k == self.d:
             m_a_inv = self.m_a_inv()
             x_1 = self.m_a.T @ v[:, :self.k]
             y_1 = (m_a_inv @ g[:, :self.k]).transpose(1, 2)
 
             M = torch.mean(x_1 @ y_1, axis=0)
-            m_a += n/2 * (M + M.T)
-
-            if gamma > 0:
-                # gamma * eta / n * B_A^{-T} B_A^{-1} - gamma * I
-                m_a += factor * m_a_inv @ m_a_inv - gamma * identity
+            # gamma * eta / n * B_A^{-T} B_A^{-1} - gamma * I
+            m_a += n/2 * (M + M.T) + factor * m_a_inv @ m_a_inv - gamma * identity
         else:
             m_a_inv = self.m_a_inv()
             m_d_inv = self.m_d_inv()
@@ -607,16 +606,14 @@ class MUp:
             m_b += n/2 * torch.mean(x_2 @ y_1, axis=0).T
             m_d += n * torch.mean(((self.m_b.T @ v[:, :self.k]) * m_d_inv + v[:, self.k:]) * g[:, self.k:], axis=0)
 
-            if gamma > 0:
-                identity = torch.eye(self.k, device=self.device)
-                m_a += factor * m_a_inv @ m_a_inv.T - gamma * identity
-                m_b -= factor * m_a_inv @ m_a_inv.T @ (self.m_b * m_d_inv.T)
-                x = m_a_inv @ self.m_b
-                m_d += factor * (1 + torch.sum(x ** 2, axis=0)).reshape(-1, 1) * (m_d_inv ** 2) - gamma
+            m_a += factor * m_a_inv @ m_a_inv.T - gamma * identity
+            m_b -= factor * m_a_inv @ m_a_inv.T @ (self.m_b * m_d_inv.T)
+            x = m_a_inv @ self.m_b
+            m_d += factor * (1 + torch.sum(x ** 2, axis=0)).reshape(-1, 1) * (m_d_inv ** 2) - gamma
 
         # print(f"update: {h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device))}")
 
-        # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar 
+        # We avoid computing C_up * kappa_up(M) by simply multiplying the scalar
         # values in the respective blocks
         # This returns B @ h(lr * C_up * kappa_up(B^{-1} G_S B^{-T}))
         return self @ h((1-beta) * MUp(0.5 * m_a, m_b, 0.5 * m_d, self.k, device=self.device, damping=self.damping))
@@ -664,7 +661,10 @@ class MLow:
         """
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        return MLow(torch.eye(k, k), torch.zeros(d-k, k), torch.ones(d-k), k, device=device, damping=damping)
+        return MLow(torch.eye(k, k, device=device),
+                    torch.zeros(d-k, k, device=device),
+                    torch.ones(d-k, device=device),
+                    k, device=device, damping=damping)
 
     @staticmethod
     def zeros(d: int, k: int, device: str = None, damping: float = 0.0):
@@ -999,39 +999,37 @@ class MLow:
         m_d = torch.zeros_like(self.m_d, device=self.device)
 
         # Edge case handling for k = 0 and k = d
-        if self.k == 0:
-            m_d_inv = self.m_d_inv()
-            m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
-            if gamma < 0:
-                m_d += factor * (m_d_inv ** 2) - gamma
-        elif self.k == self.d:
-            m_a_inv = self.m_a_inv()
-            x_1 = self.m_a.T @ v[:, :self.k]
-            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a
-            M = torch.mean(x_1 @ y_1, axis=0)
-            m_a += n/2 * (M + M.T)
-            if gamma > 0:
-                identity = torch.eye(self.k, device=self.device)
-                m_a += factor * m_a_inv.T @ m_a_inv - gamma * identity
-        else:
-            m_a_inv = self.m_a_inv()
-            m_d_inv = self.m_d_inv()
-            x_1 = self.m_a.T @ v[:, :self.k] + self.m_c.T @ v[:, self.k:]
-            x_2 = self.m_d * v[:, self.k:]
-            y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a + g[:, self.k:].transpose(1, 2) @ self.m_c
-            y_2 = (g[:, self.k:] * self.m_d).transpose(1, 2)
+        # if self.k == 0:
+        #     m_d_inv = self.m_d_inv()
+        #     m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
+        #     m_d += factor * (m_d_inv ** 2) - gamma
+        # elif self.k == self.d:
+        #     m_a_inv = self.m_a_inv()
+        #     x_1 = self.m_a.T @ v[:, :self.k]
+        #     y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a
+        #     M = torch.mean(x_1 @ y_1, axis=0)
+        #     m_a += n/2 * (M + M.T)
+        #
+        #     identity = torch.eye(self.k, device=self.device)
+        #     m_a += factor * m_a_inv.T @ m_a_inv - gamma * identity
+        # else:
+        m_a_inv = self.m_a_inv()
+        m_d_inv = self.m_d_inv()
+        x_1 = self.m_a.T @ v[:, :self.k] + self.m_c.T @ v[:, self.k:]
+        x_2 = self.m_d * v[:, self.k:]
+        y_1 = g[:, :self.k].transpose(1, 2) @ self.m_a + g[:, self.k:].transpose(1, 2) @ self.m_c
+        y_2 = (g[:, self.k:] * self.m_d).transpose(1, 2)
 
-            M = torch.mean(x_1 @ y_1, axis=0)
-            m_a = n/2 * (M + M.T)
-            m_c += n/2 * torch.mean(x_1 @ y_2, axis=0).T
-            m_c += n/2 * torch.mean(x_2 @ y_1, axis=0)
-            m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
+        M = torch.mean(x_1 @ y_1, axis=0)
+        m_a = n/2 * (M + M.T)
+        m_c += n/2 * torch.mean(x_1 @ y_2, axis=0).T
+        m_c += n/2 * torch.mean(x_2 @ y_1, axis=0)
+        m_d += n * torch.mean((self.m_d ** 2) * v[:, self.k:] * g[:, self.k:], axis=0)
 
-            if gamma > 0:
-                identity = torch.eye(self.k, device=self.device)
-                m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ ((m_d_inv ** 2) * self.m_c)) @ m_a_inv - gamma * identity
-                m_c += -factor * (m_d_inv ** 2) * self.m_c @ m_a_inv
-                m_d += factor * (m_d_inv ** 2) - gamma
+        identity = torch.eye(self.k, device=self.device)
+        m_a += factor * m_a_inv.T @ (identity + self.m_c.T @ ((m_d_inv ** 2) * self.m_c)) @ m_a_inv - gamma * identity
+        m_c += -factor * (m_d_inv ** 2) * self.m_c @ m_a_inv
+        m_d += factor * (m_d_inv ** 2) - gamma
 
         # print(f"update: {h((1-beta) * MLow(0.5 * m_a, m_c, 0.5 * m_d, self.k, device=self.device))}")
 

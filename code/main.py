@@ -1,24 +1,6 @@
-from torchmetrics.functional import accuracy, precision, recall, f1_score, calibration_error
 from models.resnet import Model
 from plot_runs import *
-
-
-class ECE:
-	def __init__(self, n_bins=10):
-		self.n_bins = n_bins
-		self.__name__ = 'ece'
-
-	def __call__(self, logits, labels):
-		return calibration_error(logits, labels, n_bins=self.n_bins, norm='l1')
-
-
-class MCE:
-	def __init__(self, n_bins=10):
-		self.n_bins = n_bins
-		self.__name__ = 'mce'
-
-	def __call__(self, logits, labels):
-		return calibration_error(logits, labels, n_bins=self.n_bins, norm='max')
+from metrics import *
 
 
 def main() -> None:
@@ -30,7 +12,8 @@ def main() -> None:
 
 	mce = MCE(args['n_bins'])
 	ece = ECE(args['n_bins'])
-	metrics = [accuracy, precision, recall, f1_score, ece, mce]
+	top_k_accuracy = TopkAccuracy(top_k=5)
+	metrics = [accuracy, top_k_accuracy, ece, mce] #precision, recall, f1_score,
 
 	train_loader, val_loader, test_loader = load_data(args['dataset'], args['batch_size'], args['data_split'])
 	num_classes = len(train_loader.dataset.classes)
@@ -40,8 +23,9 @@ def main() -> None:
 
 	params = get_params(args, n=n)
 	runs = run(
-		args['epochs'], model, args['optimizers'], train_loader, val_loader, test_loader, adam_params=params['adam'],
-		ngd_params=params['ngd'], metrics=metrics, eval_every=args['eval_every'], n_bins=args['n_bins']
+		args['epochs'], model, args['optimizers'], train_loader, val_loader, test_loader,
+		adam_params=params['adam'], ngd_params=params['ngd'], metrics=metrics,
+		eval_every=args['eval_every'], n_bins=args['n_bins'], mc_samples=args['mc_samples_eval']
 	)
 	save_runs(runs)
 

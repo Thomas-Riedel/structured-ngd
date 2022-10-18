@@ -7,8 +7,9 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.optim import Adam
 from optimizers.noisy_optimizer import *
-from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
+from torchvision.models import *
 from torchsummary import summary
+from metrics import *
 
 from typing import Union, Tuple, List, Callable
 import time
@@ -18,7 +19,7 @@ class Model(nn.Module):
     def __init__(self, model_type: str = 'resnet20',
                  num_classes: int = 10, input_shape=(3, 32, 32),
                  device: str = None) -> None:
-        """torch.nn.Module class for ResNet
+        """torch.nn.Module class
 
         :param model_type: str, specify what ResNet model to use
         :param num_classes: int, number of classes in dataset for classification
@@ -32,16 +33,12 @@ class Model(nn.Module):
         if model_type in model_types_cifar10:
             print(f"Using {model_type} designed for CIFAR-10.")
             self.model = eval(f"{model_type}(num_classes=num_classes).to(device)")
-            # torch.hub.load('pytorch/vision:v0.10.0',
-            #                model_type, pretrained=False,
-            #                num_classes=num_classes).to(device)
         elif model_type in model_types_imagenet:
             print(f"Using {model_type} designed for ImageNet.")
             self.model = eval(f"{model_type}(pretrained=False, num_classes=num_classes).to(device)")
         else:
-            model_types = model_types_imagenet + model_types_cifar10
-            raise ValueError(f"Model type {model_type} not recognized! "
-                             f"Choose one of {model_types}.")
+            print(f"Using {model_type}.")
+            self.model = eval(f"{model_type}(pretrained=False, num_classes=num_classes).to(device)")
 
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -62,7 +59,7 @@ class Model(nn.Module):
         return self.model(x)
 
     def train(self, data_loader: DataLoader, optimizer: Union[Adam, NoisyOptimizer],
-              epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 100,
+              epoch: int = 0, metrics: List[Callable] = [accuracy], eval_every: int = 100,
               loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict, List[float]]:
         """Training loop for one epoch.
 
@@ -103,11 +100,11 @@ class Model(nn.Module):
                 return loss, preds
 
             # Perform forward pass, compute loss, backpropagate, update parameters
-            start = time.time()
-            loss, preds = optimizer.step(closure)
-            end = time.time()
-            epoch_time += end - start
+            with Timer(self.device) as t:
+                loss, preds = optimizer.step(closure)
+            epoch_time += t.elapsed_time
             # print(loss.item())
+            # print(t.elapsed_time)
 
             # Record losses and metrics
             running_loss += loss.item()
@@ -133,7 +130,8 @@ class Model(nn.Module):
 
     @torch.no_grad()
     def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
-                 loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[float, dict]:
+                 loss_fn: Callable = nn.CrossEntropyLoss(),
+                 optimizer = None, mc_samples: int = 0) -> Tuple[float, dict]:
         """Evaluate data on loss function and metrics.
 
         :param data_loader: torch.utils.data.DataLoader, validation or test dataset
@@ -143,6 +141,15 @@ class Model(nn.Module):
         """
         if data_loader is None:
             return None, None
+
+        noisy_optimizer = False
+        if isinstance(optimizer, NoisyOptimizer):
+            noisy_optimizer = True
+            if mc_samples == 0:
+                mc_samples = 1
+            assert(mc_samples >= 1)
+        else:
+            mc_samples = 0
 
         # Set model to evaluation mode!
         self.model.eval()
@@ -156,7 +163,16 @@ class Model(nn.Module):
             images = images.to(self.device)
             labels = labels.to(self.device)
 
-            preds = self(images)
+            if not noisy_optimizer:
+                preds = self(images)
+            else:
+                preds = torch.zeros((mc_samples, images.shape[0], self.num_classes), device=self.device)
+                with Sampler(optimizer):
+                    for i in range(mc_samples):
+                        optimizer._sample_weight()
+                        preds[i] = self(images)
+                preds = torch.mean(preds, axis=0)
+
             loss += loss_fn(preds, labels).item()
             for metric in metrics:
                 metric_vals[metric.__name__] += metric(preds, labels).item()
@@ -189,7 +205,7 @@ class Model(nn.Module):
         return labels, preds, logits
 
     @torch.no_grad()
-    def compute_calibration(self, data_loader, n_bins=10):
+    def compute_calibration(self, data_loader, n_bins=10, optimizer=False, mc_samples=0):
         """Collects predictions into bins used to draw a reliability diagram.
             Adapted code snippet by https://github.com/hollance/reliability-diagrams
 
@@ -219,6 +235,14 @@ class Model(nn.Module):
         # assert(len(confidences) == len(true_labels))
         assert(n_bins > 0)
 
+        if isinstance(optimizer, NoisyOptimizer):
+            noisy_optimizer = True
+            if mc_samples == 0:
+                mc_samples = 1
+            assert(mc_samples >= 1)
+        else:
+            mc_samples = 0
+
         # Set model to evaluation mode!
         self.model.eval()
 
@@ -231,7 +255,17 @@ class Model(nn.Module):
             images, true_labels = data
             images = images.to(self.device)
             true_labels = true_labels.to(self.device)
-            confidences, preds = self(images).softmax(1).max(1)
+
+            if not noisy_optimizer:
+                outputs = self(images)
+            else:
+                outputs = torch.zeros((mc_samples, images.shape[0], self.num_classes), device=self.device)
+                with Sampler(optimizer):
+                    for i in range(mc_samples):
+                        optimizer._sample_weight()
+                        outputs[i] = self(images)
+                outputs = outputs.mean(0)
+            confidences, pred_labels = outputs.softmax(1).max(1)
 
             true_labels = true_labels.detach().cpu().numpy()
             confidences = confidences.detach().cpu().numpy()
@@ -280,6 +314,42 @@ class Model(nn.Module):
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
+
+
+class Timer:
+    def __init__(self, device):
+        self.device = device
+
+    def __enter__(self):
+        if self.device == 'cuda':
+            torch.cuda.synchronize()
+            self.start = torch.cuda.Event(enable_timing=True)
+            self.end = torch.cuda.Event(enable_timing=True)
+            self.start.record()
+        else:
+            self.start = time.process_time()
+        return self
+
+    def __exit__(self, *args):
+        if self.device == 'cuda':
+            self.end.record()
+            torch.cuda.synchronize()
+            self.elapsed_time = self.start.elapsed_time(self.end) / 1000
+        else:
+            self.end = time.process_time()
+            self.elapsed_time = self.end - self.start
+
+
+class Sampler:
+    def __init__(self, noisy_optimizer):
+        assert(isinstance(noisy_optimizer, NoisyOptimizer))
+        self.noisy_optimizer = noisy_optimizer
+
+    def __enter__(self):
+        self.noisy_optimizer._stash_param_averages()
+
+    def __exit__(self, *args):
+        self.noisy_optimizer._restore_param_averages()
 
 
 # Code by https://github.com/akamaster/pytorch_resnet_cifar10
