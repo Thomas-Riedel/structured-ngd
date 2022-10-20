@@ -235,6 +235,7 @@ class Model(nn.Module):
         # assert(len(confidences) == len(true_labels))
         assert(n_bins > 0)
 
+        noisy_optimizer = False
         if isinstance(optimizer, NoisyOptimizer):
             noisy_optimizer = True
             if mc_samples == 0:

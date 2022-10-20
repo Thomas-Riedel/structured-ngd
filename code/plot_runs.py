@@ -11,6 +11,7 @@ import torch.utils.data
 from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100, STL10, SVHN
 from torch.utils.data.sampler import SubsetRandomSampler
 from torchvision import transforms
+from torchvision.transforms import Compose
 
 from optimizers.rank_k_cov import *
 from torch.optim import *
@@ -322,11 +323,11 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 test_metrics=test_metrics,
                 bin_data=bin_data
             )
-            corrupted_results = get_corrupted_results(dataset, model, metrics,
+            corrupted_results = get_corrupted_results(dataset, model, optimizer, metrics,
                                                       clean_results, mc_samples, n_bins)
 
             epoch_times = np.cumsum(epoch_times)
-            optimizer_name = type(optimizer).__name__
+            optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
             model_name = model.__name__
             num_params = model.num_params
             model_summary = model.summary
@@ -371,27 +372,6 @@ def save_runs(runs: Union[dict, List[dict]]) -> None:
     for run in runs:
         with open(f"runs/{run['timestamp']}.pkl", 'wb') as f:
             pickle.dump(run, f)
-
-
-def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
-    for file in os.listdir(directory):
-        if file.endswith(".pkl"):
-            with open(os.path.join(directory, file), 'rb') as f:
-                run = pickle.load(f)
-            if ((run['optimizer_name'] == optimizer) and
-                    (run['model_name'] == model) and
-                    (run['dataset'] == dataset)):
-                return run
-    return None
-
-
-def load_all_runs(directory: str = 'runs') -> List[dict]:
-    runs = []
-    for file in os.listdir(directory):
-        if file.endswith(".pkl"):
-            with open(os.path.join(directory, file), 'rb') as f:
-                runs.append(pickle.load(f))
-    return runs
 
 
 def plot_runs(runs: Union[dict, List[dict]]) -> None:
@@ -627,58 +607,60 @@ def plot_corrupted_results(runs: Union[List[dict], dict], plot_values=['ece', 'm
     for dataset in corrupted_results_df['dataset'].unique():
         # plot corruption errors per dataset and optimizer grouped by model and error (ECE, accuracy, etc.)
         # 2 x len(plot_values) grid of plots
-        for model in corrupted_results_df['dataset' == dataset]['model'].unique():
-            plt.figure(figsize=(12, 8))
+        for model in corrupted_results_df['dataset' == dataset]['model_name'].unique():
+            fig, axes = plt.subplots(2, len(plot_values), sharex=True, squeeze=False)
             sub_df = corrupted_results_df[(corrupted_results_df['dataset'] == dataset) &
-                                          (corrupted_results_df['model'] == model)].copy()
+                                          (corrupted_results_df['model_name'] == model)].copy()
+            sub_df[plot_values] *= 100
+            corr_handles = []
+            corr_labels = []
+            opt_handles = []
+            opt_labels = []
             for i, value in enumerate(plot_values):
-                legend = False
-                if i == len(plot_values) - 1:
-                    legend = True
-                plt.subplot(2, len(plot_values), i)
-                sns.barplot(sub_df, x='severity', y=value, hue='corruption_type', errorbar='sd', legend=legend)
-                plt.subplot(2, len(plot_values), i + len(plot_values))
-                sns.barplot(sub_df, x='severity', y=value, hue='optimizer', errorbar='sd', legend=legend)
+                axes[0, i].set_title(value)
+                corruption_plot = sns.barplot(ax=axes[0, i], data=sub_df, x='severity', y=value, hue='corruption_type')
+                optimizer_plot = sns.barplot(ax=axes[1, i], data=sub_df, x='severity', y=value, hue='optimizer_name')
+                axes[0, i].get_legend().remove()
+                axes[1, i].get_legend().remove()
+                corr_handles.append(corruption_plot)
+                corr_labels.append(corruption_plot.get_label())
+                opt_handles.append(optimizer_plot)
+                opt_labels.append(optimizer_plot.get_label())
+            axes[0, -1].legend(handles=corr_handles, labels=corr_labels, bbox_to_anchor=(1.3, 1.2))
+            axes[1, -1].legend(handles=opt_handles, labels=opt_labels, bbox_to_anchor=(1.3, 1.2))
+            fig.suptitle(f"Corruption Errors on {dataset.upper()} for {model}")
             plt.tight_layout()
-            plt.title(f"Corruption Errors on {dataset.upper()} for {model}")
-            plt.savefig(f"plots/corrupted_results_{dataset}_{model}.pdf")
+            # plt.savefig(f"plots/corrupted_results_{dataset}_{model}.pdf")
             plt.show()
 
 
 def plot_robustness(runs: Union[List[dict], dict]) -> None:
-    corrupted_results_df = collect_corrupted_results_df(runs)
-    corruption_errors = collect_corruption_errors(runs)
-    rel_corruption_errors = collect_rel_corruption_errors(runs)
-    mce = collect_mce(runs)
-    rmce = collect_rmce(runs)
-
-    print('Corrupted Results')
-    print(corrupted_results_df)
-    print()
-    print('Corruption Errors')
-    print(corruption_errors)
-    print()
-    print('Relative Corruption Errors')
-    print(rel_corruption_errors)
-    print()
-    print('Mean Corruption Errors')
-    print(mce)
-    print()
-    print('Relative Mean Corruption Errors')
-    print(rmce)
+    df_mce = collect_corruption_errors(runs)
+    df_rmce = collect_rel_corruption_errors(runs)
 
     # Plot corruption errors and relative corruption errors as a function of optimizer accuracy
-    for dataset in mce['dataset'].unique():
-        for model in mce[mce['dataset'] == dataset].unique():
+    for dataset in df_mce['dataset'].unique():
+        for model in df_mce[df_mce['dataset'] == dataset]['model_name'].unique():
+            sub_df_mce = df_mce[
+                (df_mce['dataset'] == dataset) &
+                (df_mce['model_name'] == model)
+                ].copy()
+            sub_df_rmce = df_rmce[
+                (df_rmce['dataset'] == dataset) &
+                (df_rmce['model_name'] == model)
+                ].copy()
             for type in CORRUPTION_TYPES.keys():
-                sub_mce = mce[(mce['dataset'] == dataset) & (mce['model'] == model)].copy()
-                sub_rmce = rmce[(rmce['dataset'] == dataset) & (rmce['model'] == model)].copy()
-
+                mce_mean = 100 * sub_df_mce[type]
+                rmce_mean = 100 * sub_df_rmce[type]
+                mce_std = (100 ** 2) * sub_df_mce[type + '_std']
+                rmce_std = (100 ** 2) * sub_df_rmce[type + '_std']
                 plt.figure(figsize=(12, 8))
-                plt.plot(100 * sub_mce['accuracy'], 100 * sub_mce[type]['mean'], label='mCE')
-                for label, x, y in zip(sub_mce['optimizer'], sub_mce['accuracy'], sub_mce[type]):
+                plt.plot(100 * sub_df_mce['accuracy'], mce_mean, label='mCE')
+                plt.fill_between(100 * sub_df_mce['accuracy'], y1=mce_mean-mce_std, y2=mce_mean+mce_std)
+                for label, x, y in zip(sub_df_mce['optimizer_name'], sub_df_mce['accuracy'], sub_df_mce[type]):
                     plt.annotate(label, (x, y), textcoords="offset points", xytext=(0, -10), ha='center')
-                plt.plot(100 * sub_rmce['accuracy'], 100 * sub_rmce[type]['mean'], label='Relative mCE')
+                plt.plot(100 * sub_df_rmce['accuracy'], rmce_mean, label='Relative mCE')
+                plt.fill_between(100 * sub_df_mce['accuracy'], y1=rmce_mean-rmce_std, y2=rmce_mean+rmce_std)
                 plt.title(f"Robustness of Optimizers on {dataset} for {model} and corruption type {type}")
                 plt.xlabel('Test Accuracy (%)')
                 plt.ylabel('%')
@@ -689,8 +671,8 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
 
 def make_csv(directory: str = 'runs'):
     runs = load_all_runs(directory)
-    results = pd.DataFrame(columns=['Dataset', 'Model', 'Optimizer',
-                                    'Training Loss', 'Test Loss', 'Test Accuracy', 'ECE', 'MCE', 'Time'])
+    results = pd.DataFrame(columns=['Dataset', 'Model', 'Optimizer', 'Training Loss', 'Test Loss',
+                                    'Test Accuracy', 'Top-k Accuracy', 'ECE', 'MCE', 'Time'])
     for run in runs:
         dataset = run['dataset']
         model = run['model_name']
@@ -700,6 +682,7 @@ def make_csv(directory: str = 'runs'):
         train_loss = run['train_loss'][-1]
         test_loss = run['test_loss']
         test_accuracy = run['test_metrics']['accuracy']
+        top_k_accuracy = run['test_metrics']['top_k_accuracy']
         ece = run['bin_data']['expected_calibration_error']
         mce = run['bin_data']['max_calibration_error']
         comp_time = run['epoch_times'][-1]
@@ -707,6 +690,7 @@ def make_csv(directory: str = 'runs'):
             train_loss = compare(train_loss)
             test_loss = compare(test_loss)
             test_accuracy = compare(test_accuracy)
+            top_k_accuracy = compare(top_k_accuracy)
             ece = compare(ece)
             mce = compare(mce)
             comp_time = compare(comp_time / 3600)
@@ -714,6 +698,7 @@ def make_csv(directory: str = 'runs'):
             train_loss = compare(train_loss, adam_run['train_loss'][-1])
             test_loss = compare(test_loss, adam_run['test_loss'])
             test_accuracy = compare(test_accuracy, adam_run['test_metrics']['accuracy'])
+            top_k_accuracy = compare(top_k_accuracy, adam_run['test_metrics']['top_k_accuracy'])
             ece = compare(ece, adam_run['bin_data']['expected_calibration_error'])
             mce = compare(mce, adam_run['bin_data']['max_calibration_error'])
             comp_time = compare(comp_time / 3600, adam_run['epoch_times'][-1])
@@ -725,10 +710,11 @@ def make_csv(directory: str = 'runs'):
             'Training Loss': train_loss,
             'Test Loss': test_loss,
             'Test Accuracy': test_accuracy,
+            'Top-k Accuracy': top_k_accuracy,
             'ECE': ece, 'MCE': mce,
             'Time (h)': comp_time
         }])
-        results = results.append(result)
+        results = pd.concat([results, result], ignore_index=True)
     results.sort_values(by=['Dataset', 'Model', 'Optimizer'], inplace=True)
     return results
 

@@ -13,7 +13,7 @@ def main() -> None:
 	mce = MCE(args['n_bins'])
 	ece = ECE(args['n_bins'])
 	top_k_accuracy = TopkAccuracy(top_k=5)
-	metrics = [accuracy, top_k_accuracy, ece, mce] #precision, recall, f1_score,
+	metrics = [accuracy, top_k_accuracy, ece, mce]  # precision, recall, f1_score,
 
 	train_loader, val_loader, test_loader = load_data(args['dataset'], args['batch_size'], args['data_split'])
 	num_classes = len(train_loader.dataset.classes)

@@ -4,9 +4,11 @@ from torch.utils.data import DataLoader, TensorDataset, ConcatDataset
 import os
 import numpy as np
 import pandas as pd
-from optimizers import NoisyOptimizer
-from plot_runs import load_run
+from optimizers.noisy_optimizer import NoisyOptimizer
+import pickle
 
+
+SEVERITY_LEVELS = [1, 2, 3, 4, 5]
 
 CORRUPTIONS = [
     'brightness', 'defocus_blur', 'fog', 'gaussian_blur', 'glass_blur', 'jpeg_compression', 'motion_blur', 'saturate',
@@ -21,6 +23,27 @@ CORRUPTION_TYPES = dict(
     weather=['snow', 'frost', 'fog', 'brightness', 'spatter'],
     digital=['contrast', 'elastic_transform', 'pixelate', 'jpeg_compression', 'saturate']
 )
+
+
+def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
+    for file in os.listdir(directory):
+        if file.endswith(".pkl"):
+            with open(os.path.join(directory, file), 'rb') as f:
+                run = pickle.load(f)
+            if ((run['optimizer_name'] == optimizer) and
+                    (run['model_name'] == model) and
+                    (run['dataset'] == dataset)):
+                return run
+    return None
+
+
+def load_all_runs(directory: str = 'runs') -> List[dict]:
+    runs = []
+    for file in os.listdir(directory):
+        if file.endswith(".pkl"):
+            with open(os.path.join(directory, file), 'rb') as f:
+                runs.append(pickle.load(f))
+    return runs
 
 
 def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severity: int, batch_size: int = 128):
@@ -65,111 +88,113 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
 def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_samples, n_bins):
     if not dataset.lower() in ['cifar10', 'cifar100']:
         return None
+    model_name = model.__name__
+    optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
+
     severity = 0
     corruption = 'clean'
     corruption_type = 'clean'
 
-    df = pd.DataFrame(dict(
+    df = pd.DataFrame([dict(
         corruption_type=corruption_type,
         corruption=corruption,
         severity=severity,
         loss=clean_results['test_loss'],
         **clean_results['test_metrics']
-    ))
+    )])
     bin_data = {(severity, corruption_type): clean_results['bin_data']}
-    for severity in [1, 2, 3, 4, 5]:
+    for severity in SEVERITY_LEVELS:
         for corruption_type in CORRUPTION_TYPES.keys():
+            if corruption_type == 'all':
+                continue
             bin_data_list = []
             for corruption in CORRUPTION_TYPES[corruption_type]:
                 data_loader = load_corrupted_data(dataset, corruption, severity)
-                loss, metrics = model.evaluate(data_loader, metrics=metrics,
-                                               optimizer=optimizer, mc_samples=mc_samples)
+                loss, metric = model.evaluate(data_loader, metrics=metrics,
+                                              optimizer=optimizer, mc_samples=mc_samples)
                 corrupted_bin_data = model.compute_calibration(data_loader, n_bins=n_bins,
                                                                optimizer=optimizer, mc_samples=mc_samples)
                 bin_data_list.append(corrupted_bin_data)
-                corrupted_result = pd.DataFrame(
-                    dict(
+                corrupted_result = pd.DataFrame([dict(
                         corruption_type=corruption_type,
                         corruption=corruption,
                         severity=severity,
                         loss=loss,
-                        **metrics
-                    )
-                )
-                df = df.append(corrupted_result)
+                        **metric
+                    )])
+                df = pd.append([df, corrupted_result], ignore_index=True)
 
             # group bin_data results by types
             corrupted_bin_data = merge_bin_data(bin_data_list)
             bin_data[(severity, corruption_type)] = corrupted_bin_data
+            bin_data[(severity, 'all')] = corrupted_bin_data
 
-    clean_accuracy = clean_results['test_accuracy']
-    if not isinstance(optimizer, NoisyOptimizer):
-        adam_clean_results = load_run(dataset, model, optimizer)
-        adam_accuracy = adam_clean_results['test_metrics']['accuracy']
+    sub_df = df[
+        (df['severity'] > 0) & (df['corruption_type'] != 'all')
+    ].drop(['corruption_type', 'severity'], axis=1).copy()
+    clean_accuracy = clean_results['test_metrics']['accuracy']
+    if isinstance(optimizer, NoisyOptimizer):
+        adam_results = load_run(dataset, model, optimizer)
+        adam_clean_accuracy = adam_results['test_metrics']['accuracy']
+        adam_df = adam_results['corrupted_results']['df']
+        adam_df = adam_df[
+            (adam_df['severity'] > 0) & (df['corruption_type'] != 'all')
+        ].drop('severity', axis=1)[['corruption_type', 'severity']].copy()
     else:
-        adam_accuracy = clean_accuracy
+        adam_clean_accuracy = clean_accuracy
+        adam_df = sub_df.copy()
+    corruption_error = ce(sub_df, adam_df)
+    rel_corruption_error = rel_ce(sub_df, adam_df, clean_accuracy, adam_clean_accuracy)
 
-    sub_df = df[df['severity'] > 0].drop('severity', axis=1).copy()
-    corr_error = sub_df.groupby(['corruption_type', 'corruption']).agg(
-        corruption_error(adam_accuracy)
-    )
-    rel_corr_error = sub_df.groupby(['corruption_type', 'corruption']).agg(
-        relative_corruption_error(adam_accuracy, clean_accuracy)
-    )
+    for corruption_type in CORRUPTION_TYPES.keys():
+        corruption_error[corruption_type] = corruption_error[CORRUPTION_TYPES[corruption_type]].mean(1)
+        corruption_error[f"{corruption_type}_std"] = corruption_error[CORRUPTION_TYPES[corruption_type]].std(1)
 
-    mce = corr_error.copy().groupby('corruption_type').agg(['mean', 'std'])
-    rmce = rel_corr_error.copy().groupby('corruption_type').agg(['mean', 'std'])
+        rel_corruption_error[corruption_type] = rel_corruption_error[CORRUPTION_TYPES[corruption_type]].mean(1)
+        rel_corruption_error[f"{corruption_type}_std"] = rel_corruption_error[CORRUPTION_TYPES[corruption_type]].std(1)
 
-    corr_error['dataset'] = dataset
-    corr_error['model_name'] = model.__name__
-    corr_error['optimizer_name'] = optimizer.__name__
-    corr_error['accuracy'] = clean_results['test_accuracy']
+    df['dataset'] = dataset
+    df['model_name'] = model_name
+    df['optimizer_name'] = optimizer_name
 
-    rel_corr_error['dataset'] = dataset
-    rel_corr_error['model_name'] = model.__name__
-    rel_corr_error['optimizer_name'] = optimizer.__name__
-    rel_corr_error['accuracy'] = clean_results['test_accuracy']
+    corruption_error['dataset'] = dataset
+    corruption_error['model_name'] = model_name
+    corruption_error['optimizer_name'] = optimizer_name
+    corruption_error['accuracy'] = clean_results['test_metrics']['accuracy']
 
-    mce['dataset'] = dataset
-    mce['model_name'] = model.__name__
-    mce['optimizer_name'] = optimizer.__name__
-    mce['accuracy'] = clean_results['test_accuracy']
-
-    rmce['dataset'] = dataset
-    rmce['model_name'] = model.__name__
-    rmce['optimizer_name'] = optimizer.__name__
-    rmce['accuracy'] = clean_results['test_accuracy']
+    rel_corruption_error['dataset'] = dataset
+    rel_corruption_error['model_name'] = model_name
+    rel_corruption_error['optimizer_name'] = optimizer_name
+    rel_corruption_error['accuracy'] = clean_results['test_metrics']['accuracy']
 
     corrupted_results = dict(
-        model_name=model.__name__,
-        optimizer_name=optimizer.__name__,
+        model_name=model_name,
+        optimizer_name=optimizer_name,
         dataset=dataset,
-        corruption_error=corr_error,
-        rel_corruption_error=rel_corr_error,
-        mce=mce,
-        rmce=rmce,
+        corruption_error=corruption_error,
+        rel_corruption_error=rel_corruption_error,
         df=df,
         bin_data=bin_data
     )
     return corrupted_results
 
 
-def corruption_error(adam_accuracy):
-    def f(df):
-        if df.corruption == 'clean':
-            return 0
-        else:
-            np.sum(1 - df.accuracy) / np.sum(1 - adam_accuracy)
-    return f
+def ce(df, adam_corrupted_df):
+    result = pd.DataFrame()
+    for corruption in CORRUPTIONS:
+        sub_df = df[df.corruption == corruption]
+        sub_adam_df = adam_corrupted_df[adam_corrupted_df.corruption == corruption]
+        result[corruption] = [np.sum(1 - sub_df.accuracy) / np.sum(1 - sub_adam_df.accuracy)]
+    return result
 
 
-def relative_corruption_error(adam_accuracy, clean_accuracy):
-    def f(df):
-        if df.corruption == 'clean':
-            return 0
-        else:
-            (np.sum(1 - df.accuracy) - (1 - clean_accuracy)) / (np.sum(1 - adam_accuracy) - (1 - clean_accuracy))
-        return f
+def rel_ce(df, adam_corrupted_df, clean_accuracy, adam_clean_accuracy):
+    result = pd.DataFrame()
+    for corruption in CORRUPTIONS:
+        sub_df = df[df.corruption == corruption]
+        sub_adam_df = adam_corrupted_df[adam_corrupted_df.corruption == corruption]
+        result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(adam_clean_accuracy - sub_adam_df.accuracy)]
+    return result
 
 
 def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
@@ -183,8 +208,7 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
         corrupted_results = run['corrupted_results']
         dataset = corrupted_results['dataset']
 
-        clean_df = pd.DataFrame(
-            dict(
+        clean_df = pd.DataFrame([dict(
                 dataset=dataset,
                 model=run['model_name'],
                 optimizer=run['optimizer_name'],
@@ -193,10 +217,8 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
                 severity=0,
                 loss=run['test_loss'],
                 **run['test_metrics']
-            )
-        )
-        corrupted_results_df = corrupted_results_df.append(clean_df)
-        corrupted_results_df = corrupted_results_df.append(corrupted_results['df'])
+            )])
+        corrupted_results_df = pd.concat([corrupted_results_df, clean_df, corrupted_results['df']], ignore_index=True)
     corrupted_results_df.rename(columns={'optimizer_name': 'optimizer', 'model_name': 'model'}, inplace=True)
     return corrupted_results_df
 
@@ -209,7 +231,7 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
         corrupted_results = run['corrupted_results']
-        corruption_errors = corruption_errors.append(corrupted_results['corruption_error'])
+        corruption_errors = pd.concat([corruption_errors, corrupted_results['corruption_error']], ignore_index=True)
     return corruption_errors
 
 
@@ -221,32 +243,9 @@ def collect_rel_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
         corrupted_results = run['corrupted_results']
-        rel_corruption_errors = rel_corruption_errors.append(corrupted_results['rel_corruption_error'])
+        rel_corruption_errors = pd.concat([rel_corruption_errors, corrupted_results['rel_corruption_error']],
+                                          ignore_index=True)
     return rel_corruption_errors
-
-
-def collect_mce(runs: Union[List[dict], dict]) -> pd.DataFrame:
-    if type(runs) == dict:
-        runs = [runs]
-    mce = pd.DataFrame()
-    for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
-        corrupted_results = run['corrupted_results']
-        mce = mce.append(corrupted_results['mce'])
-    return mce
-
-
-def collect_rmce(runs: Union[List[dict], dict]) -> pd.DataFrame:
-    if type(runs) == dict:
-        runs = [runs]
-    rmce = pd.DataFrame()
-    for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
-        corrupted_results = run['corrupted_results']
-        rmce = rmce.append(corrupted_results['rmce'])
-    return rmce
 
 
 def merge_bin_data(data: List[dict]):
@@ -254,18 +253,18 @@ def merge_bin_data(data: List[dict]):
         return {}
     result = data[0]
     bins = result['bins']
-    bin_accuracies = result['bin_counts'] * result['accuracies']
-    bin_confidences = result['bin_counts'] * result['confidences']
-    bin_counts = result['bin_counts']
+    bin_accuracies = result['counts'] * result['accuracies']
+    bin_confidences = result['counts'] * result['confidences']
+    bin_counts = result['counts']
 
     for bin_data in data[1:]:
         assert(len(bins) == len(bin_data['bins']))
-        bin_accuracies += bin_data['bin_counts'] * bin_data['accuracies']
-        bin_confidences += bin_data['bin_counts'] * bin_data['confidences']
-        bin_counts += bin_data['bin_counts']
+        bin_accuracies += bin_data['counts'] * bin_data['accuracies']
+        bin_confidences += bin_data['counts'] * bin_data['confidences']
+        bin_counts += bin_data['counts']
 
-    bin_accuracies /= bin_counts
-    bin_confidences /= bin_counts
+    bin_accuracies /= np.where(bin_counts > 0, bin_counts, 1)
+    bin_confidences /= np.where(bin_counts > 0, bin_counts, 1)
 
     avg_acc = np.sum(bin_accuracies * bin_counts) / np.sum(bin_counts)
     avg_conf = np.sum(bin_confidences * bin_counts) / np.sum(bin_counts)
