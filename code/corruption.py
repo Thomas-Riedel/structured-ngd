@@ -26,13 +26,17 @@ CORRUPTION_TYPES = dict(
 
 
 def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
+    if type(model) != str:
+        model = model.__name__
+    if type(optimizer) != str:
+        optimizer = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
     for file in os.listdir(directory):
         if file.endswith(".pkl"):
             with open(os.path.join(directory, file), 'rb') as f:
                 run = pickle.load(f)
-            if ((run['optimizer_name'] == optimizer) and
-                    (run['model_name'] == model) and
-                    (run['dataset'] == dataset)):
+            if ((run['optimizer_name'].lower() == optimizer.lower()) and
+                    (run['model_name'].lower() == model.lower()) and
+                    (run['dataset'].lower() == dataset.lower())):
                 return run
     return None
 
@@ -110,10 +114,8 @@ def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_
             bin_data_list = []
             for corruption in CORRUPTION_TYPES[corruption_type]:
                 data_loader = load_corrupted_data(dataset, corruption, severity)
-                loss, metric = model.evaluate(data_loader, metrics=metrics,
-                                              optimizer=optimizer, mc_samples=mc_samples)
-                corrupted_bin_data = model.compute_calibration(data_loader, n_bins=n_bins,
-                                                               optimizer=optimizer, mc_samples=mc_samples)
+                loss, metric, corrupted_bin_data = model.evaluate(data_loader, metrics=metrics, optimizer=optimizer,
+                                                                  mc_samples=mc_samples, n_bins=n_bins)
                 bin_data_list.append(corrupted_bin_data)
                 corrupted_result = pd.DataFrame([dict(
                         corruption_type=corruption_type,
@@ -122,7 +124,7 @@ def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_
                         loss=loss,
                         **metric
                     )])
-                df = pd.append([df, corrupted_result], ignore_index=True)
+                df = pd.concat([df, corrupted_result], ignore_index=True)
 
             # group bin_data results by types
             corrupted_bin_data = merge_bin_data(bin_data_list)
@@ -134,12 +136,12 @@ def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_
     ].drop(['corruption_type', 'severity'], axis=1).copy()
     clean_accuracy = clean_results['test_metrics']['accuracy']
     if isinstance(optimizer, NoisyOptimizer):
-        adam_results = load_run(dataset, model, optimizer)
+        adam_results = load_run(dataset, model, "Adam")
         adam_clean_accuracy = adam_results['test_metrics']['accuracy']
         adam_df = adam_results['corrupted_results']['df']
         adam_df = adam_df[
             (adam_df['severity'] > 0) & (df['corruption_type'] != 'all')
-        ].drop('severity', axis=1)[['corruption_type', 'severity']].copy()
+        ].drop(['corruption_type', 'severity'], axis=1).copy()
     else:
         adam_clean_accuracy = clean_accuracy
         adam_df = sub_df.copy()

@@ -46,8 +46,8 @@ def parse_args() -> dict:
                         help='Number of epochs to train models on data (default: 1)')
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10",
                         help='Dataset for training, one of CIFAR10, CIFAR100, MNIST, FashionMNIST (default: CIFAR10)')
-    parser.add_argument('-m', '--model', type=str, default="resnet20",
-                        help='ResNet model (default: resnet20)')
+    parser.add_argument('-m', '--model', type=str, default="ResNet20",
+                        help='ResNet model (default: ResNet20)')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size for data loaders (default: 128)')
     parser.add_argument('--lr', type=str, default='1e-3',
@@ -287,13 +287,13 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
             # Initialize computation times, losses and metrics for recording
-            loss, metric = model.evaluate(train_loader, metrics, optimizer=optimizer, mc_samples=mc_samples)
+            loss, metric, _ = model.evaluate(train_loader, metrics, optimizer=optimizer, mc_samples=1)
             epoch_times = [0.0]
             train_loss = []
             train_metrics = {}
-            train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
+            train_loss, train_metrics, _ = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
-            loss, metric = model.evaluate(val_loader, metrics=metrics, optimizer=optimizer, mc_samples=mc_samples)
+            loss, metric, _ = model.evaluate(val_loader, metrics=metrics, optimizer=optimizer, mc_samples=1)
             val_loss = []
             val_metrics = {}
             val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
@@ -308,16 +308,14 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
                 # Record loss and metrics for epoch
-                loss, metric = model.evaluate(val_loader, metrics=metrics,
-                                              optimizer=optimizer, mc_samples=mc_samples)
+                loss, metric, _ = model.evaluate(val_loader, metrics=metrics,
+                                                 optimizer=optimizer, mc_samples=1)
                 val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
                 scheduler.step()
 
-            test_loss, test_metrics = model.evaluate(test_loader, metrics=metrics,
-                                                     optimizer=optimizer, mc_samples=mc_samples)
-            bin_data = model.compute_calibration(test_loader, n_bins=n_bins,
-                                                 optimizer=optimizer, mc_samples=mc_samples)
+            test_loss, test_metrics, bin_data = model.evaluate(test_loader, metrics=metrics, optimizer=optimizer,
+                                                               mc_samples=mc_samples, n_bins=n_bins)
             clean_results = dict(
                 test_loss=test_loss,
                 test_metrics=test_metrics,
@@ -630,7 +628,7 @@ def plot_corrupted_results(runs: Union[List[dict], dict], plot_values=['ece', 'm
             axes[1, -1].legend(handles=opt_handles, labels=opt_labels, bbox_to_anchor=(1.3, 1.2))
             fig.suptitle(f"Corruption Errors on {dataset.upper()} for {model}")
             plt.tight_layout()
-            # plt.savefig(f"plots/corrupted_results_{dataset}_{model}.pdf")
+            plt.savefig(f"plots/corrupted_results_{dataset}_{model}.pdf")
             plt.show()
 
 

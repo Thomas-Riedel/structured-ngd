@@ -131,25 +131,17 @@ class Model(nn.Module):
     @torch.no_grad()
     def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
                  loss_fn: Callable = nn.CrossEntropyLoss(),
-                 optimizer = None, mc_samples: int = 0) -> Tuple[float, dict]:
+                 optimizer = None, mc_samples: int = 1, n_bins=10) -> Tuple[float, dict, dict]:
         """Evaluate data on loss function and metrics.
 
         :param data_loader: torch.utils.data.DataLoader, validation or test dataset
         :param metrics: List[Callable], list of metrics to run for evaluation
         :param loss_fn: Callable, loss function to optimize
-        :return: (loss, metric_vals), Tuple[float, dict], tuple of loss and specified metrics on validation set
+        :return: (loss, metric_vals, bin_data), Tuple[float, dict, dict], tuple of loss and specified metrics on validation set
         """
         if data_loader is None:
             return None, None
-
-        noisy_optimizer = False
-        if isinstance(optimizer, NoisyOptimizer):
-            noisy_optimizer = True
-            if mc_samples == 0:
-                mc_samples = 1
-            assert(mc_samples >= 1)
-        else:
-            mc_samples = 0
+        assert(mc_samples >= 1)
 
         # Set model to evaluation mode!
         self.model.eval()
@@ -158,24 +150,39 @@ class Model(nn.Module):
         metric_vals = {}
         for metric in metrics:
             metric_vals[metric.__name__] = 0.0
+        bin_accuracies = np.zeros(n_bins, dtype=float)
+        bin_confidences = np.zeros(n_bins, dtype=float)
+        bin_counts = np.zeros(n_bins, dtype=int)
+        bins = np.linspace(0.0, 1.0, n_bins + 1)
+
         for i, data in enumerate(data_loader):
             images, labels = data
             images = images.to(self.device)
             labels = labels.to(self.device)
 
-            if not noisy_optimizer:
-                preds = self(images)
-            else:
-                preds = torch.zeros((mc_samples, images.shape[0], self.num_classes), device=self.device)
-                with Sampler(optimizer):
-                    for i in range(mc_samples):
+            with Sampler(optimizer):
+                logits = torch.zeros((images.shape[0], self.num_classes), device=self.device)
+                for i in range(mc_samples):
+                    if isinstance(optimizer, NoisyOptimizer):
                         optimizer._sample_weight()
-                        preds[i] = self(images)
-                preds = torch.mean(preds, axis=0)
-
-            loss += loss_fn(preds, labels).item()
+                    logits += self(images)
+            logits /= mc_samples
+            loss += loss_fn(logits, labels).item()
             for metric in metrics:
-                metric_vals[metric.__name__] += metric(preds, labels).item()
+                metric_vals[metric.__name__] += metric(logits, labels).item()
+
+            confidences, preds = logits.softmax(1).max(1)
+            labels = labels.detach().cpu().numpy()
+            confidences = confidences.detach().cpu().numpy()
+            preds = preds.detach().cpu().numpy()
+            indices = np.digitize(confidences, bins, right=True)
+
+            for b in range(n_bins):
+                selected = np.where(indices == b + 1)[0]
+                if len(selected) > 0:
+                    bin_accuracies[b] += np.sum(labels[selected] == preds[selected])
+                    bin_confidences[b] += np.sum(confidences[selected])
+                    bin_counts[b] += len(selected)
 
             # Write to TensorBoard
             # writer.add_scalar("Loss", loss, counter)
@@ -184,7 +191,26 @@ class Model(nn.Module):
             metric_vals[metric.__name__] /= len(data_loader)
         loss /= len(data_loader)
         print(loss, metric_vals)
-        return loss, metric_vals
+
+        # Divide each bin by its bin count and avoid division by zero!
+        bin_accuracies /= np.where(bin_counts > 0, bin_counts, 1)
+        bin_confidences /= np.where(bin_counts > 0, bin_counts, 1)
+        avg_acc = np.sum(bin_accuracies * bin_counts) / np.sum(bin_counts)
+        avg_conf = np.sum(bin_confidences * bin_counts) / np.sum(bin_counts)
+        gaps = np.abs(bin_accuracies - bin_confidences)
+        ece = np.sum(gaps * bin_counts) / np.sum(bin_counts)
+        mce = np.max(gaps)
+        bin_data = dict(
+            accuracies=bin_accuracies,
+            confidences=bin_confidences,
+            counts=bin_counts,
+            bins=bins,
+            avg_accuracy=avg_acc,
+            avg_confidence=avg_conf,
+            expected_calibration_error=ece,
+            max_calibration_error=mce
+        )
+        return loss, metric_vals, bin_data
 
     def collect(self, data_loader):
         for i, data in enumerate(data_loader, 0):
@@ -260,12 +286,12 @@ class Model(nn.Module):
             if not noisy_optimizer:
                 outputs = self(images)
             else:
-                outputs = torch.zeros((mc_samples, images.shape[0], self.num_classes), device=self.device)
+                outputs = torch.zeros((images.shape[0], self.num_classes), device=self.device)
                 with Sampler(optimizer):
                     for i in range(mc_samples):
                         optimizer._sample_weight()
-                        outputs[i] = self(images)
-                outputs = outputs.mean(0)
+                        outputs += self(images)
+                outputs /= mc_samples
             confidences, pred_labels = outputs.softmax(1).max(1)
 
             true_labels = true_labels.detach().cpu().numpy()
@@ -342,15 +368,16 @@ class Timer:
 
 
 class Sampler:
-    def __init__(self, noisy_optimizer):
-        assert(isinstance(noisy_optimizer, NoisyOptimizer))
-        self.noisy_optimizer = noisy_optimizer
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
 
     def __enter__(self):
-        self.noisy_optimizer._stash_param_averages()
+        if isinstance(self.optimizer, NoisyOptimizer):
+            self.optimizer._stash_param_averages()
 
     def __exit__(self, *args):
-        self.noisy_optimizer._restore_param_averages()
+        if isinstance(self.optimizer, NoisyOptimizer):
+            self.optimizer._restore_param_averages()
 
 
 # Code by https://github.com/akamaster/pytorch_resnet_cifar10
