@@ -1,0 +1,8 @@
+numpy
+matplotlib
+seaborn
+torch
+torchvision
+torchmetrics
+torchsummary
+pandas==1.4.1

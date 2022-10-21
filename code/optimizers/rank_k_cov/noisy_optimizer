@@ -1,0 +1,9 @@
+import numpy as np
+import torch
+from torch.optim import Optimizer
+from matrix_groups.triangular import B_up
+
+
+class NoisyOptimizer(Optimizer):
+    def __init__(self, params, defaults, *args, **kwargs):
+        super(NoisyOptimizer, self).__init__(params, defaults)
