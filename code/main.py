@@ -1,4 +1,4 @@
-from models.resnet import Model
+from network import Model
 from plot_runs import *
 from metrics import *
 
@@ -21,10 +21,10 @@ def main() -> None:
 	input_shape = iter(train_loader).next()[0].shape[1:]
 	model = Model(model_type=args['model'], num_classes=num_classes, device=device, input_shape=input_shape)
 
-	params = get_params(args, n=n)
+	params = get_params(args, baseline=args['baseline'], n=n)
 	runs = run(
-		args['epochs'], model, args['optimizers'], train_loader, val_loader, test_loader,
-		adam_params=params['adam'], ngd_params=params['ngd'], metrics=metrics,
+		args['epochs'], model, args['optimizers'], train_loader, val_loader, test_loader, args['baseline'],
+		baseline_params=params['baseline'], ngd_params=params['ngd'], metrics=metrics,
 		eval_every=args['eval_every'], n_bins=args['n_bins'], mc_samples=args['mc_samples_eval']
 	)
 	save_runs(runs)

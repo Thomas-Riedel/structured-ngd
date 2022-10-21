@@ -1,7 +1,7 @@
 import argparse
+import os.path
 import sys
 import datetime
-import pickle
 import re
 import itertools
 from typing import Any
@@ -11,7 +11,6 @@ import torch.utils.data
 from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100, STL10, SVHN
 from torch.utils.data.sampler import SubsetRandomSampler
 from torchvision import transforms
-from torchvision.transforms import Compose
 
 from optimizers.rank_k_cov import *
 from torch.optim import *
@@ -41,13 +40,13 @@ def parse_args() -> dict:
     """
     parser = argparse.ArgumentParser(description='Run noisy optimizers with parameters.')
     parser.add_argument('-o', '--optimizers', type=str, default='StructuredNGD',
-                        help='Optimizers, one of Adam, StructuredNGD (capitalization matters!, default: StructuredNGD)')
+                        help='Optimizers, one of Adam, SGD, StructuredNGD (capitalization matters!, default: StructuredNGD)')
     parser.add_argument('-e', '--epochs', type=int, default=1,
                         help='Number of epochs to train models on data (default: 1)')
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10",
                         help='Dataset for training, one of CIFAR10, CIFAR100, MNIST, FashionMNIST (default: CIFAR10)')
     parser.add_argument('-m', '--model', type=str, default="ResNet20",
-                        help='ResNet model (default: ResNet20)')
+                        help='ResNet model (default: ResNet18)')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size for data loaders (default: 128)')
     parser.add_argument('--lr', type=str, default='1e-3',
@@ -74,8 +73,10 @@ def parse_args() -> dict:
                         help='Data split for training and validation set (default: 0.8)')
     parser.add_argument('--n_bins', type=int, default=10,
                         help='Number of bins for reliability diagrams (default: 10)')
-    parser.add_argument('--mc_samples_eval', type=int, default=64,
-                        help='Number of MC samples during evaluation (default: 64)')
+    parser.add_argument('--mc_samples_eval', type=int, default=32,
+                        help='Number of MC samples during evaluation (default: 32)')
+    parser.add_argument('--baseline', type=str, default='SGD',
+                        help='Baseline optimizer for comparison of corrupted data')
 
     args = parser.parse_args(sys.argv[1:])
     args.lr, args.k, args.mc_samples = parse_vals(
@@ -109,7 +110,8 @@ def parse_args() -> dict:
         gamma=args.gamma,
         data_split=args.data_split,
         n_bins=args.n_bins,
-        mc_samples_eval=args.mc_samples_eval
+        mc_samples_eval=args.mc_samples_eval,
+        baseline=args.baseline
     )
     return args_dict
 
@@ -229,7 +231,7 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8) -> \
     return train_loader, val_loader, test_loader
 
 
-def get_params(args: dict, add_weight_decay=True, n=1) -> dict:
+def get_params(args: dict, baseline='SGD', add_weight_decay=True, n=1) -> dict:
     ngd = [
         dict(
             lr=lr, k=k, mc_samples=mc_samples, structure=structure,
@@ -243,25 +245,40 @@ def get_params(args: dict, add_weight_decay=True, n=1) -> dict:
             args['prior_precision'], args['damping'], args['gamma']
         )
     ]
-    adam = [dict(lr=lr, weight_decay=add_weight_decay * prior_precision / n)
+    if baseline == 'Adam':
+        momentum = dict(betas=(0.9, 0.999))
+    elif baseline == 'SGD':
+        momentum = dict(momentum=0.9, nesterov=True)
+    baseline = [dict(lr=lr, weight_decay=add_weight_decay * prior_precision / n, **momentum)
             for lr, prior_precision in zip(set(args['lr']), set(args['prior_precision']))]
-    params = dict(ngd=ngd, adam=adam)
+    params = dict(ngd=ngd, baseline=baseline)
     return params
 
 
-def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNGD]],
-        train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
-        adam_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
+def record_loss_and_metrics(losses, metrics, loss, metric):
+    if len(metrics.keys()) == 0:
+        for key in metric:
+            metrics[key] = []
+    assert (metrics.keys() == metric.keys())
+    losses.append(loss)
+    for key in metric.keys():
+        metrics[key].append(metric[key])
+    return losses, metrics
+
+
+def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
+        train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
+        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
         eval_every: int = 100, n_bins: int = 10, mc_samples: int = 64) -> List[dict]:
     """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
 
     :param epochs: int, number of epochs for training
     :param model: str, ResNet model for experiments
-    :param optimizers: List[Union[Adam, StructuredNGD]], list of models to run experiments on
+    :param optimizers: List[Union[baseline, StructuredNGD]], list of models to run experiments on
     :param train_loader: torch.utils.data.DataLoader, training data
     :param val_loader: torch.utils.data.DataLoader, validation data
     :param test_loader: torch.utils.data.DataLoader, test data
-    :param adam_params: List[dict], hyperparameters for Adam
+    :param baseline_params: List[dict], hyperparameters for baseline
     :param ngd_params: List[dict], hyperparameters for StructuredNGD
     :param metrics: List[Callable], list of metrics to run on data for evaluation
     :param eval_every: int, after a certain number of iterations, running losses and metrics will be averaged and
@@ -276,7 +293,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
         if optim is StructuredNGD:
             params = ngd_params
         else:
-            params = adam_params
+            params = baseline_params
         for param in params:
             print(optim.__name__, param)
             model.init_weights()
@@ -284,6 +301,11 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 optimizer = optim(model.parameters(), len(train_loader.dataset), **param)
             else:
                 optimizer = optim(model.parameters(), **param)
+            run = load_run(dataset, model, baseline)
+            optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
+            if (dataset.lower() in ['cifar10', 'cifar100']) and (optimizer_name != baseline) and (run is None):
+                raise RuntimeError(f"Baseline {baseline} does not exist for this dataset and model!"
+                                   f"Please first run the script with this baseline for the dataset and model.")
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
             # Initialize computation times, losses and metrics for recording
@@ -291,7 +313,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
             epoch_times = [0.0]
             train_loss = []
             train_metrics = {}
-            train_loss, train_metrics, _ = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
+            train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
             loss, metric, _ = model.evaluate(val_loader, metrics=metrics, optimizer=optimizer, mc_samples=1)
             val_loss = []
@@ -308,8 +330,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
                 # Record loss and metrics for epoch
-                loss, metric, _ = model.evaluate(val_loader, metrics=metrics,
-                                                 optimizer=optimizer, mc_samples=1)
+                loss, metric, _ = model.evaluate(val_loader, metrics=metrics, optimizer=optimizer, mc_samples=1)
                 val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
                 scheduler.step()
@@ -321,7 +342,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Adam, StructuredNG
                 test_metrics=test_metrics,
                 bin_data=bin_data
             )
-            corrupted_results = get_corrupted_results(dataset, model, optimizer, metrics,
+            corrupted_results = get_corrupted_results(dataset, model, optimizer, baseline, metrics,
                                                       clean_results, mc_samples, n_bins)
 
             epoch_times = np.cumsum(epoch_times)
@@ -381,96 +402,95 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
         runs = [runs]
     if not os.path.exists('plots'):
         os.mkdir('plots')
-    plot_loss(runs)
-    plot_metrics(runs)
-    plot_generalization_gap(runs)
+    # make_csv()
+
+    # plot_loss(runs)
+    # plot_metrics(runs)
+    # plot_generalization_gap(runs)
     plot_reliability_diagram(runs)
-    plot_corrupted_results(runs)
+    # plot_corrupted_data(runs)
 
 
 def plot_loss(runs: Union[dict, List[dict]]) -> None:
     if type(runs) == dict:
         runs = [runs]
-    # Plot training loss in terms of epochs and computation time
+    if not os.path.exists('plots/losses'):
+        os.makedirs('plots/losses', exist_ok=True)
+    # Plot training and validation loss in terms of epochs and computation time
     plt.figure(figsize=(12, 8))
-    for run in runs:
-        label = run['optimizer_name']
-        plt.subplot(2, 1, 1)
-        plt.plot(run['train_loss'], label=label)
+    datasets = list(set([run['dataset'] for run in runs]))
+    for dataset in datasets:
+        for run in runs:
+            if run['dataset'] != dataset:
+                continue
+            train_label = f"Train Loss ({run['optimizer_name']})"
+            val_label = f"Validation Loss ({run['optimizer_name']})"
 
-        # plt.ylim(bottom=0)
-        plt.title('Training Loss w.r.t. Epochs')
-        plt.xlabel('epochs')
-        plt.yscale('log')
+            plt.subplot(2, 1, 1)
+            plt.plot(run['train_loss'], label=train_label)
+            plt.plot(run['val_loss'], label=val_label)
 
-        plt.subplot(2, 1, 2)
-        plt.plot(run['epoch_times'], run['train_loss'], label=label)
+            # plt.ylim(bottom=0)
+            plt.title('Loss w.r.t. Epochs')
+            plt.xlabel('epochs')
+            # plt.yscale('log')
 
-        plt.title('Training Loss w.r.t Time')
-        plt.xlabel('time (s)')
-        plt.legend()
-        plt.yscale('log')
-    plt.tight_layout()
-    plt.savefig('plots/train_losses.pdf')
+            plt.subplot(2, 1, 2)
+            plt.plot(run['epoch_times'], run['train_loss'], label=train_label)
+            plt.plot(run['epoch_times'], run['val_loss'], label=val_label)
 
-    # Plot validation loss over epochs and computation time
-    plt.figure(figsize=(12, 8))
-    for run in runs:
-        label = run['optimizer_name']
-        plt.subplot(2, 1, 1)
-        plt.plot(run['val_loss'], label=label)
-        plt.title('Validation Loss')
-        plt.xlabel('epochs')
-        # plt.ylim(bottom=0)
-        plt.yscale('log')
-
-        plt.subplot(2, 1, 2)
-        plt.plot(run['epoch_times'], run['val_loss'], label=label)
-        plt.title('Validation Loss')
-        plt.xlabel('time (s)')
-        # plt.ylim(bottom=0)
-        plt.yscale('log')
-        plt.legend()
-
-    plt.tight_layout()
-    plt.savefig('plots/val_losses.pdf')
+            plt.title('Loss w.r.t Time')
+            plt.xlabel('time (s)')
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            # plt.yscale('log')
+        plt.tight_layout()
+        plt.savefig(f"plots/losses/losses_{dataset}.pdf")
 
 
 def plot_metrics(runs: Union[dict, List[dict]]) -> None:
     if type(runs) == dict:
         runs = [runs]
-    for run in runs:
-        # Plot metrics for training validation set wrt epochs
+    if not os.path.exists('plots/metrics'):
+        os.makedirs('plots/metrics', exist_ok=True)
+    datasets = list(set([run['dataset'] for run in runs]))
+    for dataset in datasets:
         plt.figure(figsize=(12, 8))
-        label = run['optimizer_name']
-        plt.subplot(2, 1, 1)
-        for key in run['val_metrics'].keys():
-            plt.plot(run['train_metrics'][key],
-                     label=f"Train Data ({key})")
-            plt.plot(run['val_metrics'][key],
-                     label=f"Validation Data ({key})")
+        for run in runs:
+            if run['dataset'] != dataset:
+                continue
+            # Plot metrics for training validation set wrt epochs
+            optimizer = run['optimizer_name']
+            plt.subplot(2, 1, 1)
+            for key in run['val_metrics'].keys():
+                train_metric = 100 * np.array(run['train_metrics'][key])
+                val_metric = 100 * np.array(run['val_metrics'][key])
+                plt.plot(train_metric,
+                         label=f"Train Data ({key}; {optimizer})")
+                plt.plot(val_metric,
+                         label=f"Validation Data ({key}; {optimizer})")
 
-        plt.title(f"Metrics w.r.t. Epochs ({label})")
-        plt.xlabel('epochs')
-        plt.ylim(0, 1)
-        # plt.legend()
-        # plt.savefig(f"plots/{run['timestamp']}_metrics.pdf")
+            plt.title(f"Metrics w.r.t. Epochs ({dataset})")
+            plt.xlabel('epochs')
+            # plt.ylim(0, 1)
+            # plt.legend()
 
-        # Plot metrics for training validation set wrt computation time
-        # plt.figure(figsize=(12, 8))
-        plt.subplot(2, 1, 2)
-        for key in run['val_metrics'].keys():
-            plt.plot(run['epoch_times'], run['train_metrics'][key],
-                     label=f"Train Data ({key})")
-            plt.plot(run['epoch_times'], run['val_metrics'][key],
-                     label=f"Validation Data ({key})")
-        plt.title(f"Metrics w.r.t. Time ({label})")
-        plt.xlabel('time (s)')
-        plt.ylim(0, 1)
-        plt.legend()
+            # Plot metrics for training validation set wrt computation time
+            # plt.figure(figsize=(12, 8))
+            plt.subplot(2, 1, 2)
+            for key in run['val_metrics'].keys():
+                train_metric = 100 * np.array(run['train_metrics'][key])
+                val_metric = 100 * np.array(run['val_metrics'][key])
+                plt.plot(run['epoch_times'], train_metric,
+                         label=f"Train Data ({key}; {optimizer})")
+                plt.plot(run['epoch_times'], val_metric,
+                         label=f"Validation Data ({key}; {optimizer})")
+            plt.title(f"Metrics w.r.t. Time ({dataset})")
+            plt.xlabel('time (s)')
+            # plt.ylim(0, 1)
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
 
         plt.tight_layout()
-        plt.savefig(f"plots/{run['timestamp']}_metrics.pdf")
+        plt.savefig(f"plots/metrics/metrics_{dataset}.pdf")
 
 
 def plot_generalization_gap(runs: Union[dict, List[dict]]) -> None:
@@ -518,29 +538,23 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
     """
     if type(runs) == dict:
         runs = [runs]
+    if not os.path.exists('plots/reliability_diagrams'):
+        os.makedirs('plots/reliability_diagrams', exist_ok=True)
     for run in runs:
-        label = run['optimizer_name']
-        title = f"Reliability Diagram ({label})"
+        optimizer = run['optimizer_name']
+        dataset = run['dataset']
+        model = run['model_name']
+        title = f"Reliability Diagram for {optimizer}\non {dataset} using {model}"
         plt.figure(figsize=(12, 8))
         bin_data = run['bin_data']
         reliability_diagram(bin_data, draw_ece=True, draw_mce=True,
                             title=title, draw_averages=True,
                             figsize=(6, 6), dpi=100)
-        plt.savefig(f"plots/{run['timestamp']}_reliability_diagram.pdf")
+        plt.savefig(f"plots/reliability_diagrams/"
+                    f"{run['timestamp']}_reliability_diagram_{dataset}_{model}_{optimizer}.pdf")
 
 
-def record_loss_and_metrics(losses, metrics, loss, metric):
-    if len(metrics.keys()) == 0:
-        for key in metric:
-            metrics[key] = []
-    assert (metrics.keys() == metric.keys())
-    losses.append(loss)
-    for key in metric.keys():
-        metrics[key].append(metric[key])
-    return losses, metrics
-
-
-def plot_corrupted_results(runs, plot_values=['mce', 'ece', 'accuracy']):
+def plot_corrupted_data(runs, plot_values=['accuracy', 'top_5_accuracy', 'mce', 'ece']):
     if type(runs) == dict:
         runs = [runs]
 
@@ -557,82 +571,64 @@ def plot_corrupted_results(runs, plot_values=['mce', 'ece', 'accuracy']):
 def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
     if type(runs) == dict:
         runs = [runs]
+    if not os.path.exists('plots/corrupted/reliability_diagrams'):
+        os.makedirs('plots/corrupted/reliability_diagrams', exist_ok=True)
     for run in runs:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
         dataset = run['dataset']
         model = run['model_name']
         optimizer = run['optimizer_name']
-
         corrupted_results = run['corrupted_results']
-        clean_bin_data = run['bin_data']
         corrupted_bin_data = corrupted_results['bin_data']
-        label = corrupted_results['optimizer']
 
-        plt.figure(figsize=(12, 8))
-        plt.title(f"Reliability Diagram {label}")
-        nrows = len(CORRUPTION_TYPES)
-        ncols = 6
-
-        # Plot clean bin data (repeatedly in first column)
-        plt.figure(figsize=(12, 8))
-        severity = 0
-        corruption_type = 'clean'
-        for i in range(ncols):
-            plt.subplot(nrows, ncols, (severity + 1) + nrows * i)
-            title = f"severity = {severity}, corruption = {corruption_type}"
-            reliability_diagram(clean_bin_data, draw_ece=True, draw_mce=True,
-                                title=title, draw_averages=True,
-                                figsize=(6, 6), dpi=100)
         # Plot corrupted data for each severity level with severity levels along the x-axis
         # and corruption type along the y-axis
         for severity, corruption_type in corrupted_bin_data.keys():
-            index = (severity + 1) + nrows * CORRUPTION_TYPES.index(corruption_type)
-            plt.subplot(nrows, ncols, index)
-            title = f"severity = {severity}, corruption = {corruption_type}"
+            if corruption_type == 'clean':
+                continue
+            plt.figure(figsize=(12, 8))
+            title = f"Reliability Diagrams (dataset={dataset}; model={model};\n" \
+                    f"optimizer={optimizer}; corruption_type={corruption_type}; severity={severity})"
             reliability_diagram(corrupted_bin_data[(severity, corruption_type)], draw_ece=True, draw_mce=True,
-                                title=title, draw_averages=True,
-                                figsize=(6, 6), dpi=100)
-        corruption_types = ', '.join('clean', *CORRUPTION_TYPES.keys())
-        plt.title(f"Reliability Diagrams ({dataset}; {model}; {optimizer})")
-        # ; (→: severity (0-6); ↓: corruption_type: ({corruption_types}))")
-        plt.tight_layout()
-        plt.savefig(f"plots/{run['timestamp']}_reliability_diagram_{dataset}_{model}_{optimizer}.pdf")
-
-
-def plot_corrupted_results(runs: Union[List[dict], dict], plot_values=['ece', 'mce', 'accuracy']) -> None:
-    corrupted_results_df = collect_corrupted_results_df(runs)
-    for dataset in corrupted_results_df['dataset'].unique():
-        # plot corruption errors per dataset and optimizer grouped by model and error (ECE, accuracy, etc.)
-        # 2 x len(plot_values) grid of plots
-        for model in corrupted_results_df['dataset' == dataset]['model_name'].unique():
-            fig, axes = plt.subplots(2, len(plot_values), sharex=True, squeeze=False)
-            sub_df = corrupted_results_df[(corrupted_results_df['dataset'] == dataset) &
-                                          (corrupted_results_df['model_name'] == model)].copy()
-            sub_df[plot_values] *= 100
-            corr_handles = []
-            corr_labels = []
-            opt_handles = []
-            opt_labels = []
-            for i, value in enumerate(plot_values):
-                axes[0, i].set_title(value)
-                corruption_plot = sns.barplot(ax=axes[0, i], data=sub_df, x='severity', y=value, hue='corruption_type')
-                optimizer_plot = sns.barplot(ax=axes[1, i], data=sub_df, x='severity', y=value, hue='optimizer_name')
-                axes[0, i].get_legend().remove()
-                axes[1, i].get_legend().remove()
-                corr_handles.append(corruption_plot)
-                corr_labels.append(corruption_plot.get_label())
-                opt_handles.append(optimizer_plot)
-                opt_labels.append(optimizer_plot.get_label())
-            axes[0, -1].legend(handles=corr_handles, labels=corr_labels, bbox_to_anchor=(1.3, 1.2))
-            axes[1, -1].legend(handles=opt_handles, labels=opt_labels, bbox_to_anchor=(1.3, 1.2))
-            fig.suptitle(f"Corruption Errors on {dataset.upper()} for {model}")
-            plt.tight_layout()
-            plt.savefig(f"plots/corrupted_results_{dataset}_{model}.pdf")
+                                title=title, draw_averages=True, figsize=(6, 6), dpi=100)
+            plt.savefig(f"plots/corrupted/reliability_diagrams/"
+                        f"{run['timestamp']}_{dataset}_{model}_{optimizer}_{corruption_type}_{severity}.pdf")
             plt.show()
 
 
+def plot_corrupted_results(runs: Union[List[dict], dict],
+                           plot_values=['accuracy', 'top_5_accuracy', 'ece', 'mce']) -> None:
+    corrupted_results_df = collect_corrupted_results_df(runs)
+    if not os.path.exists('plots/corrupted/results'):
+        os.makedirs('plots/corrupted/results', exist_ok=True)
+    for dataset in corrupted_results_df['dataset'].unique():
+        plot_value = plot_values.copy()
+        if dataset.lower() == 'cifar10':
+            plot_value.remove('top_5_accuracy')
+        # plot corruption errors per dataset and optimizer grouped by model and error (ECE, accuracy, etc.)
+        # 2 x len(plot_values) grid of plots
+        for model in corrupted_results_df[corrupted_results_df['dataset'] == dataset]['model'].unique():
+            sub_df = corrupted_results_df[(corrupted_results_df['dataset'] == dataset) &
+                                          (corrupted_results_df['model'] == model)].copy()
+            sub_df[plot_value] *= 100
+            for i, type in enumerate(CORRUPTION_TYPES.keys()):
+                plt.figure(figsize=(12, 8))
+                for j, value in enumerate(plot_value):
+                    if type == 'all':
+                        sns.barplot(data=sub_df, x='severity', y=value, hue='optimizer')
+                    else:
+                        sns.barplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                                    x='severity', y=value, hue='optimizer')
+                    # plt.legend(bbox_to_anchor=(1.3, 0.6))
+                    plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type}'")
+                    plt.savefig(f"plots/corrupted/results/{dataset}_{model}_{type}_{value}.pdf")
+                    plt.show()
+
+
 def plot_robustness(runs: Union[List[dict], dict]) -> None:
+    if not os.path.exists('plots/corrupted/robustness'):
+        os.makedirs('plots/corrupted/robustness', exist_ok=True)
     df_mce = collect_corruption_errors(runs)
     df_rmce = collect_rel_corruption_errors(runs)
 
@@ -648,43 +644,47 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
                 (df_rmce['model_name'] == model)
                 ].copy()
             for type in CORRUPTION_TYPES.keys():
+                accuracy = 100 * sub_df_mce['accuracy']
                 mce_mean = 100 * sub_df_mce[type]
                 rmce_mean = 100 * sub_df_rmce[type]
-                mce_std = (100 ** 2) * sub_df_mce[type + '_std']
-                rmce_std = (100 ** 2) * sub_df_rmce[type + '_std']
-                plt.figure(figsize=(12, 8))
-                plt.plot(100 * sub_df_mce['accuracy'], mce_mean, label='mCE')
-                plt.fill_between(100 * sub_df_mce['accuracy'], y1=mce_mean-mce_std, y2=mce_mean+mce_std)
-                for label, x, y in zip(sub_df_mce['optimizer_name'], sub_df_mce['accuracy'], sub_df_mce[type]):
-                    plt.annotate(label, (x, y), textcoords="offset points", xytext=(0, -10), ha='center')
-                plt.plot(100 * sub_df_rmce['accuracy'], rmce_mean, label='Relative mCE')
-                plt.fill_between(100 * sub_df_mce['accuracy'], y1=rmce_mean-rmce_std, y2=rmce_mean+rmce_std)
-                plt.title(f"Robustness of Optimizers on {dataset} for {model} and corruption type {type}")
-                plt.xlabel('Test Accuracy (%)')
-                plt.ylabel('%')
-                plt.legend()
-                plt.savefig(f"plots/robustness_{dataset}_{model}_{type}.pdf")
+                mce_std = 100 * sub_df_mce[type + '_std']
+                rmce_std = 100 * sub_df_rmce[type + '_std']
+                fig, ax = plt.subplots()
+                ax.plot(accuracy, mce_mean, label='mCE', marker='o', color='blue')
+                ax.fill_between(accuracy, y1=mce_mean-mce_std, y2=mce_mean+mce_std, alpha=0.1, color='blue')
+                ax.plot(accuracy, rmce_mean, label='Relative mCE', marker='o', color='orange')
+                ax.fill_between(accuracy, y1=rmce_mean-rmce_std, y2=rmce_mean+rmce_std, alpha=0.1, color='orange')
+                ax.set_title(f"Robustness of Optimizers on {dataset} for {model} and Corruption Type '{type}'")
+                ax.set_xlabel('Test Accuracy (%)')
+                ax.set_ylabel('%')
+                ax.legend()
+                props = dict(boxstyle='round', facecolor='none', alpha=0.5)
+                textstr = '\n'.join(f"{i+1}: {name}" for i, name in enumerate(sub_df_mce['optimizer_name']))
+                ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10, verticalalignment='top', bbox=props)
+                for i, (x, y) in enumerate(zip(accuracy, mce_mean)):
+                    ax.annotate(i+1, (x, y), textcoords="offset points", xytext=(0, -10), ha='center')
+                plt.savefig(f"plots/corrupted/robustness/{dataset}_{model}_{type}.pdf")
                 plt.show()
 
 
-def make_csv(directory: str = 'runs'):
+def make_csv(directory: str = 'runs', baseline='Adam'):
     runs = load_all_runs(directory)
     results = pd.DataFrame(columns=['Dataset', 'Model', 'Optimizer', 'Training Loss', 'Test Loss',
-                                    'Test Accuracy', 'Top-k Accuracy', 'ECE', 'MCE', 'Time'])
+                                    'Test Accuracy', 'Top-k Accuracy', 'ECE', 'MCE', 'Time (h)'])
     for run in runs:
         dataset = run['dataset']
         model = run['model_name']
         optimizer = run['optimizer_name']
 
-        adam_run = load_run(dataset, model, 'Adam', directory)
+        baseline_run = load_run(dataset, model, baseline, directory)
         train_loss = run['train_loss'][-1]
         test_loss = run['test_loss']
         test_accuracy = run['test_metrics']['accuracy']
-        top_k_accuracy = run['test_metrics']['top_k_accuracy']
+        top_k_accuracy = run['test_metrics']['top_5_accuracy']
         ece = run['bin_data']['expected_calibration_error']
         mce = run['bin_data']['max_calibration_error']
         comp_time = run['epoch_times'][-1]
-        if run['optimizer_name'] == 'Adam':
+        if run['optimizer_name'] == baseline:
             train_loss = compare(train_loss)
             test_loss = compare(test_loss)
             test_accuracy = compare(test_accuracy)
@@ -693,13 +693,13 @@ def make_csv(directory: str = 'runs'):
             mce = compare(mce)
             comp_time = compare(comp_time / 3600)
         else:
-            train_loss = compare(train_loss, adam_run['train_loss'][-1])
-            test_loss = compare(test_loss, adam_run['test_loss'])
-            test_accuracy = compare(test_accuracy, adam_run['test_metrics']['accuracy'])
-            top_k_accuracy = compare(top_k_accuracy, adam_run['test_metrics']['top_k_accuracy'])
-            ece = compare(ece, adam_run['bin_data']['expected_calibration_error'])
-            mce = compare(mce, adam_run['bin_data']['max_calibration_error'])
-            comp_time = compare(comp_time / 3600, adam_run['epoch_times'][-1])
+            train_loss = compare(train_loss, baseline_run['train_loss'][-1])
+            test_loss = compare(test_loss, baseline_run['test_loss'])
+            test_accuracy = compare(test_accuracy, baseline_run['test_metrics']['accuracy'])
+            top_k_accuracy = compare(top_k_accuracy, baseline_run['test_metrics']['top_5_accuracy'])
+            ece = compare(ece, baseline_run['bin_data']['expected_calibration_error'])
+            mce = compare(mce, baseline_run['bin_data']['max_calibration_error'])
+            comp_time = compare(comp_time / 3600, baseline_run['epoch_times'][-1] / 3600)
 
         result = pd.DataFrame([{
             'Dataset': dataset,
@@ -714,6 +714,12 @@ def make_csv(directory: str = 'runs'):
         }])
         results = pd.concat([results, result], ignore_index=True)
     results.sort_values(by=['Dataset', 'Model', 'Optimizer'], inplace=True)
+    if not os.path.exists('results'):
+        os.mkdir('results')
+    results.to_csv('results/results.csv')
+    collect_corrupted_results_df(runs).to_csv('results/corrupted_results.csv')
+    collect_corruption_errors(runs).to_csv('results/corruption_errors.csv')
+    collect_rel_corruption_errors(runs).to_csv('results/rel_corruption_errors.csv')
     return results
 
 

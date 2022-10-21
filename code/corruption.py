@@ -89,7 +89,7 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
     return data_loader
 
 
-def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_samples, n_bins):
+def get_corrupted_results(dataset, model, optimizer, baseline, metrics, clean_results, mc_samples, n_bins):
     if not dataset.lower() in ['cifar10', 'cifar100']:
         return None
     model_name = model.__name__
@@ -107,6 +107,7 @@ def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_
         **clean_results['test_metrics']
     )])
     bin_data = {(severity, corruption_type): clean_results['bin_data']}
+    i = 0
     for severity in SEVERITY_LEVELS:
         for corruption_type in CORRUPTION_TYPES.keys():
             if corruption_type == 'all':
@@ -125,6 +126,9 @@ def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_
                         **metric
                     )])
                 df = pd.concat([df, corrupted_result], ignore_index=True)
+                i += 1
+                print(f"[{i} / {len(SEVERITY_LEVELS) * len(CORRUPTIONS)}]; "
+                      f"severity = {severity}, corruption = {corruption}")
 
             # group bin_data results by types
             corrupted_bin_data = merge_bin_data(bin_data_list)
@@ -136,17 +140,17 @@ def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_
     ].drop(['corruption_type', 'severity'], axis=1).copy()
     clean_accuracy = clean_results['test_metrics']['accuracy']
     if isinstance(optimizer, NoisyOptimizer):
-        adam_results = load_run(dataset, model, "Adam")
-        adam_clean_accuracy = adam_results['test_metrics']['accuracy']
-        adam_df = adam_results['corrupted_results']['df']
-        adam_df = adam_df[
-            (adam_df['severity'] > 0) & (df['corruption_type'] != 'all')
+        baseline_results = load_run(dataset, model, baseline)
+        baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
+        baseline_df = baseline_results['corrupted_results']['df']
+        baseline_df = baseline_df[
+            (baseline_df['severity'] > 0) & (df['corruption_type'] != 'all')
         ].drop(['corruption_type', 'severity'], axis=1).copy()
     else:
-        adam_clean_accuracy = clean_accuracy
-        adam_df = sub_df.copy()
-    corruption_error = ce(sub_df, adam_df)
-    rel_corruption_error = rel_ce(sub_df, adam_df, clean_accuracy, adam_clean_accuracy)
+        baseline_clean_accuracy = clean_accuracy
+        baseline_df = sub_df.copy()
+    corruption_error = ce(sub_df, baseline_df)
+    rel_corruption_error = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy)
 
     for corruption_type in CORRUPTION_TYPES.keys():
         corruption_error[corruption_type] = corruption_error[CORRUPTION_TYPES[corruption_type]].mean(1)
@@ -181,21 +185,21 @@ def get_corrupted_results(dataset, model, optimizer, metrics, clean_results, mc_
     return corrupted_results
 
 
-def ce(df, adam_corrupted_df):
+def ce(df, baseline_corrupted_df):
     result = pd.DataFrame()
     for corruption in CORRUPTIONS:
         sub_df = df[df.corruption == corruption]
-        sub_adam_df = adam_corrupted_df[adam_corrupted_df.corruption == corruption]
-        result[corruption] = [np.sum(1 - sub_df.accuracy) / np.sum(1 - sub_adam_df.accuracy)]
+        sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption]
+        result[corruption] = [np.sum(1 - sub_df.accuracy) / np.sum(1 - sub_baseline_df.accuracy)]
     return result
 
 
-def rel_ce(df, adam_corrupted_df, clean_accuracy, adam_clean_accuracy):
+def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
     result = pd.DataFrame()
     for corruption in CORRUPTIONS:
         sub_df = df[df.corruption == corruption]
-        sub_adam_df = adam_corrupted_df[adam_corrupted_df.corruption == corruption]
-        result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(adam_clean_accuracy - sub_adam_df.accuracy)]
+        sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption]
+        result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(baseline_clean_accuracy - sub_baseline_df.accuracy)]
     return result
 
 
@@ -212,8 +216,8 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
 
         clean_df = pd.DataFrame([dict(
                 dataset=dataset,
-                model=run['model_name'],
-                optimizer=run['optimizer_name'],
+                model_name=run['model_name'],
+                optimizer_name=run['optimizer_name'],
                 corruption_type='clean',
                 corruption='clean',
                 severity=0,
