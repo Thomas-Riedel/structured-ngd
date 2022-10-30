@@ -129,7 +129,7 @@ def _reliability_diagram_subplot(ax, bin_data,
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
 
-    ax.legend(handles=[gap_plt, acc_plt])
+    ax.legend(handles=[gap_plt, acc_plt], loc='upper left')
 
 
 def _confidence_histogram_subplot(ax, bin_data,

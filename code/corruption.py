@@ -210,14 +210,19 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
     for run in runs:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
-
         corrupted_results = run['corrupted_results']
         dataset = corrupted_results['dataset']
-
+        params = run['params']
+        if not run['optimizer_name'].startswith('StructuredNGD'):
+            optimizer_name = run['optimizer_name']
+        else:
+            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
+            optimizer_name = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
+        corrupted_results['df']['optimizer_name'] = optimizer_name
         clean_df = pd.DataFrame([dict(
                 dataset=dataset,
                 model_name=run['model_name'],
-                optimizer_name=run['optimizer_name'],
+                optimizer_name=optimizer_name,
                 corruption_type='clean',
                 corruption='clean',
                 severity=0,
@@ -225,7 +230,9 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
                 **run['test_metrics']
             )])
         corrupted_results_df = pd.concat([corrupted_results_df, clean_df, corrupted_results['df']], ignore_index=True)
-    corrupted_results_df.rename(columns={'optimizer_name': 'optimizer', 'model_name': 'model'}, inplace=True)
+    corrupted_results_df.rename(columns={'optimizer_name': 'optimizer', 'model_name': 'model', 'accuracy': 'Accuracy',
+                                         'top_5_accuracy': 'Top-5 Accuracy', 'ece': 'ECE', 'mce': 'MCE',
+                                         'loss': 'Loss'}, inplace=True)
     return corrupted_results_df
 
 
@@ -236,8 +243,12 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
     for run in runs:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
-        corrupted_results = run['corrupted_results']
-        corruption_errors = pd.concat([corruption_errors, corrupted_results['corruption_error']], ignore_index=True)
+        corruption_error = run['corrupted_results']['corruption_error']
+        corruption_error['dataset'] = run['dataset']
+        corruption_error['optimizer_name'] = run['optimizer_name'] \
+            if not run['optimizer_name'].startswith('StructuredNGD') else \
+            rf"NGD $(k = {run['params']['k']}, M = {run['params']['mc_samples']}, \gamma = {run['params']['gamma']})$"
+        corruption_errors = pd.concat([corruption_errors, corruption_error], ignore_index=True)
     return corruption_errors
 
 
@@ -249,6 +260,10 @@ def collect_rel_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
         corrupted_results = run['corrupted_results']
+        corrupted_results['rel_corruption_error']['dataset'] = run['dataset']
+        corrupted_results['rel_corruption_error']['optimizer_name'] = run['optimizer_name'] \
+            if not run['optimizer_name'].startswith('StructuredNGD') else \
+            f"k = {run['params']['k']}, M = {run['params']['mc_samples']}"
         rel_corruption_errors = pd.concat([rel_corruption_errors, corrupted_results['rel_corruption_error']],
                                           ignore_index=True)
     return rel_corruption_errors

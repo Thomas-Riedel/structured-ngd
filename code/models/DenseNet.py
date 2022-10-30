@@ -84,21 +84,21 @@ class DenseNet(nn.Module):
         return x
 
 # num_params ~ 6,956,298
-# def DenseNet121():
-#     return DenseNet(Bottleneck, [6, 12, 24, 16], growth_rate=32)
+# def DenseNet121(num_classes=10):
+#     return DenseNet(Bottleneck, [6, 12, 24, 16], growth_rate=32, num_classes=num_classes)
 
 # num_params ~ 12,493,322
-def DenseNet169():
-    return DenseNet(Bottleneck, [6, 12, 32, 32], growth_rate=32)
+def DenseNet169(num_classes=10):
+    return DenseNet(Bottleneck, [6, 12, 32, 32], growth_rate=32, num_classes=num_classes)
 
 # num_params ~ 18,104,330
-def DenseNet201():
-    return DenseNet(Bottleneck, [6, 12, 48, 32], growth_rate=32)
+def DenseNet201(num_classes=10):
+    return DenseNet(Bottleneck, [6, 12, 48, 32], growth_rate=32, num_classes=num_classes)
 
 # num_params ~ 26,482,378
-def DenseNet161():
-    return DenseNet(Bottleneck, [6, 12, 36, 24], growth_rate=48)
+def DenseNet161(num_classes=10):
+    return DenseNet(Bottleneck, [6, 12, 36, 24], growth_rate=48, num_classes=num_classes)
 
 # num_params ~ 1,000,618
-def DenseNet121():
-    return DenseNet(Bottleneck, [6, 12, 24, 16], growth_rate=12)
+def DenseNet121(num_classes=10):
+    return DenseNet(Bottleneck, [6, 12, 24, 16], growth_rate=12, num_classes=num_classes)

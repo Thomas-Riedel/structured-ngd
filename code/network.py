@@ -134,7 +134,9 @@ class Model(nn.Module):
         :return: (loss, metric_vals, bin_data), Tuple[float, dict, dict], tuple of loss and specified metrics on validation set
         """
         if data_loader is None:
-            return None, None
+            return None, None, None
+        if not isinstance(optimizer, NoisyOptimizer):
+            mc_samples = 1
         assert(mc_samples >= 1)
 
         # Set model to evaluation mode!
@@ -225,7 +227,7 @@ class Model(nn.Module):
         return labels, preds, logits
 
     @torch.no_grad()
-    def compute_calibration(self, data_loader, n_bins=10, optimizer=False, mc_samples=0):
+    def compute_calibration(self, data_loader, n_bins: int = 10, optimizer = None, mc_samples: int = 1):
         """Collects predictions into bins used to draw a reliability diagram.
             Adapted code snippet by https://github.com/hollance/reliability-diagrams
 
@@ -255,14 +257,9 @@ class Model(nn.Module):
         # assert(len(confidences) == len(true_labels))
         assert(n_bins > 0)
 
-        noisy_optimizer = False
-        if isinstance(optimizer, NoisyOptimizer):
-            noisy_optimizer = True
-            if mc_samples == 0:
-                mc_samples = 1
-            assert(mc_samples >= 1)
-        else:
-            mc_samples = 0
+        if not isinstance(optimizer, NoisyOptimizer):
+            mc_samples = 1
+        assert(mc_samples >= 1)
 
         # Set model to evaluation mode!
         self.model.eval()
@@ -277,14 +274,12 @@ class Model(nn.Module):
             images = images.to(self.device)
             true_labels = true_labels.to(self.device)
 
-            if not noisy_optimizer:
-                outputs = self(images)
-            else:
-                outputs = torch.zeros((images.shape[0], self.num_classes), device=self.device)
-                with Sampler(optimizer):
-                    for i in range(mc_samples):
+            outputs = torch.zeros((images.shape[0], self.num_classes), device=self.device)
+            with Sampler(optimizer):
+                for i in range(mc_samples):
+                    if isinstance(optimizer, NoisyOptimizer):
                         optimizer._sample_weight()
-                        outputs += self(images)
+                    outputs += self(images)
                 outputs /= mc_samples
             confidences, pred_labels = outputs.softmax(1).max(1)
 
