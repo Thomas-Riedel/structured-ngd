@@ -316,12 +316,13 @@ class Model(nn.Module):
             "max_calibration_error": mce
         }
 
-    def init_weights(self, seed: int = 42) -> None:
+    def init_weights(self, seed: Union[int, None] = None) -> None:
         """Initialize weights.
 
         :param seed: int, seed for random initialization
         """
-        torch.manual_seed(seed)
+        if not seed is None:
+            torch.manual_seed(seed)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.xavier_normal_(m.weight)
@@ -331,6 +332,192 @@ class Model(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
 
+
+class DeepEnsemble():
+    def __init__(self, runs, input_shape=(3, 32, 32), device: str = None):
+        datasets = list(set([run['dataset'] for run in runs]))
+        assert(len(datasets) == 1)
+        dataset = datasets[0]
+        if dataset.lower() in ['stl10', 'cifar10']:
+            num_classes = 10
+        elif dataset.lower() == 'cifar100':
+            num_classes = 100
+        else:
+            raise NotImplementedError(f"Dataset {dataset} not recognized!")
+        self.__name__ = 'DeepEnsemble'
+
+        self.models = []
+        for run in runs:
+            state_dict = torch.load(f"models/{run['timestamp']}.pt")
+            model = Model(run['model_name'], num_classes=num_classes, input_shape=input_shape, device=device)
+            model.load_state_dict(state_dict=state_dict)
+            self.models.append(model)
+
+    def __call__(self, x):
+        logits = 0
+        for model in self.models:
+            logits += model(x)
+        logits /= len(self.models)
+        return logits
+
+    @torch.no_grad()
+    def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
+                 loss_fn: Callable = nn.CrossEntropyLoss(), n_bins=10) -> Tuple[float, dict, dict]:
+        """Evaluate data on loss function and metrics.
+
+        :param data_loader: torch.utils.data.DataLoader, validation or test dataset
+        :param metrics: List[Callable], list of metrics to run for evaluation
+        :param loss_fn: Callable, loss function to optimize
+        :return: (loss, metric_vals, bin_data), Tuple[float, dict, dict], tuple of loss and specified metrics on validation set
+        """
+        # Set model to evaluation mode!
+        for model in self.models:
+            model.eval()
+
+        loss = 0.0
+        metric_vals = {}
+        for metric in metrics:
+            metric_vals[metric.__name__] = 0.0
+        bin_accuracies = np.zeros(n_bins, dtype=float)
+        bin_confidences = np.zeros(n_bins, dtype=float)
+        bin_counts = np.zeros(n_bins, dtype=int)
+        bins = np.linspace(0.0, 1.0, n_bins + 1)
+
+        for i, data in enumerate(data_loader):
+            images, labels = data
+            images = images.to(self.device)
+            labels = labels.to(self.device)
+
+            logits = self(images)
+            loss += loss_fn(logits, labels).item()
+            for metric in metrics:
+                metric_vals[metric.__name__] += metric(logits, labels).item()
+
+            confidences, preds = logits.softmax(1).max(1)
+            labels = labels.detach().cpu().numpy()
+            confidences = confidences.detach().cpu().numpy()
+            preds = preds.detach().cpu().numpy()
+            indices = np.digitize(confidences, bins, right=True)
+
+            for b in range(n_bins):
+                selected = np.where(indices == b + 1)[0]
+                if len(selected) > 0:
+                    bin_accuracies[b] += np.sum(labels[selected] == preds[selected])
+                    bin_confidences[b] += np.sum(confidences[selected])
+                    bin_counts[b] += len(selected)
+
+            # Write to TensorBoard
+            # writer.add_scalar("Loss", loss, counter)
+
+        for metric in metrics:
+            metric_vals[metric.__name__] /= len(data_loader)
+        loss /= len(data_loader)
+        print(loss, metric_vals)
+
+        # Divide each bin by its bin count and avoid division by zero!
+        bin_accuracies /= np.where(bin_counts > 0, bin_counts, 1)
+        bin_confidences /= np.where(bin_counts > 0, bin_counts, 1)
+        avg_acc = np.sum(bin_accuracies * bin_counts) / np.sum(bin_counts)
+        avg_conf = np.sum(bin_confidences * bin_counts) / np.sum(bin_counts)
+        gaps = np.abs(bin_accuracies - bin_confidences)
+        ece = np.sum(gaps * bin_counts) / np.sum(bin_counts)
+        mce = np.max(gaps)
+        bin_data = dict(
+            accuracies=bin_accuracies,
+            confidences=bin_confidences,
+            counts=bin_counts,
+            bins=bins,
+            avg_accuracy=avg_acc,
+            avg_confidence=avg_conf,
+            expected_calibration_error=ece,
+            max_calibration_error=mce
+        )
+        return loss, metric_vals, bin_data
+
+    @torch.no_grad()
+    def compute_calibration(self, data_loader, n_bins: int = 10, optimizer = None, mc_samples: int = 1):
+        """Collects predictions into bins used to draw a reliability diagram.
+            Adapted code snippet by https://github.com/hollance/reliability-diagrams
+
+        Arguments:
+            true_labels: the true labels for the test examples
+            pred_labels: the predicted labels for the test examples
+            confidences: the predicted confidences for the test examples
+            n_bins: number of bins
+
+        The true_labels, pred_labels, confidences arguments must be NumPy arrays;
+        pred_labels and true_labels may contain numeric or string labels.
+
+        For a multi-class model, the predicted label and confidence should be those
+        of the highest scoring class.
+
+        Returns a dictionary containing the following NumPy arrays:
+            accuracies: the average accuracy for each bin
+            confidences: the average confidence for each bin
+            counts: the number of examples in each bin
+            bins: the confidence thresholds for each bin
+            avg_accuracy: the accuracy over the entire test set
+            avg_confidence: the average confidence over the entire test set
+            expected_calibration_error: a weighted average of all calibration gaps
+            max_calibration_error: the largest calibration gap across all bins
+        """
+        # assert(len(confidences) == len(pred_labels))
+        # assert(len(confidences) == len(true_labels))
+        assert(n_bins > 0)
+
+        if not isinstance(optimizer, NoisyOptimizer):
+            mc_samples = 1
+        assert(mc_samples >= 1)
+
+        # Set models to evaluation mode!
+        for model in self.models:
+            model.eval()
+
+        bin_accuracies = np.zeros(n_bins, dtype=float)
+        bin_confidences = np.zeros(n_bins, dtype=float)
+        bin_counts = np.zeros(n_bins, dtype=int)
+        bins = np.linspace(0.0, 1.0, n_bins + 1)
+
+        for data in data_loader:
+            images, true_labels = data
+            images = images.to(self.device)
+            true_labels = true_labels.to(self.device)
+
+            outputs = self(images)
+            confidences, pred_labels = outputs.softmax(1).max(1)
+
+            true_labels = true_labels.detach().cpu().numpy()
+            confidences = confidences.detach().cpu().numpy()
+            pred_labels = pred_labels.detach().cpu().numpy()
+
+            indices = np.digitize(confidences, bins, right=True)
+
+            for b in range(n_bins):
+                selected = np.where(indices == b + 1)[0]
+                if len(selected) > 0:
+                    bin_accuracies[b] += np.sum(true_labels[selected] == pred_labels[selected])
+                    bin_confidences[b] += np.sum(confidences[selected])
+                    bin_counts[b] += len(selected)
+
+        # Divide each bin by its bin count and avoid division by zero!
+        bin_accuracies /= np.where(bin_counts > 0, bin_counts, 1)
+        bin_confidences /= np.where(bin_counts > 0, bin_counts, 1)
+        avg_acc = np.sum(bin_accuracies * bin_counts) / np.sum(bin_counts)
+        avg_conf = np.sum(bin_confidences * bin_counts) / np.sum(bin_counts)
+        gaps = np.abs(bin_accuracies - bin_confidences)
+        ece = np.sum(gaps * bin_counts) / np.sum(bin_counts)
+        mce = np.max(gaps)
+
+        return {
+            "accuracies": bin_accuracies,
+            "confidences": bin_confidences,
+            "counts": bin_counts,
+            "bins": bins,
+            "avg_accuracy": avg_acc,
+            "avg_confidence": avg_conf,
+            "expected_calibration_error": ece,
+            "max_calibration_error": mce
+        }
 
 class Timer:
     def __init__(self, device):

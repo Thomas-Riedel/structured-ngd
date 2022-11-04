@@ -30,13 +30,17 @@ def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
         model = model.__name__
     if type(optimizer) != str:
         optimizer = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
-    for file in os.listdir(directory):
+    for file in sorted(os.listdir(directory)):
         if file.endswith(".pkl"):
             with open(os.path.join(directory, file), 'rb') as f:
                 run = pickle.load(f)
             if ((run['optimizer_name'].lower() == optimizer.lower()) and
                     (run['model_name'].lower() == model.lower()) and
                     (run['dataset'].lower() == dataset.lower())):
+                run['total_time'] = run['epoch_times'][-1]
+                if not 'num_epochs' in run:
+                    run['num_epochs'] = len(run['epoch_times']) - 1
+                    run['avg_time_per_epoch'] = run['total_time'] / run['num_epochs']
                 return run
     return None
 
@@ -46,7 +50,14 @@ def load_all_runs(directory: str = 'runs') -> List[dict]:
     for file in os.listdir(directory):
         if file.endswith(".pkl"):
             with open(os.path.join(directory, file), 'rb') as f:
-                runs.append(pickle.load(f))
+                run = pickle.load(f)
+            run['total_time'] = run['epoch_times'][-1]
+            if not 'num_epochs' in run:
+                run['num_epochs'] = len(run['epoch_times']) - 1
+                run['avg_time_per_epoch'] = run['total_time'] / run['num_epochs']
+            if run['params'].get('k') == 0:
+                run['params']['structure'] = 'diagonal'
+            runs.append(run)
     return runs
 
 
@@ -203,6 +214,83 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
     return result
 
 
+def collect_results(runs, directory='runs', baseline='SGD'):
+    results = pd.DataFrame(columns=['Dataset', 'Model', 'Optimizer', 'Structure', 'k', 'M', 'gamma',
+                                    'Training Loss', 'Test Loss', 'Test Accuracy', 'Top-k Accuracy',
+                                    'ECE', 'MCE', 'Total Time (h)', 'Avg. Time per Epoch (s)', 'Num Epochs'])
+    for run in runs:
+        dataset = run['dataset']
+        model = run['model_name']
+        if run['optimizer_name'].startswith('StructuredNGD'):
+            params = run['params']
+            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
+            optimizer = f"NGD (structure = {structure}, $k = {params['k']}, " \
+                        f"M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
+        else:
+            optimizer = run['optimizer_name']
+        baseline_run = load_run(dataset, model, baseline, directory)
+        train_loss = run['train_loss'][-1]
+        val_loss = run['val_loss'][-1]
+        test_loss = run['test_loss']
+        test_accuracy = run['test_metrics']['accuracy']
+        top_k_accuracy = run['test_metrics']['top_5_accuracy']
+        ece = run['bin_data']['expected_calibration_error']
+        mce = run['bin_data']['max_calibration_error']
+        total_time = run['total_time']
+        avg_time_per_epoch = run['avg_time_per_epoch']
+        num_epochs = run['num_epochs']
+        if run['optimizer_name'] == baseline:
+            train_loss = compare(train_loss)
+            val_loss = compare(val_loss)
+            test_loss = compare(test_loss)
+            test_accuracy = compare(100 * test_accuracy)
+            top_k_accuracy = compare(100 * top_k_accuracy)
+            ece = compare(100 * ece)
+            mce = compare(100 * mce)
+            total_time = compare(total_time / 3600)
+            avg_time_per_epoch = compare(avg_time_per_epoch)
+            structure = run['optimizer_name']
+            k = 0
+            M = 0
+            gamma = 0.0
+        else:
+            train_loss = compare(train_loss, baseline_run['train_loss'][-1])
+            val_loss = compare(val_loss, baseline_run['val_loss'][-1])
+            test_loss = compare(test_loss, baseline_run['test_loss'])
+            test_accuracy = compare(100 * test_accuracy, 100 * baseline_run['test_metrics']['accuracy'])
+            top_k_accuracy = compare(100 * top_k_accuracy, 100 * baseline_run['test_metrics']['top_5_accuracy'])
+            ece = compare(100 * ece, 100 * baseline_run['bin_data']['expected_calibration_error'])
+            mce = compare(100 * mce, 100 * baseline_run['bin_data']['max_calibration_error'])
+            total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
+            avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
+            structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
+            k = run['params']['k']
+            M = run['params']['mc_samples']
+            gamma = run['params']['gamma']
+
+        result = pd.DataFrame([{
+            'Dataset': dataset.upper(),
+            'Model': model,
+            'Optimizer': optimizer,
+            'Structure': structure,
+            'k': k,
+            'M': M,
+            'gamma': gamma,
+            'Training Loss': train_loss,
+            'Validation Loss': val_loss,
+            'Test Loss': test_loss,
+            'Test Accuracy': test_accuracy,
+            'Top-k Accuracy': top_k_accuracy,
+            'ECE': ece, 'MCE': mce,
+            'Total Time (h)': total_time,
+            'Avg. Time per Epoch (s)': avg_time_per_epoch,
+            'Num Epochs': num_epochs
+        }])
+        results = pd.concat([results, result], ignore_index=True)
+    results.sort_values(by=['Dataset', 'Model', 'Optimizer'], inplace=True)
+    return results
+
+
 def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
     if type(runs) == dict:
         runs = [runs]
@@ -215,14 +303,31 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
         params = run['params']
         if not run['optimizer_name'].startswith('StructuredNGD'):
             optimizer_name = run['optimizer_name']
+            structure = run['optimizer_name']
+            k = 0
+            M = 0
+            gamma = 0.0
         else:
             structure = params['structure'].replace('_', ' ').title().replace(' ', '')
             optimizer_name = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
+            structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
+            k = run['params']['k']
+            M = run['params']['mc_samples']
+            gamma = run['params']['gamma']
         corrupted_results['df']['optimizer_name'] = optimizer_name
+        corrupted_results['df']['structure'] = structure
+        corrupted_results['df']['k'] = k
+        corrupted_results['df']['M'] = M
+        corrupted_results['df']['gamma'] = gamma
+
         clean_df = pd.DataFrame([dict(
                 dataset=dataset,
                 model_name=run['model_name'],
                 optimizer_name=optimizer_name,
+                structure=structure,
+                k=k,
+                M=M,
+                gamma=gamma,
                 corruption_type='clean',
                 corruption='clean',
                 severity=0,
@@ -245,9 +350,22 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
             continue
         corruption_error = run['corrupted_results']['corruption_error']
         corruption_error['dataset'] = run['dataset']
-        corruption_error['optimizer_name'] = run['optimizer_name'] \
-            if not run['optimizer_name'].startswith('StructuredNGD') else \
-            rf"NGD $(k = {run['params']['k']}, M = {run['params']['mc_samples']}, \gamma = {run['params']['gamma']})$"
+        params = run['params']
+        if not run['optimizer_name'].startswith('StructuredNGD'):
+            corruption_error['optimizer_name'] = run['optimizer_name']
+            corruption_error['Structure'] = run['optimizer_name']
+            corruption_error['k'] = 0
+            corruption_error['M'] = 0
+            corruption_error['gamma'] = 0.0
+        else:
+            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
+            corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
+            corruption_error['Structure'] = structure
+            corruption_error['k'] = params['k']
+            corruption_error['M'] = params['mc_samples']
+            corruption_error['gamma'] = params['gamma']
+        for key, value in run['test_metrics'].items():
+            corruption_error[key] = value
         corruption_errors = pd.concat([corruption_errors, corruption_error], ignore_index=True)
     return corruption_errors
 
@@ -259,14 +377,34 @@ def collect_rel_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame
     for run in runs:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
-        corrupted_results = run['corrupted_results']
-        corrupted_results['rel_corruption_error']['dataset'] = run['dataset']
-        corrupted_results['rel_corruption_error']['optimizer_name'] = run['optimizer_name'] \
-            if not run['optimizer_name'].startswith('StructuredNGD') else \
-            f"k = {run['params']['k']}, M = {run['params']['mc_samples']}"
-        rel_corruption_errors = pd.concat([rel_corruption_errors, corrupted_results['rel_corruption_error']],
-                                          ignore_index=True)
+        rel_corruption_error = run['corrupted_results']['rel_corruption_error']
+        rel_corruption_error['dataset'] = run['dataset']
+        params = run['params']
+        if not run['optimizer_name'].startswith('StructuredNGD'):
+            rel_corruption_error['optimizer_name'] = run['optimizer_name']
+            rel_corruption_error['Structure'] = run['optimizer_name']
+            rel_corruption_error['k'] = 0
+            rel_corruption_error['M'] = 0
+            rel_corruption_error['gamma'] = 0.0
+        else:
+            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
+            rel_corruption_error['Structure'] = structure
+            rel_corruption_error['k'] = params['k']
+            rel_corruption_error['M'] = params['mc_samples']
+            rel_corruption_error['gamma'] = params['gamma']
+            rel_corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
+        for key, value in run['test_metrics'].items():
+            rel_corruption_error[key] = value
+        rel_corruption_errors = pd.concat([rel_corruption_errors, rel_corruption_error], ignore_index=True)
     return rel_corruption_errors
+
+
+def compare(x, y=None, f='{:.1f}'):
+    if y is None:
+        return f.format(x)
+    sign = ['+', '±', ''][1 - np.sign(x - y).astype(int)]
+    relative_diff = 100 * (x / y - 1)
+    return f"{f.format(x)} ({sign}{f.format(relative_diff)}%)"
 
 
 def merge_bin_data(data: List[dict]):

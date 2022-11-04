@@ -94,32 +94,42 @@ def _reliability_diagram_subplot(ax, bin_data,
     elif draw_bin_importance == "width":
         widths = 0.1*bin_size + 0.9*bin_size*normalized_counts
 
-    colors = np.zeros((len(counts), 4))
-    colors[:, 0] = 240 / 255.
-    colors[:, 1] = 60 / 255.
-    colors[:, 2] = 60 / 255.
-    colors[:, 3] = alphas
+    red = np.zeros((len(counts), 4))
+    red[:, 0] = 240 / 255.
+    red[:, 1] = 60 / 255.
+    red[:, 2] = 60 / 255.
+    red[:, 3] = alphas
 
+    blue = np.zeros((len(counts), 4))
+    blue[:, 0] = 76 / 255
+    blue[:, 1] = 114 / 255
+    blue[:, 2] = 176 / 255
+    blue[:, 3] = alphas
+
+    acc_plt = ax.bar(positions, accuracies, bottom=0, width=widths, linewidth=1,
+                     edgecolor=blue, color=blue, label="Accuracy")
     gap_plt = ax.bar(positions, np.abs(accuracies - confidences),
                      bottom=np.minimum(accuracies, confidences), width=widths,
-                     edgecolor=colors, color=colors, linewidth=1, label="Gap")
-
-    acc_plt = ax.bar(positions, 0, bottom=accuracies, width=widths,
-                     edgecolor="black", color="black", alpha=1.0, linewidth=3,
-                     label="Accuracy")
+                     edgecolor=red, color=red, linewidth=1, label="Gap")
+    ax.bar(positions, 0, bottom=accuracies, width=widths,
+           edgecolor="black", color="black", alpha=1.0, linewidth=3)
+    ax.bar(positions, accuracies, bottom=0, width=widths, linewidth=1,
+           edgecolor="black", color=blue)
 
     ax.set_aspect("equal")
     ax.plot([0,1], [0,1], linestyle = "--", color="gray")
 
-    if draw_ece:
-        ece = (bin_data["expected_calibration_error"] * 100)
-        ax.text(0.98, 0.02, "ECE=%.2f" % ece, color="black",
-                ha="right", va="bottom", transform=ax.transAxes)
-
+    text = ''
     if draw_mce:
         mce = (bin_data["max_calibration_error"] * 100)
-        ax.text(0.98, 0.05, "MCE=%.2f" % mce, color="black",
-                ha="right", va="bottom", transform=ax.transAxes)
+        text += "MCE=%.2f\n" % mce
+    if draw_ece:
+        ece = (bin_data["expected_calibration_error"] * 100)
+        text += "ECE=%.2f" % ece
+    if draw_ece or draw_mce:
+        ax.text(0.98, 0.04, text, color="black", fontsize=14,
+                ha="right", va="bottom", transform=ax.transAxes,
+                bbox=dict(facecolor='lightgray', edgecolor='black', boxstyle='round'))
 
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -129,14 +139,14 @@ def _reliability_diagram_subplot(ax, bin_data,
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
 
-    ax.legend(handles=[gap_plt, acc_plt], loc='upper left')
+    ax.legend(handles=[acc_plt, gap_plt], loc='upper left')
 
 
 def _confidence_histogram_subplot(ax, bin_data,
                                   draw_averages=True,
                                   title="Examples per bin",
                                   xlabel="Confidence",
-                                  ylabel="Count"):
+                                  ylabel="\% of Samples"):
     """Draws a confidence histogram into a subplot."""
     counts = bin_data["counts"]
     bins = bin_data["bins"]
@@ -144,7 +154,7 @@ def _confidence_histogram_subplot(ax, bin_data,
     bin_size = 1.0 / len(counts)
     positions = bins[:-1] + bin_size/2.0
 
-    ax.bar(positions, counts, width=bin_size * 0.9)
+    ax.bar(positions, counts / np.sum(np.abs(counts)), bottom=1, width=bin_size * 0.9)
 
     ax.set_xlim(0, 1)
     ax.set_title(title)
@@ -182,7 +192,7 @@ def _reliability_diagram_combined(bin_data,
     bin_data["counts"] = orig_counts
 
     # Also negate the ticks for the upside-down histogram.
-    new_ticks = np.abs(ax[1].get_yticks()).astype(int)
+    new_ticks = (100 - 100 * np.abs(ax[1].get_yticks()).round(2)).astype(int)
     ax[1].set_yticklabels(new_ticks)
 
     plt.tight_layout()
@@ -192,7 +202,7 @@ def _reliability_diagram_combined(bin_data,
 
 def reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importance=False,
                         draw_averages=True, title="Reliability Diagram",
-                        figsize=(6, 6), dpi=72, return_fig=False):
+                        figsize=(6, 6), dpi=100, return_fig=False):
     """Draws a reliability diagram and confidence histogram in a single plot.
 
     First, the model's predictions are divided up into bins based on their
@@ -241,7 +251,7 @@ def reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importa
 
 def reliability_diagrams(results, num_bins=10,
                          draw_ece=True, draw_bin_importance=False,
-                         num_cols=4, dpi=72, return_fig=False):
+                         num_cols=4, dpi=100, return_fig=False):
     """Draws reliability diagrams for one or more models.
 
     Arguments:

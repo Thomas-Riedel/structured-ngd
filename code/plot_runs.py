@@ -8,7 +8,7 @@ from typing import Any
 
 import torch.nn as nn
 import torch.utils.data
-from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100, STL10, SVHN
+from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100, STL10, SVHN, ImageNet
 from torch.utils.data.sampler import SubsetRandomSampler
 from torchvision import transforms
 
@@ -17,6 +17,7 @@ from torch.optim import *
 from reliability_diagrams import reliability_diagram
 from corruption import *
 from metrics import *
+from network import *
 
 CIFAR_TRANSFORM_AUGMENTED = transforms.Compose([
     transforms.ToTensor(),
@@ -144,7 +145,6 @@ def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
                 return list(range(start, end, step))
             else:
                 return [type(val)]
-
         return f
 
     result = []
@@ -171,18 +171,14 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
     """
     assert (0 < split < 1)
 
-    if dataset.lower() in ['imagenet', 'stl10']:
-        img_size = (96, 96)
-    else:
-        img_size = (32, 32)
-
     if dataset.lower().startswith('cifar'):
         transform_augmented = CIFAR_TRANSFORM_AUGMENTED
         transform = CIFAR_TRANSFORM
     else:
         transform_augmented = transforms.Compose([
             transforms.ToTensor(),
-            transforms.RandomCrop(img_size, padding=pad_size),
+            transforms.Resize((32, 32)),
+            transforms.RandomCrop(32, padding=pad_size),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.Normalize((0.5, 0.5, 0.5),
                                  (0.5, 0.5, 0.5)), ]
@@ -273,7 +269,7 @@ def record_loss_and_metrics(losses, metrics, loss, metric):
 
 def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
-        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
+        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy, ece, mce],
         eval_every: int = 100, n_bins: int = 10, mc_samples: int = 64) -> List[dict]:
     """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
 
@@ -293,12 +289,74 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, Structu
     loss_fn = nn.CrossEntropyLoss()
     runs = []
     dataset = train_loader.dataset.root.split('/')[1]
+    if isinstance(model, DeepEnsemble):
+        runs = load_all_runs()
+        runs = [run for run in runs if run['model_name'] == model.__name__
+                and run['optimizer_name'] == baseline
+                and run['dataset'].lower() == dataset]
+
+        train_loss = []
+        train_metrics = {}
+        loss, metric, _ = model.evaluate(train_loader, metrics=metrics, n_bins=n_bins)
+        train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
+
+        val_loss = []
+        val_metrics = {}
+        loss, metric, _ = model.evaluate(val_loader, metrics=metrics, n_bins=n_bins)
+        val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
+
+        test_loss, test_metrics, bin_data = model.evaluate(test_loader, metrics=metrics, n_bins=n_bins)
+        clean_results = dict(
+            test_loss=test_loss,
+            test_metrics=test_metrics,
+            bin_data=bin_data
+        )
+        corrupted_results = get_corrupted_results(dataset, model, baseline, baseline, metrics,
+                                                  clean_results, mc_samples, n_bins)
+
+        param = dict(k=len(runs))
+        num_epochs = np.sum([run['num_epochs'] + 1 for run in runs])
+        epoch_times = None
+        total_time = np.sum([run['epoch_times'][-1] for run in runs])
+        avg_time_per_epoch = total_time / num_epochs
+        optimizer_name = baseline
+        model_name = model.__name__
+        num_params = model.num_params
+        model_summary = None
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        run = dict(
+            optimizer_name=optimizer_name,
+            model_name=model_name,
+            dataset=dataset,
+            num_params=num_params,
+            model_summary=model_summary,
+            params=param,
+            epoch_times=epoch_times,
+            num_epochs=num_epochs,
+            avg_time_per_epoch=avg_time_per_epoch,
+            total_time=total_time,
+            train_loss=train_loss,
+            train_metrics=train_metrics,
+            val_loss=val_loss,
+            val_metrics=val_metrics,
+            test_loss=test_loss,
+            test_metrics=test_metrics,
+            bin_data=bin_data,
+            corrupted_results=corrupted_results,
+            timestamp=timestamp
+        )
+        runs.append(run)
+        save_runs(run)
+        return runs
 
     for optim in optimizers:
         if optim is StructuredNGD:
             params = ngd_params
         else:
             params = baseline_params
+
         for param in params:
             print(optim.__name__, param)
             early_stopping = EarlyStopping()
@@ -312,7 +370,7 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, Structu
             if (dataset.lower() in ['cifar10', 'cifar100']) and (optimizer_name != baseline) and (run is None):
                 raise RuntimeError(f"Baseline {baseline} does not exist for this dataset and model!"
                                    f"Please first run the script with this baseline for the dataset and model.")
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
 
             # Initialize computation times, losses and metrics for recording
             loss, metric, _ = model.evaluate(train_loader, metrics=metrics)
@@ -340,10 +398,11 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, Structu
                 loss, metric, _ = model.evaluate(val_loader, metrics=metrics)
                 val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
-                scheduler.step()
-                early_stopping.on_epoch_end(epoch, val_loss)
+                scheduler.step(loss)
+                early_stopping.on_epoch_end(epoch, loss)
                 if early_stopping.stop_training:
                     break
+            early_stopping.on_train_end()
 
             test_loss, test_metrics, bin_data = model.evaluate(test_loader, metrics=metrics, optimizer=optimizer,
                                                                mc_samples=mc_samples, n_bins=n_bins)
@@ -389,7 +448,8 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, Structu
             )
             runs.append(run)
             save_runs(run)
-            torch.save(model, f"models/{timestamp}")
+            os.makedirs('models', exist_ok=True)
+            torch.save(model.state_dict(), f"models/{timestamp}.pt")
         print('Finished Training')
     return runs
 
@@ -418,12 +478,16 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
         runs = [runs]
     if not os.path.exists('plots'):
         os.mkdir('plots')
-    runs = [run for run in runs if (run.get('dataset').lower() == 'cifar100') and (run['model_name'] == 'ResNet32')]
-    # make_csv()
+    runs = [run for run in runs if run['model_name'].startswith('ResNet') and run['dataset'].lower() == 'stl10'] #and
+            #(run['params'].get('structure') in [None, 'arrowhead'])]
+    # runs = [run for run in runs if (run['num_epochs'] < 250) or
+    #         (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
+    # make_csv(runs)
 
+    plot_results_wrt_parameters(runs)
     # plot_loss(runs)
     # plot_metrics(runs)
-    plot_generalization_gap(runs)
+    # plot_generalization_gap(runs)
     # plot_reliability_diagram(runs)
     # plot_corrupted_data(runs)
 
@@ -473,6 +537,7 @@ def plot_loss(runs: Union[dict, List[dict]]) -> None:
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
             plt.tight_layout()
             plt.savefig(f"plots/{dataset}/losses/gamma_{gamma}.pdf")
+            plt.show()
 
         for samples in mc_samples:
             for run in runs:
@@ -506,15 +571,16 @@ def plot_loss(runs: Union[dict, List[dict]]) -> None:
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
             plt.tight_layout()
             plt.savefig(f"plots/{dataset}/losses/mc_samples_{samples}.pdf")
+            plt.show()
 
 
 def plot_metrics(runs: Union[dict, List[dict]]) -> None:
     if type(runs) == dict:
         runs = [runs]
-    if not os.path.exists('plots/metrics'):
-        os.makedirs('plots/metrics', exist_ok=True)
     datasets = list(set([run['dataset'] for run in runs]))
     for dataset in datasets:
+        if not os.path.exists(f"plots/{dataset}/metrics"):
+            os.makedirs(f"plots/{dataset}/metrics", exist_ok=True)
         plt.figure()
         for run in runs:
             if run['dataset'] != dataset:
@@ -551,7 +617,7 @@ def plot_metrics(runs: Union[dict, List[dict]]) -> None:
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
 
         plt.tight_layout()
-        plt.savefig(f"plots/metrics/metrics_{dataset}.pdf")
+        plt.savefig(f"plots/{dataset}/metrics/metrics_{dataset}.pdf")
 
 
 def plot_generalization_gap(runs: Union[dict, List[dict]]) -> None:
@@ -563,6 +629,9 @@ def plot_generalization_gap(runs: Union[dict, List[dict]]) -> None:
     if type(runs) == dict:
         runs = [runs]
     for run in runs:
+        dataset = run['dataset']
+        if not os.path.exists(f"plots/{dataset}/generalization_gap"):
+            os.makedirs(f"plots/{dataset}/generalization_gap", exist_ok=True)
         if run['optimizer_name'].startswith('StructuredNGD'):
             params = run['params']
             structure = params['structure'].replace('_', ' ').title().replace(' ', '')
@@ -593,7 +662,8 @@ def plot_generalization_gap(runs: Union[dict, List[dict]]) -> None:
         # plt.savefig(f"plots/{run['timestamp']}_generalization_gap.pdf")
 
         plt.legend()
-        plt.savefig(f"plots/{run['timestamp']}_generalization_gap.pdf")
+        plt.savefig(f"plots/{dataset}/generalization_gap/{label}.pdf")
+        plt.show()
 
 
 def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
@@ -604,9 +674,10 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
     """
     if type(runs) == dict:
         runs = [runs]
-    if not os.path.exists('plots/reliability_diagrams'):
-        os.makedirs('plots/reliability_diagrams', exist_ok=True)
     for run in runs:
+        dataset = run['dataset']
+        if not os.path.exists(f"plots/{dataset}/reliability_diagrams"):
+            os.makedirs(f"plots/{dataset}/reliability_diagrams", exist_ok=True)
         if run['optimizer_name'].startswith('StructuredNGD'):
             params = run['params']
             structure = params['structure'].replace('_', ' ').title().replace(' ', '')
@@ -616,15 +687,35 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
         else:
             optimizer = run['optimizer_name']
             optimizer_name = run['optimizer_name']
-        dataset = run['dataset']
         model = run['model_name']
         title = f"Reliability Diagram on {dataset.upper()} using {model}\n{optimizer}"
         plt.figure()
         bin_data = run['bin_data']
         reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importance='alpha',
                             title=title, draw_averages=True, figsize=(6, 6), dpi=100)
-        plt.savefig(f"plots/reliability_diagrams/"
-                    f"{run['timestamp']}_reliability_diagram_{dataset}_{model}_{optimizer_name}.pdf")
+        plt.savefig(f"plots/{dataset}/reliability_diagrams/{optimizer_name}.pdf")
+        plt.show()
+
+
+def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE']):
+    if type(runs) == dict:
+        runs = [runs]
+    results = collect_results(runs).copy().sort_values(by=['k', 'Structure'], ascending=[True, False])
+    results.rename(columns={'Test Accuracy': 'Accuracy', 'Top-k Accuracy': 'Top-5 Accuracy'}, inplace=True)
+    results[plot_values] = results[plot_values].apply(lambda x: x.str.split(' ').str[0]).astype(float)
+    datasets = list(set([run['dataset'] for run in runs]))
+    for dataset in datasets:
+        if not os.path.exists(f"plots/{dataset}/results_parameters"):
+            os.makedirs(f"plots/{dataset}/results_parameters", exist_ok=True)
+        for parameter in ['k', 'M', 'gamma']:
+            for metric in plot_values:
+                plt.figure()
+                sns.catplot(data=results[results.Dataset == dataset.upper()], x=parameter, y=metric,
+                            hue='Structure', errorbar='sd', kind='box')
+                title = rf"{metric} w.r.t. {parameter}"
+                plt.title(title)
+                plt.savefig(f"plots/{dataset}/results_parameters/{parameter}_{metric}.pdf")
+                plt.show()
 
 
 def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE']):
@@ -635,7 +726,7 @@ def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 
     if len(runs) == 0:
         return
     # Plot corrupted reliability diagrams for each dataset, model and optimizer
-    plot_corrupted_reliability_diagrams(runs)
+    # plot_corrupted_reliability_diagrams(runs)
 
     # Plot corruption errors per dataset and optimizer and grouped by model and error
     plot_corrupted_results(runs, plot_values)
@@ -647,12 +738,12 @@ def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 
 def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
     if type(runs) == dict:
         runs = [runs]
-    if not os.path.exists('plots/corrupted/reliability_diagrams'):
-        os.makedirs('plots/corrupted/reliability_diagrams', exist_ok=True)
     for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
         dataset = run['dataset']
+        if not dataset.lower() in ['cifar10', 'cifar100']:
+            continue
+        if not os.path.exists(f"plots/{dataset}/corrupted/reliability_diagrams"):
+            os.makedirs(f"plots/{dataset}/corrupted/reliability_diagrams", exist_ok=True)
         model = run['model_name']
         if run['optimizer_name'].startswith('StructuredNGD'):
             params = run['params']
@@ -679,22 +770,38 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
                 continue
             plt.figure()
             title = f"Reliability Diagram on {dataset.upper()}--C using {model}\n" \
-                    f"(s = {severity}, type = {corruption_type})\n" \
+                    f"(s = {severity}, c = {corruption_type.title()})\n" \
                     f"{optimizer}"
             reliability_diagram(corrupted_bin_data[(severity, corruption_type)], draw_ece=True, draw_mce=True,
                                 draw_bin_importance='alpha', title=title, draw_averages=True, figsize=(6, 6), dpi=100)
-            plt.savefig(f"plots/corrupted/reliability_diagrams/"
-                        f"{run['timestamp']}_{dataset}_{model}_{optimizer_name}_{severity}_{corruption_type}.pdf")
+            plt.savefig(f"plots/{dataset}/corrupted/reliability_diagrams/"
+                        f"{optimizer_name}_{severity}_{corruption_type}.pdf")
+            plt.show()
+        for corruption_type in CORRUPTION_TYPES.keys():
+            title = f"Reliability Diagram on {dataset.upper()}--C using {model}\n" \
+                    f"(c = {corruption_type.title()})\n" \
+                    f"{optimizer}"
+            reliability_diagram(
+                merge_bin_data([corrupted_bin_data[(severity, corruption_type)] for severity in SEVERITY_LEVELS]),
+                draw_ece=True, draw_mce=True, draw_bin_importance='alpha', title=title,
+                draw_averages=True, figsize=(6, 6), dpi=100)
+            plt.savefig(f"plots/{dataset}/corrupted/reliability_diagrams/"
+                        f"{optimizer_name}_{corruption_type}.pdf")
             plt.show()
 
 
 def plot_corrupted_results(runs: Union[List[dict], dict],
-                           plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE']) -> None:
+                           plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE'],
+                           parameters=['k', 'M', 'gamma']) -> None:
     corrupted_results_df = collect_corrupted_results_df(runs)
-    if not os.path.exists('plots/corrupted/results'):
-        os.makedirs('plots/corrupted/results', exist_ok=True)
 
     for dataset in corrupted_results_df['dataset'].unique():
+        if not dataset.lower() in ['cifar10', 'cifar100']:
+            continue
+        if not os.path.exists(f"plots/{dataset}/corrupted/results"):
+            os.makedirs(f"plots/{dataset}/corrupted/results", exist_ok=True)
+        if not os.path.exists(f"plots/{dataset}/corrupted/results_parameters"):
+            os.makedirs(f"plots/{dataset}/corrupted/results_parameters", exist_ok=True)
         plot_value = plot_values.copy()
         if dataset.lower() == 'cifar10':
             plot_value.remove('Top-5 Accuracy')
@@ -702,30 +809,49 @@ def plot_corrupted_results(runs: Union[List[dict], dict],
         # 2 x len(plot_values) grid of plots
         for model in corrupted_results_df[corrupted_results_df['dataset'] == dataset]['model'].unique():
             sub_df = corrupted_results_df[(corrupted_results_df['dataset'] == dataset) &
-                                          (corrupted_results_df['model'] == model)].copy()
+                                          (corrupted_results_df['model'] == model)].copy().\
+                sort_values(by=['k', 'structure'], ascending=[True, False])
             sub_df[plot_value] *= 100
             for i, type in enumerate(CORRUPTION_TYPES.keys()):
-                plt.figure()
                 for j, value in enumerate(plot_value):
-                    if type == 'all':
-                        sns.barplot(data=sub_df, x='severity', y=value, hue='optimizer')
-                    else:
-                        sns.barplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
-                                    x='severity', y=value, hue='optimizer')
-                    plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'")
-                    plt.savefig(f"plots/corrupted/results/{dataset}_{model}_{type}_{value}.pdf")
-                    plt.show()
+                    # plt.figure()
+                    # if type == 'all':
+                    #     sns.catplot(data=sub_df, x='severity', y=value, hue='optimizer', errorbar='sd', kind='box')
+                    # else:
+                    #     sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                    #                 x='severity', y=value, hue='optimizer', errorbar='sd', kind='box')
+                    # plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'")
+                    # plt.savefig(f"plots/{dataset}/corrupted/results/{type}_{value}.pdf")
+                    # plt.show()
+                    for parameter in parameters:
+                        plt.figure()
+                        if type == 'all':
+                            sns.catplot(data=sub_df, x=parameter, y=value, hue='structure', errorbar='sd', kind='box')
+                        else:
+                            sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                                        x=parameter, y=value, hue='structure', errorbar='sd', kind='box')
+                        plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'")
+                        plt.savefig(f"plots/{dataset}/corrupted/results_parameters/{type}_{parameter}_{value}.pdf")
+                        plt.show()
 
 
 def plot_robustness(runs: Union[List[dict], dict]) -> None:
-    if not os.path.exists('plots/corrupted/robustness'):
-        os.makedirs('plots/corrupted/robustness', exist_ok=True)
     df_mce = collect_corruption_errors(runs)
     df_rmce = collect_rel_corruption_errors(runs)
     datasets = list(set([run['dataset'] for run in runs]))
+    parameters = ['k', 'M', 'gamma']
+    for c in CORRUPTION_TYPES.keys():
+        df_mce[c] *= 100
+        df_mce[f"{c}_std"] *= 100
+        df_rmce[c] *= 100
+        df_rmce[f"{c}_std"] *= 100
 
     # Plot corruption errors and relative corruption errors as a function of optimizer accuracy
     for dataset in datasets:
+        if not os.path.exists(f"plots/{dataset}/corrupted/robustness"):
+            os.makedirs(f"plots/{dataset}/corrupted/robustness", exist_ok=True)
+        if not os.path.exists(f"plots/{dataset}/corrupted/robustness_parameters/"):
+            os.makedirs(f"plots/{dataset}/corrupted/robustness_parameters/", exist_ok=True)
         for model in df_mce[df_mce['dataset'] == dataset]['model_name'].unique():
             sub_df_mce = df_mce[
                 (df_mce['dataset'] == dataset) &
@@ -736,11 +862,11 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
                 (df_rmce['model_name'] == model)
                 ].copy().sort_values(by='accuracy')
             for type in CORRUPTION_TYPES.keys():
-                accuracy = 100 * sub_df_mce['accuracy']
-                mce_mean = 100 * sub_df_mce[type]
-                rmce_mean = 100 * sub_df_rmce[type]
-                mce_std = 100 * sub_df_mce[type + '_std']
-                rmce_std = 100 * sub_df_rmce[type + '_std']
+                accuracy = sub_df_mce['accuracy']
+                mce_mean = sub_df_mce[type]
+                rmce_mean = sub_df_rmce[type]
+                mce_std = sub_df_mce[type + '_std']
+                rmce_std = sub_df_rmce[type + '_std']
                 fig, ax = plt.subplots()
                 plt.plot(accuracy, mce_mean, label='mCE', marker='o', color='blue', linestyle='dashed', alpha=0.5)
                 plt.fill_between(accuracy, y1=mce_mean-mce_std, y2=mce_mean+mce_std, alpha=0.1, color='blue')
@@ -760,81 +886,72 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
                 # for i, (x, y) in enumerate(zip(accuracy, mce_mean)):
                 #     ax.annotate(i+1, (x, np.min(mce_mean)),
                 #                 xytext=(x, np.min(mce_mean)), ha='center', fontsize=16, transform=ax.transData)
-                plt.savefig(f"plots/corrupted/robustness/{dataset}_{model}_{type}.pdf")
+                plt.savefig(f"plots/{dataset}/corrupted/robustness/{type}.pdf")
                 plt.show()
 
+                for parameter in parameters:
+                    plt.figure()
+                    sns.catplot(
+                        data=sub_df_mce.rename(columns={type: 'mCE'}).sort_values(
+                            by=['k', 'Structure'], ascending=[True, False]
+                        ), x=parameter, y='mCE', hue='Structure', errorbar='sd', kind='box')
+                    plt.savefig(f"plots/{dataset}/corrupted/robustness_parameters/mCE_{parameter}_{type}.pdf")
+                    plt.show()
+                    plt.figure()
+                    sns.catplot(
+                        data=sub_df_rmce.rename(columns={type: 'Rel. mCE'}).sort_values(
+                            by=['k', 'Structure'], ascending=[True, False]
+                        ), x=parameter, y='Rel. mCE', hue='Structure', errorbar='sd', kind='box')
+                    plt.savefig(f"plots/{dataset}/corrupted/robustness_parameters/rmCE_{parameter}_{type}.pdf")
+                    plt.show()
 
-def make_csv(directory: str = 'runs', baseline='SGD'):
-    runs = load_all_runs(directory)
-    results = pd.DataFrame(columns=['Dataset', 'Model', 'Optimizer', 'Training Loss', 'Test Loss',
-                                    'Test Accuracy', 'Top-k Accuracy', 'ECE', 'MCE', 'Time (h)'])
-    for run in runs:
-        dataset = run['dataset']
-        model = run['model_name']
-        if run['optimizer_name'].startswith('StructuredNGD'):
-            params = run['params']
-            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
-            optimizer = f"NGD (structure = {structure}, $k = {params['k']}, " \
-                        f"M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
-        else:
-            optimizer = run['optimizer_name']
-        baseline_run = load_run(dataset, model, baseline, directory)
-        train_loss = run['train_loss'][-1]
-        val_loss = run['val_loss'][-1]
-        test_loss = run['test_loss']
-        test_accuracy = run['test_metrics']['accuracy']
-        top_k_accuracy = run['test_metrics']['top_5_accuracy']
-        ece = run['bin_data']['expected_calibration_error']
-        mce = run['bin_data']['max_calibration_error']
-        comp_time = run['epoch_times'][-1]
-        if run['optimizer_name'] == baseline:
-            train_loss = compare(train_loss)
-            val_loss = compare(val_loss)
-            test_loss = compare(test_loss)
-            test_accuracy = compare(test_accuracy)
-            top_k_accuracy = compare(top_k_accuracy)
-            ece = compare(ece)
-            mce = compare(mce)
-            comp_time = compare(comp_time / 3600)
-        else:
-            train_loss = compare(train_loss, baseline_run['train_loss'][-1])
-            val_loss = compare(val_loss, baseline_run['val_loss'][-1])
-            test_loss = compare(test_loss, baseline_run['test_loss'])
-            test_accuracy = compare(test_accuracy, baseline_run['test_metrics']['accuracy'])
-            top_k_accuracy = compare(top_k_accuracy, baseline_run['test_metrics']['top_5_accuracy'])
-            ece = compare(ece, baseline_run['bin_data']['expected_calibration_error'])
-            mce = compare(mce, baseline_run['bin_data']['max_calibration_error'])
-            comp_time = compare(comp_time / 3600, baseline_run['epoch_times'][-1] / 3600)
 
-        result = pd.DataFrame([{
-            'Dataset': dataset,
-            'Model': model,
-            'Optimizer': optimizer,
-            'Training Loss': train_loss,
-            'Validation Loss': val_loss,
-            'Test Loss': test_loss,
-            'Test Accuracy': test_accuracy,
-            'Top-k Accuracy': top_k_accuracy,
-            'ECE': ece, 'MCE': mce,
-            'Time (h)': comp_time
-        }])
-        results = pd.concat([results, result], ignore_index=True)
-    results.sort_values(by=['Dataset', 'Model', 'Optimizer'], inplace=True)
+def make_csv(runs):
     if not os.path.exists('results'):
         os.mkdir('results')
-    results.to_csv('results/results.csv', index=False)
-    collect_corrupted_results_df(runs).to_csv('results/corrupted_results.csv', index=False)
-    collect_corruption_errors(runs).to_csv('results/corruption_errors.csv', index=False)
-    collect_rel_corruption_errors(runs).to_csv('results/rel_corruption_errors.csv', index=False)
-    return results
+    collect_results(runs).copy().to_csv('results/results.csv', index=False)
+    collect_corrupted_results_df(runs).copy().to_csv('results/corrupted_results.csv', index=False)
+    collect_corruption_errors(runs).copy().to_csv('results/corruption_errors.csv', index=False)
+    collect_rel_corruption_errors(runs).copy().to_csv('results/rel_corruption_errors.csv', index=False)
+    results_table().copy().to_csv('results/table.csv', index=True)
 
 
-def compare(x, y=None, f='{:.3f}'):
-    if y is None:
-        return f.format(x)
-    sign = ['+', '', ''][1 - np.sign(x - y).astype(int)]
-    relative_diff = 100 * (x / y - 1)
-    return f"{f.format(x)} ({sign}{f.format(relative_diff)}%)"
+def results_table():
+    corrupted_results = pd.read_csv('results/corrupted_results.csv')
+    corruption_errors = pd.read_csv('results/corruption_errors.csv')
+    rel_corruption_errors = pd.read_csv('results/rel_corruption_errors.csv')
+    corruption_errors.index = corruption_errors.optimizer_name
+    rel_corruption_errors.index = rel_corruption_errors.optimizer_name
+
+    f_interval = lambda x: rf"{100 * x.mean():.1f} ($\pm$ {100 * x.std():.1f})"
+    corrupted_results = corrupted_results[corrupted_results.corruption_type != 'clean']. \
+        drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer', 'corruption_type']).\
+        agg(f_interval).unstack('corruption_type').swaplevel(axis=1)
+    corrupted_results_all = pd.read_csv('results/corrupted_results.csv')
+
+    corrupted_results_all = corrupted_results_all[corrupted_results_all.corruption_type != 'clean']. \
+        drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer']).agg(f_interval)
+    corrupted_results = pd.concat([corrupted_results, pd.concat({'all': corrupted_results_all}, axis=1)], axis=1)
+
+    for c in CORRUPTION_TYPES.keys():
+        f_interval = lambda x: rf"{100 * x[c]:.1f} ($\pm$ {100 * x[f'{c}_std']:.1f})"
+        corrupted_results[c, 'mCE'] = corruption_errors[[c, f"{c}_std"]].apply(
+            f_interval, axis=1
+        )
+        corrupted_results[c, 'Rel. mCE'] = rel_corruption_errors[[c, f"{c}_std"]].apply(
+            f_interval, axis=1
+        )
+    corrupted_results.sort_index(inplace=True)
+    corrupted_results.rename(
+        columns={'all': 'All', 'noise': 'Noise', 'blur': 'Blur', 'weather': 'Weather', 'digital': 'Digital'}, inplace=True
+    )
+    corrupted_results = corrupted_results.reindex(
+        columns=corrupted_results.columns.reindex(['All', 'Noise', 'Blur', 'Weather', 'Digital'], level=0)[0]
+    )
+    corrupted_results = corrupted_results.reindex(
+        columns=corrupted_results.columns.reindex(['mCE', 'Rel. mCE', 'Accuracy', 'ECE', 'MCE'], level=1)[0]
+    )
+    return corrupted_results
 
 
 def reorderLegend(ax=None,order=None,unique=False):
@@ -899,6 +1016,4 @@ if __name__ == '__main__':
     plt.rcParams.update({'axes.titlesize': 16, 'text.usetex': True, 'figure.figsize': (12, 8)})
 
     runs = load_all_runs()
-    datasets = list(set(run['dataset'] for run in runs))
-    for dataset in datasets:
-        plot_runs([run for run in runs if run['dataset'] == dataset])
+    plot_runs(runs)
