@@ -19,10 +19,26 @@ def main() -> None:
 	num_classes = len(train_loader.dataset.classes)
 	n = len(train_loader.dataset)
 	input_shape = iter(train_loader).next()[0].shape[1:]
-	model = Model(model_type=args['model'], num_classes=num_classes, device=device, input_shape=input_shape)
+
+	if args['model'] == 'DeepEnsemble':
+		runs = load_all_runs()
+		runs = [run for run in runs if x['optimizer_name'] == args['baseline']
+				and run['dataset'].lower() == args['dataset'].lower()]
+		model = DeepEnsemble(runs=runs, num_classes=num_classes, device=device, input_shape=input_shape)
+	elif args['model'] == 'TempScaling':
+		runs = load_all_runs()
+		runs = [x for x in runs if x['optimizer_name'] == args['baseline']
+				and x['dataset'].lower() == args['dataset'].lower()]
+		run = runs[0]
+		model = Model(model_type=run['model_name'], num_classes=num_classes,
+					  device=device, input_shape=input_shape)
+		model = TempScaling(model)
+	else:
+		model = Model(model_type=args['model'], num_classes=num_classes,
+					  device=device, input_shape=input_shape)
 
 	params = get_params(args, baseline=args['baseline'], n=n)
-	runs = run(
+	runs = run_experiments(
 		args['epochs'], model, args['optimizers'], train_loader, val_loader, test_loader, args['baseline'],
 		baseline_params=params['baseline'], ngd_params=params['ngd'], metrics=metrics,
 		eval_every=args['eval_every'], n_bins=args['n_bins'], mc_samples=args['mc_samples_eval']

@@ -216,6 +216,8 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
                          f"[mnist, fmnist, cifar10, cifar100, stl10, imagenet, svhn]")
 
     indices = list(range(len(training_data)))
+    seed = 42
+    np.random.seed(seed)
     np.random.shuffle(indices)
     split = int(split * len(training_data))
     train_sampler = SubsetRandomSampler(indices[:split])
@@ -267,9 +269,9 @@ def record_loss_and_metrics(losses, metrics, loss, metric):
     return losses, metrics
 
 
-def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
+def run_experiments(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
-        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy, ece, mce],
+        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
         eval_every: int = 100, n_bins: int = 10, mc_samples: int = 64) -> List[dict]:
     """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
 
@@ -289,12 +291,9 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, Structu
     loss_fn = nn.CrossEntropyLoss()
     runs = []
     dataset = train_loader.dataset.root.split('/')[1]
-    if isinstance(model, DeepEnsemble):
-        runs = load_all_runs()
-        runs = [run for run in runs if run['model_name'] == model.__name__
-                and run['optimizer_name'] == baseline
-                and run['dataset'].lower() == dataset]
-
+    if isinstance(model, TempScaling):
+        model.set_temperature(val_loader)
+    if isinstance(model, (TempScaling, DeepEnsemble)):
         train_loss = []
         train_metrics = {}
         loss, metric, _ = model.evaluate(train_loader, metrics=metrics, n_bins=n_bins)
@@ -448,8 +447,8 @@ def run(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, Structu
             )
             runs.append(run)
             save_runs(run)
-            os.makedirs('models', exist_ok=True)
-            torch.save(model.state_dict(), f"models/{timestamp}.pt")
+            os.makedirs('checkpoints', exist_ok=True)
+            torch.save(model.state_dict(), f"checkpoints/{timestamp}.pt")
         print('Finished Training')
     return runs
 
@@ -478,18 +477,18 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
         runs = [runs]
     if not os.path.exists('plots'):
         os.mkdir('plots')
-    runs = [run for run in runs if run['model_name'].startswith('ResNet') and run['dataset'].lower() == 'stl10'] #and
-            #(run['params'].get('structure') in [None, 'arrowhead'])]
-    # runs = [run for run in runs if (run['num_epochs'] < 250) or
-    #         (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
+    runs = [run for run in runs if run['model_name'].startswith('ResNet')]# and
+            # (run['params'].get('structure') in [None, 'arrowhead'])]
+    runs = [run for run in runs if (run['num_epochs'] < 250) or
+            (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
     # make_csv(runs)
 
-    plot_results_wrt_parameters(runs)
+    # plot_results_wrt_parameters(runs)
     # plot_loss(runs)
     # plot_metrics(runs)
     # plot_generalization_gap(runs)
     # plot_reliability_diagram(runs)
-    # plot_corrupted_data(runs)
+    plot_corrupted_data(runs)
 
 
 def plot_loss(runs: Union[dict, List[dict]]) -> None:
@@ -714,6 +713,7 @@ def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy',
                             hue='Structure', errorbar='sd', kind='box')
                 title = rf"{metric} w.r.t. {parameter}"
                 plt.title(title)
+                plt.tight_layout()
                 plt.savefig(f"plots/{dataset}/results_parameters/{parameter}_{metric}.pdf")
                 plt.show()
 
@@ -814,15 +814,15 @@ def plot_corrupted_results(runs: Union[List[dict], dict],
             sub_df[plot_value] *= 100
             for i, type in enumerate(CORRUPTION_TYPES.keys()):
                 for j, value in enumerate(plot_value):
-                    # plt.figure()
-                    # if type == 'all':
-                    #     sns.catplot(data=sub_df, x='severity', y=value, hue='optimizer', errorbar='sd', kind='box')
-                    # else:
-                    #     sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
-                    #                 x='severity', y=value, hue='optimizer', errorbar='sd', kind='box')
-                    # plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'")
-                    # plt.savefig(f"plots/{dataset}/corrupted/results/{type}_{value}.pdf")
-                    # plt.show()
+                    plt.figure()
+                    if type == 'all':
+                        sns.catplot(data=sub_df, x='severity', y=value, hue='k', errorbar='sd', kind='box')
+                    else:
+                        sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                                    x='severity', y=value, hue='k', errorbar='sd', kind='box')
+                    plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'")
+                    plt.savefig(f"plots/{dataset}/corrupted/results/{type}_{value}.pdf")
+                    plt.show()
                     for parameter in parameters:
                         plt.figure()
                         if type == 'all':
