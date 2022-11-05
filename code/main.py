@@ -1,6 +1,7 @@
 from network import Model
 from plot_runs import *
 from metrics import *
+from models import *
 
 
 def main() -> None:
@@ -22,9 +23,10 @@ def main() -> None:
 
 	if args['model'] == 'DeepEnsemble':
 		runs = load_all_runs()
-		runs = [run for run in runs if x['optimizer_name'] == args['baseline']
+		runs = [run for run in runs if run['optimizer_name'] == args['baseline']
 				and run['dataset'].lower() == args['dataset'].lower()]
 		model = DeepEnsemble(runs=runs, num_classes=num_classes, device=device, input_shape=input_shape)
+		args['optimizers'] = [eval(args['baseline'])]
 	elif args['model'] == 'TempScaling':
 		runs = load_all_runs()
 		runs = [x for x in runs if x['optimizer_name'] == args['baseline']
@@ -33,6 +35,7 @@ def main() -> None:
 		model = Model(model_type=run['model_name'], num_classes=num_classes,
 					  device=device, input_shape=input_shape)
 		model = TempScaling(model)
+		args['optimizers'] = [eval(args['baseline'])]
 	else:
 		model = Model(model_type=args['model'], num_classes=num_classes,
 					  device=device, input_shape=input_shape)

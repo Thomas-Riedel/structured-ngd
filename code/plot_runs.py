@@ -191,26 +191,26 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
         )
 
     if dataset.lower() == "mnist":
-        training_data = MNIST('data/mnist/train', download=True, train=True, transform=transform_augmented)
-        test_data = MNIST('data/mnist/test', download=True, train=False, transform=transform)
+        training_data = MNIST('data/MNIST/train', download=True, train=True, transform=transform_augmented)
+        test_data = MNIST('data/MNIST/test', download=True, train=False, transform=transform)
     elif dataset.lower() == "fmnist":
-        training_data = FashionMNIST('data/fmnist/train', download=True, train=True, transform=transform_augmented)
-        test_data = FashionMNIST('data/fmnist/test', download=True, train=False, transform=transform)
+        training_data = FashionMNIST('data/FasionMNIST/train', download=True, train=True, transform=transform_augmented)
+        test_data = FashionMNIST('data/FashionMNIST/test', download=True, train=False, transform=transform)
     elif dataset.lower() == "cifar10":
-        training_data = CIFAR10('data/cifar10/train', download=True, train=True, transform=transform_augmented)
-        test_data = CIFAR10('data/cifar10/test', download=True, train=False, transform=transform)
+        training_data = CIFAR10('data/CIFAR10/train', download=True, train=True, transform=transform_augmented)
+        test_data = CIFAR10('data/CIFAR10/test', download=True, train=False, transform=transform)
     elif dataset.lower() == "cifar100":
-        training_data = CIFAR100('data/cifar100/train', download=True, train=True, transform=transform_augmented)
-        test_data = CIFAR100('data/cifar100/test', download=True, train=False, transform=transform)
+        training_data = CIFAR100('data/CIFAR100/train', download=True, train=True, transform=transform_augmented)
+        test_data = CIFAR100('data/CIFAR100/test', download=True, train=False, transform=transform)
     elif dataset.lower() == "stl10":
-        training_data = STL10('data/stl10/train', download=True, split='train', transform=transform_augmented)
-        test_data = STL10('data/stl10/test', download=True, split='test', transform=transform)
+        training_data = STL10('data/STL10/train', download=True, split='train', transform=transform_augmented)
+        test_data = STL10('data/STL10/test', download=True, split='test', transform=transform)
     elif dataset.lower() == "imagenet":
-        training_data = ImageNet('data/imagenet/train', download=True, split='train', transform=transform_augmented)
-        test_data = ImageNet('data/imagenet/test', download=True, split='val', transform=transform)
+        training_data = ImageNet('data/ImageNet/train', download=True, split='train', transform=transform_augmented)
+        test_data = ImageNet('data/ImageNet/test', download=True, split='val', transform=transform)
     elif dataset.lower() == "svhn":
-        training_data = SVHN('data/svhn/train', download=True, split='train', transform=transform_augmented)
-        test_data = SVHN('data/svhn/test', download=True, split='test', transform=transform)
+        training_data = SVHN('data/SVHN/train', download=True, split='train', transform=transform_augmented)
+        test_data = SVHN('data/SVHN/test', download=True, split='test', transform=transform)
     else:
         raise ValueError(f"Dataset {dataset} not recognized! Choose one of "
                          f"[mnist, fmnist, cifar10, cifar100, stl10, imagenet, svhn]")
@@ -224,12 +224,12 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
     val_sampler = SubsetRandomSampler(indices[split:])
 
     train_loader = DataLoader(
-        training_data, sampler=train_sampler, batch_size=batch_size, num_workers=4, pin_memory=True
+        training_data, sampler=train_sampler, batch_size=batch_size, num_workers=2, pin_memory=True
     )
     val_loader = DataLoader(
-        training_data, sampler=val_sampler, batch_size=batch_size, num_workers=4, pin_memory=True
+        training_data, sampler=val_sampler, batch_size=batch_size, num_workers=2, pin_memory=True
     )
-    test_loader = DataLoader(test_data, batch_size=batch_size, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_data, batch_size=batch_size, num_workers=2, pin_memory=True)
 
     return train_loader, val_loader, test_loader
 
@@ -359,11 +359,13 @@ def run_experiments(epochs: int, model: nn.Module, optimizers: List[Union[Optimi
         for param in params:
             print(optim.__name__, param)
             early_stopping = EarlyStopping()
-            model.init_weights()
             if optim is StructuredNGD:
+                seed = 42
                 optimizer = optim(model.parameters(), len(train_loader.dataset), **param)
             else:
+                seed = None
                 optimizer = optim(model.parameters(), **param)
+            model.init_weights(seed)
             run = load_run(dataset, model, baseline)
             optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
             if (dataset.lower() in ['cifar10', 'cifar100']) and (optimizer_name != baseline) and (run is None):
@@ -481,7 +483,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
             # (run['params'].get('structure') in [None, 'arrowhead'])]
     runs = [run for run in runs if (run['num_epochs'] < 250) or
             (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
-    # make_csv(runs)
+    make_csv(runs)
 
     # plot_results_wrt_parameters(runs)
     # plot_loss(runs)
@@ -708,12 +710,13 @@ def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy',
             os.makedirs(f"plots/{dataset}/results_parameters", exist_ok=True)
         for parameter in ['k', 'M', 'gamma']:
             for metric in plot_values:
-                plt.figure()
-                sns.catplot(data=results[results.Dataset == dataset.upper()], x=parameter, y=metric,
-                            hue='Structure', errorbar='sd', kind='box')
+                fig, ax = plt.subplots()
                 title = rf"{metric} w.r.t. {parameter}"
-                plt.title(title)
-                plt.tight_layout()
+                plot = sns.catplot(data=results[results.Dataset == dataset.upper()], x=parameter, y=metric,
+                            hue='Structure', errorbar='sd', kind='box', legend=False, ax=ax)
+                plot.ax.set_title(title)
+                plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+                plot.fig.tight_layout()
                 plt.savefig(f"plots/{dataset}/results_parameters/{parameter}_{metric}.pdf")
                 plt.show()
 
@@ -810,27 +813,48 @@ def plot_corrupted_results(runs: Union[List[dict], dict],
         for model in corrupted_results_df[corrupted_results_df['dataset'] == dataset]['model'].unique():
             sub_df = corrupted_results_df[(corrupted_results_df['dataset'] == dataset) &
                                           (corrupted_results_df['model'] == model)].copy().\
-                sort_values(by=['k', 'structure'], ascending=[True, False])
+                sort_values(by=['k', 'structure'], ascending=[True, False]).drop_duplicates()
             sub_df[plot_value] *= 100
             for i, type in enumerate(CORRUPTION_TYPES.keys()):
                 for j, value in enumerate(plot_value):
-                    plt.figure()
+                    fig, ax = plt.subplots()
                     if type == 'all':
-                        sns.catplot(data=sub_df, x='severity', y=value, hue='k', errorbar='sd', kind='box')
+                        plot = sns.catplot(data=sub_df, x='severity', y=value, hue='structure', errorbar='sd', kind='box', legend=False, ax=ax)
+                        value_counts = sub_df.set_index(
+                            ['severity', 'structure']).sort_values(by=['severity', 'structure'],
+                                                                   ascending=[True, False]).\
+                            groupby(['severity', 'structure'], sort=False).apply(lambda x: x.value_counts().sum()).values
                     else:
-                        sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
-                                    x='severity', y=value, hue='k', errorbar='sd', kind='box')
-                    plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'")
+                        plot = sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                                           x='severity', y=value, hue='structure', errorbar='sd', kind='box', legend=False, ax=ax)
+                        value_counts = sub_df[sub_df['corruption_type'].isin(['clean', type])].set_index(
+                            ['severity', 'structure']).sort_values(by=['severity', 'structure'],
+                                                                   ascending=[True, False]). \
+                            groupby(['severity', 'structure'], sort=False).apply(lambda x: x.value_counts().sum()).values
+
+                    lines_per_boxplot = len(plot.ax.lines) // len(plot.ax.artists)
+                    for i, (box, xtick, ytick) in enumerate(zip(plot.ax.artists, plot.ax.get_xticklabels(), plot.ax.get_yticklabels())):
+                        color = box.get_facecolor()
+                        line = plot.ax.lines[i * lines_per_boxplot + 4]  # the median
+                        if value_counts[i] == 1:
+                            line.set_color(color)
+                    title = f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'"
+                    plot.ax.set_title(title)
+                    plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+                    plot.fig.tight_layout()
                     plt.savefig(f"plots/{dataset}/corrupted/results/{type}_{value}.pdf")
                     plt.show()
                     for parameter in parameters:
                         plt.figure()
                         if type == 'all':
-                            sns.catplot(data=sub_df, x=parameter, y=value, hue='structure', errorbar='sd', kind='box')
+                            plot = sns.catplot(data=sub_df, x=parameter, y=value, hue='structure', errorbar='sd', kind='box', legend=False)
                         else:
-                            sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
-                                        x=parameter, y=value, hue='structure', errorbar='sd', kind='box')
-                        plt.title(f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'")
+                            plot = sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                                        x=parameter, y=value, hue='structure', errorbar='sd', kind='box', legend=False)
+                        title = f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'"
+                        plot.ax.set_title(title)
+                        plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+                        plot.fig.tight_layout()
                         plt.savefig(f"plots/{dataset}/corrupted/results_parameters/{type}_{parameter}_{value}.pdf")
                         plt.show()
 

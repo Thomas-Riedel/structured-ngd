@@ -5,6 +5,7 @@ import os
 import numpy as np
 import pandas as pd
 from optimizers.noisy_optimizer import NoisyOptimizer
+from network import TempScaling, DeepEnsemble
 import pickle
 
 
@@ -85,10 +86,7 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
 
         # load corrupted inputs and preprocess
         corrupted_input = torch.from_numpy(np.load(path_to_file)).permute(0, 3, 1, 2).float()
-        corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size]
-        max = corrupted_input.max()
-        min = corrupted_input.min()
-        corrupted_input /= (max - min)
+        corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
         mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
         std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
         corrupted_input = (corrupted_input - mean) / std
@@ -96,7 +94,7 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
         data.append(TensorDataset(corrupted_input, labels))
     data = ConcatDataset(data)
     # define dataloader
-    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=4)
+    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2)
     return data_loader
 
 
@@ -158,8 +156,16 @@ def get_corrupted_results(dataset, model, optimizer, baseline, metrics, clean_re
             (baseline_df['severity'] > 0) & (df['corruption_type'] != 'all')
         ].drop(['corruption_type', 'severity'], axis=1).copy()
     else:
-        baseline_clean_accuracy = clean_accuracy
-        baseline_df = sub_df.copy()
+        if isinstance(model, (TempScaling, DeepEnsemble)):
+            baseline_results = load_run(dataset, model.model, baseline)
+            baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
+            baseline_df = baseline_results['corrupted_results']['df']
+            baseline_df = baseline_df[
+                (baseline_df['severity'] > 0) & (df['corruption_type'] != 'all')
+                ].drop(['corruption_type', 'severity'], axis=1).copy()
+        else:
+            baseline_clean_accuracy = clean_accuracy
+            baseline_df = sub_df.copy()
     corruption_error = ce(sub_df, baseline_df)
     rel_corruption_error = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy)
 

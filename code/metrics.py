@@ -1,5 +1,6 @@
 from torchmetrics.functional import accuracy, precision, recall, f1_score, calibration_error
 import torch
+from bayesian_torch.utils.util import predictive_entropy, mutual_information
 
 
 class ECE:
