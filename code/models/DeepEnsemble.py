@@ -6,24 +6,19 @@ from typing import Union, Tuple, List, Callable
 from torch.utils.data import DataLoader
 from optimizers.noisy_optimizer import *
 from metrics import *
+import numpy as np
 
 
 class DeepEnsemble():
-    def __init__(self, runs, num_classes=10, input_shape=(3, 32, 32), device: str = None):
-        datasets = list(set([run['dataset'] for run in runs]))
-        assert(len(datasets) == 1)
+    def __init__(self, models, num_classes=10, device: str = None):
         self.__name__ = 'DeepEnsemble'
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = device
         self.num_classes = num_classes
-
-        self.models = []
-        for run in runs:
-            state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")
-            model = Model(run['model_name'], num_classes=num_classes, input_shape=input_shape, device=device)
-            model.load_state_dict(state_dict=state_dict)
-            self.models.append(model)
+        self.models = models
+        self.num_params = np.sum([model.num_params for model in self.models])
+        print(f"Using DeepEnsemble with {len(self.models)} models.")
 
     def __call__(self, x):
         logits = torch.zeros((len(self.models), x.shape[0], self.num_classes), device=self.device)

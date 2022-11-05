@@ -272,7 +272,7 @@ def record_loss_and_metrics(losses, metrics, loss, metric):
 def run_experiments(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
         baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
-        eval_every: int = 100, n_bins: int = 10, mc_samples: int = 64) -> List[dict]:
+        eval_every: int = 100, n_bins: int = 10, mc_samples: int = 32) -> List[dict]:
     """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
 
     :param epochs: int, number of epochs for training
@@ -288,68 +288,84 @@ def run_experiments(epochs: int, model: nn.Module, optimizers: List[Union[Optimi
         displayed
     :return: runs, List[dict], list of results
     """
-    loss_fn = nn.CrossEntropyLoss()
-    runs = []
-    dataset = train_loader.dataset.root.split('/')[1]
     if isinstance(model, TempScaling):
         model.set_temperature(val_loader)
     if isinstance(model, (TempScaling, DeepEnsemble)):
-        train_loss = []
-        train_metrics = {}
-        loss, metric, _ = model.evaluate(train_loader, metrics=metrics, n_bins=n_bins)
-        train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
+        return evaluate(model, train_loader, val_loader, test_loader, baseline, metrics, n_bins, mc_samples)
+    else:
+        return train_and_evaluate(epochs, model, optimizers, train_loader, val_loader, test_loader,
+                                  baseline, baseline_params, ngd_params, metrics, eval_every, n_bins, mc_samples)
 
-        val_loss = []
-        val_metrics = {}
-        loss, metric, _ = model.evaluate(val_loader, metrics=metrics, n_bins=n_bins)
-        val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
-        test_loss, test_metrics, bin_data = model.evaluate(test_loader, metrics=metrics, n_bins=n_bins)
-        clean_results = dict(
-            test_loss=test_loss,
-            test_metrics=test_metrics,
-            bin_data=bin_data
-        )
-        corrupted_results = get_corrupted_results(dataset, model, baseline, baseline, metrics,
-                                                  clean_results, mc_samples, n_bins)
+def evaluate(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
+             baseline: str = 'SGD', metrics: List[Callable] = [accuracy], n_bins: int = 10, mc_samples: int = 32):
+    runs = []
+    dataset = train_loader.dataset.root.split('/')[1]
 
-        param = dict(k=len(runs))
-        num_epochs = np.sum([run['num_epochs'] + 1 for run in runs])
-        epoch_times = None
-        total_time = np.sum([run['epoch_times'][-1] for run in runs])
-        avg_time_per_epoch = total_time / num_epochs
-        optimizer_name = baseline
-        model_name = model.__name__
-        num_params = model.num_params
-        model_summary = None
+    train_loss = []
+    train_metrics = {}
+    loss, metric, _ = model.evaluate(train_loader, metrics=metrics, n_bins=n_bins)
+    train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    val_loss = []
+    val_metrics = {}
+    loss, metric, _ = model.evaluate(val_loader, metrics=metrics, n_bins=n_bins)
+    val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
-        run = dict(
-            optimizer_name=optimizer_name,
-            model_name=model_name,
-            dataset=dataset,
-            num_params=num_params,
-            model_summary=model_summary,
-            params=param,
-            epoch_times=epoch_times,
-            num_epochs=num_epochs,
-            avg_time_per_epoch=avg_time_per_epoch,
-            total_time=total_time,
-            train_loss=train_loss,
-            train_metrics=train_metrics,
-            val_loss=val_loss,
-            val_metrics=val_metrics,
-            test_loss=test_loss,
-            test_metrics=test_metrics,
-            bin_data=bin_data,
-            corrupted_results=corrupted_results,
-            timestamp=timestamp
-        )
-        runs.append(run)
-        save_runs(run)
-        return runs
+    test_loss, test_metrics, bin_data = model.evaluate(test_loader, metrics=metrics, n_bins=n_bins)
+    clean_results = dict(
+        test_loss=test_loss,
+        test_metrics=test_metrics,
+        bin_data=bin_data
+    )
+    corrupted_results = get_corrupted_results(dataset, model, baseline, baseline, metrics,
+                                              clean_results, mc_samples, n_bins)
 
+    param = dict(k=len(runs))
+    num_epochs = np.sum([run['num_epochs'] + 1 for run in runs])
+    epoch_times = None
+    total_time = np.sum([run['epoch_times'][-1] for run in runs])
+    avg_time_per_epoch = total_time / num_epochs
+    optimizer_name = baseline
+    model_name = model.__name__
+    num_params = model.num_params
+    model_summary = None
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    run = dict(
+        optimizer_name=optimizer_name,
+        model_name=model_name,
+        dataset=dataset,
+        num_params=num_params,
+        model_summary=model_summary,
+        params=param,
+        epoch_times=epoch_times,
+        num_epochs=num_epochs,
+        avg_time_per_epoch=avg_time_per_epoch,
+        total_time=total_time,
+        train_loss=train_loss,
+        train_metrics=train_metrics,
+        val_loss=val_loss,
+        val_metrics=val_metrics,
+        test_loss=test_loss,
+        test_metrics=test_metrics,
+        bin_data=bin_data,
+        corrupted_results=corrupted_results,
+        timestamp=timestamp
+    )
+    runs.append(run)
+    save_runs(run)
+    return runs
+
+
+def train_and_evaluate(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
+                       train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
+                       baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
+                       eval_every: int = 100, n_bins: int = 10, mc_samples: int = 32):
+    loss_fn = nn.CrossEntropyLoss()
+    runs = []
+    dataset = train_loader.dataset.root.split('/')[1]
     for optim in optimizers:
         if optim is StructuredNGD:
             params = ngd_params
@@ -450,7 +466,10 @@ def run_experiments(epochs: int, model: nn.Module, optimizers: List[Union[Optimi
             runs.append(run)
             save_runs(run)
             os.makedirs('checkpoints', exist_ok=True)
-            torch.save(model.state_dict(), f"checkpoints/{timestamp}.pt")
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()
+            }, f"checkpoints/{timestamp}.pt")
         print('Finished Training')
     return runs
 

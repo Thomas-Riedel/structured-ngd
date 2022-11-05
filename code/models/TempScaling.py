@@ -6,6 +6,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from typing import List, Callable, Tuple
 
+
 class TempScaling(nn.Module):
     """
     A thin decorator, which wraps a model with temperature scaling
@@ -14,14 +15,13 @@ class TempScaling(nn.Module):
         NB: Output of the neural network should be the classification logits,
             NOT the softmax (or log softmax)!
     """
-    def __init__(self, model, device=None):
+    def __init__(self, model):
         super(TempScaling, self).__init__()
-        if device is None:
-            device = model.device
-        self.device = device
-        self.model = model.to(device)
+        self.device = model.device
+        self.model = model
         self.temperature = nn.Parameter(torch.ones(1) * 1.5)
-        self.name = 'Temp Scaling'
+        self.__name__ = 'Temp Scaling'
+        self.num_params = model.num_params + 1
 
     def forward(self, input):
         logits = self.model(input)
@@ -51,12 +51,12 @@ class TempScaling(nn.Module):
         labels_list = []
         with torch.no_grad():
             for input, label in val_loader:
-                input = input.cuda()
+                input, label = input.to(self.device), label.to(self.device)
                 logits = self.model(input)
                 logits_list.append(logits)
                 labels_list.append(label)
-            logits = torch.cat(logits_list).cuda()
-            labels = torch.cat(labels_list).cuda()
+            logits = torch.cat(logits_list).to(self.device)
+            labels = torch.cat(labels_list).to(self.device)
 
         # Calculate NLL and ECE before temperature scaling
         before_temperature_nll = nll_criterion(logits, labels).item()

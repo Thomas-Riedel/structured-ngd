@@ -25,20 +25,25 @@ def main() -> None:
 		runs = load_all_runs()
 		runs = [run for run in runs if run['optimizer_name'] == args['baseline']
 				and run['dataset'].lower() == args['dataset'].lower()]
-		model = DeepEnsemble(runs=runs, num_classes=num_classes, device=device, input_shape=input_shape)
+		models = []
+		for run in runs:
+			state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")['model_state_dict']
+			model = Model(run['model_name'], num_classes=num_classes, input_shape=input_shape, device=device)
+			model.load_state_dict(state_dict=state_dict)
+			models.append(model)
+		model = DeepEnsemble(models=models, num_classes=num_classes)
 		args['optimizers'] = [eval(args['baseline'])]
 	elif args['model'] == 'TempScaling':
 		runs = load_all_runs()
-		runs = [x for x in runs if x['optimizer_name'] == args['baseline']
-				and x['dataset'].lower() == args['dataset'].lower()]
-		run = runs[0]
-		model = Model(model_type=run['model_name'], num_classes=num_classes,
-					  device=device, input_shape=input_shape)
+		run = [run for run in runs if run['optimizer_name'] == args['baseline']
+			   and run['dataset'].lower() == args['dataset'].lower()][0]
+		state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")['model_state_dict']
+		model = Model(run['model_name'], num_classes=num_classes, input_shape=input_shape, device=device)
+		model.load_state_dict(state_dict=state_dict)
 		model = TempScaling(model)
 		args['optimizers'] = [eval(args['baseline'])]
 	else:
-		model = Model(model_type=args['model'], num_classes=num_classes,
-					  device=device, input_shape=input_shape)
+		model = Model(model_type=args['model'], num_classes=num_classes, device=device, input_shape=input_shape)
 
 	params = get_params(args, baseline=args['baseline'], n=n)
 	runs = run_experiments(

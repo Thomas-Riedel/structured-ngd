@@ -6,3 +6,4 @@ from .DenseNet import *
 from .GoogLeNet import *
 from .TempScaling import *
 from .DeepEnsemble import *
+from .HyperDeepEnsemble import *

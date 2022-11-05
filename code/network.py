@@ -32,6 +32,8 @@ class Model(nn.Module):
             self.model = eval(f"{model_type}(num_classes=num_classes).to(device)")
         elif model_type == 'DeepEnsemble':
             self.model = DeepEnsemble(runs=runs, num_classes=num_classes, input_shape=input_shape, device=device)
+        elif model_type == 'TempScaling':
+            self.model = TempScaling(runs=runs, num_classes=num_classes, input_shape=input_shape, device=device)
         else:
             print(f"Using {model_type}.")
             self.model = eval(f"{model_type}(num_classes=num_classes).to(device)")
@@ -171,9 +173,8 @@ class Model(nn.Module):
                         optimizer._sample_weight()
                     logits[i] = self(images)
                     loss += loss_fn(logits[i], labels).item()
-            loss /= mc_samples
-            for metric in metrics:
-                metric_vals[metric.__name__] += metric(torch.mean, labels).item()
+                    for metric in metrics:
+                        metric_vals[metric.__name__] += metric(logits[i], labels).item()
 
             confidences, preds = logits.softmax(-1).mean(0).max(-1)
             labels = labels.detach().cpu().numpy()
@@ -192,8 +193,8 @@ class Model(nn.Module):
             # writer.add_scalar("Loss", loss, counter)
 
         for metric in metrics:
-            metric_vals[metric.__name__] /= len(data_loader)
-        loss /= len(data_loader)
+            metric_vals[metric.__name__] /= len(data_loader) * mc_samples
+        loss /= len(data_loader) * mc_samples
         print(loss, metric_vals)
 
         # Divide each bin by its bin count and avoid division by zero!
