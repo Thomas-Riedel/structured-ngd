@@ -4,4 +4,4 @@ thesis/*.*
 
 # Exclude all locally saved data files
 code/data/*
-!code/requirements.txt
+code/plots/*
