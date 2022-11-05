@@ -22,6 +22,7 @@ class TempScaling(nn.Module):
         self.temperature = nn.Parameter(torch.ones(1) * 1.5)
         self.__name__ = 'Temp Scaling'
         self.num_params = model.num_params + 1
+        self.summary = model.summary
 
     def forward(self, input):
         logits = self.model(input)

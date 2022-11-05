@@ -9,15 +9,16 @@ from optimizers.noisy_optimizer import *
 from torchsummary import summary
 from metrics import *
 from models import *
+from bayesian_torch.models.dnn_to_bnn import dnn_to_bnn, get_kl_loss
 
 from typing import Union, Tuple, List, Callable
 import time
 
 
 class Model(nn.Module):
-    def __init__(self, model_type: str = 'ResNet20',
-                 num_classes: int = 10, input_shape=(3, 32, 32),
-                 device: str = None, runs: List[dict] = None) -> None:
+    def __init__(self, model_type: str = 'ResNet20', num_classes: int = 10, input_shape=(3, 32, 32),
+                 device: str = None, runs: List[dict] = None,
+                 bnn: bool = False, dropout_layers: Union[None, str] = None, p: float = 0.2) -> None:
         """torch.nn.Module class
 
         :param model_type: str, specify what ResNet model to use
@@ -29,17 +30,27 @@ class Model(nn.Module):
         if model_type.lower() in model_types_cifar:
             print(model_type)
             print(f"Using {model_type} designed for CIFAR-10/100.")
-            self.model = eval(f"{model_type}(num_classes=num_classes).to(device)")
-        elif model_type == 'DeepEnsemble':
-            self.model = DeepEnsemble(runs=runs, num_classes=num_classes, input_shape=input_shape, device=device)
-        elif model_type == 'TempScaling':
-            self.model = TempScaling(runs=runs, num_classes=num_classes, input_shape=input_shape, device=device)
+            # MC Dropout only implemented for ResNet models!
+            self.model = eval(f"{model_type}(num_classes=num_classes, dropout_layers=dropout_layers, p=p).to(device)")
         else:
             print(f"Using {model_type}.")
-            self.model = eval(f"{model_type}(num_classes=num_classes).to(device)")
+            # MC Dropout only implemented for ResNet models!
+            self.model = eval(f"{model_type}(num_classes=num_classes, dropout_layers=dropout_layers, p=p).to(device)")
 
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if bnn:
+            const_bnn_prior_parameters = {
+                "prior_mu": 0.0,
+                "prior_sigma": 1.0,
+                "posterior_mu_init": 0.0,
+                "posterior_rho_init": -3.0,
+                "type": "Reparameterization",  # Flipout or Reparameterization
+                "moped_enable": False,  # True to initialize mu/sigma from the pretrained dnn weights
+                "moped_delta": 0.5,
+            }
+            dnn_to_bnn(self.model, const_bnn_prior_parameters)
+        self.bnn = bnn
         self.init_weights()
         self.num_classes = num_classes
         self.device = device
@@ -77,6 +88,8 @@ class Model(nn.Module):
         :return: (iter_loss, iter_metrics, iter_time), Tuple[List[float], dict, List[float]], list of iterationwise
             losses, metrics and computation times for update
         """
+        if self.bnn:
+            assert(not isinstance(optimizer, NoisyOptimizer))
         # Set model to training mode!
         self.model.train()
 
@@ -96,12 +109,22 @@ class Model(nn.Module):
             images = images.to(self.device)
             labels = labels.to(self.device)
 
-            def closure():
-                optimizer.zero_grad()
-                preds = self(images)
-                loss = loss_fn(preds, labels)
-                loss.backward()
-                return loss, preds
+            if self.bnn:
+                def closure():
+                    optimizer.zero_grad()
+                    preds = self(images)
+                    kl = get_kl_loss(self.model)
+                    ce_loss = loss_fn(preds, labels)
+                    loss = ce_loss + kl / images.shape[0]
+                    loss.backward()
+                    return ce_loss, preds
+            else:
+                def closure():
+                    optimizer.zero_grad()
+                    preds = self(images)
+                    loss = loss_fn(preds, labels)
+                    loss.backward()
+                    return loss, preds
 
             # Perform forward pass, compute loss, backpropagate, update parameters
             with Timer(self.device) as t:
@@ -145,7 +168,7 @@ class Model(nn.Module):
         """
         if data_loader is None:
             return None, None, None
-        if not isinstance(optimizer, NoisyOptimizer):
+        if not isinstance(optimizer, NoisyOptimizer) and not self.bnn:
             mc_samples = 1
         assert(mc_samples >= 1)
 
@@ -248,7 +271,7 @@ class Model(nn.Module):
         # assert(len(confidences) == len(true_labels))
         assert(n_bins > 0)
 
-        if not isinstance(optimizer, NoisyOptimizer):
+        if not isinstance(optimizer, NoisyOptimizer) and not self.bnn:
             mc_samples = 1
         assert(mc_samples >= 1)
 

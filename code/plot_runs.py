@@ -39,9 +39,9 @@ def parse_args() -> dict:
 
     :return: args_dict, dict, parsed arguments from command line
     """
-    parser = argparse.ArgumentParser(description='Run noisy optimizers with parameters.')
-    parser.add_argument('-o', '--optimizers', type=str, default='StructuredNGD',
-                        help='Optimizers, one of Adam, SGD, StructuredNGD (capitalization matters!, default: StructuredNGD)')
+    parser = argparse.ArgumentParser(description='Run methods with parameters.')
+    parser.add_argument('-o', '--optimizer', type=str, default='StructuredNGD',
+                        help='Optimizer, one of Adam, SGD, StructuredNGD (capitalization matters!, default: StructuredNGD)')
     parser.add_argument('-e', '--epochs', type=int, default=1,
                         help='Number of epochs to train models on data (default: 1)')
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10",
@@ -91,10 +91,10 @@ def parse_args() -> dict:
     args.prior_precision = n * [args.prior_precision]
     args.damping = n * [args.damping]
     args.gamma = n * [args.gamma]
-    args.optimizers = list(map(lambda x: eval(x), args.optimizers.split(',')))
+    args.optimizer = eval(args.optimizer)
 
     args_dict = dict(
-        optimizers=args.optimizers,
+        optimizer=args.optimizer,
         epochs=args.epochs,
         dataset=args.dataset,
         model=args.model,
@@ -269,15 +269,15 @@ def record_loss_and_metrics(losses, metrics, loss, metric):
     return losses, metrics
 
 
-def run_experiments(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
+def run_experiments(epochs: int, methods: List[str], model: nn.Module, optimizer: List[Union[Optimizer, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
         baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
         eval_every: int = 100, n_bins: int = 10, mc_samples: int = 32) -> List[dict]:
-    """Run a list of optimizers on data for multiple epochs using multiple hyperparameters and evaluate.
+    """Run an optimizer on data for multiple epochs using multiple hyperparameters and evaluate.
 
     :param epochs: int, number of epochs for training
     :param model: str, ResNet model for experiments
-    :param optimizers: List[Union[baseline, StructuredNGD]], list of models to run experiments on
+    :param optimizer: List[Union[baseline, StructuredNGD]], list of models to run experiments on
     :param train_loader: torch.utils.data.DataLoader, training data
     :param val_loader: torch.utils.data.DataLoader, validation data
     :param test_loader: torch.utils.data.DataLoader, test data
@@ -288,17 +288,17 @@ def run_experiments(epochs: int, model: nn.Module, optimizers: List[Union[Optimi
         displayed
     :return: runs, List[dict], list of results
     """
-    if isinstance(model, TempScaling):
-        model.set_temperature(val_loader)
-    if isinstance(model, (TempScaling, DeepEnsemble)):
-        return evaluate(model, train_loader, val_loader, test_loader, baseline, metrics, n_bins, mc_samples)
+    if isinstance(model, (TempScaling, DeepEnsemble, HyperDeepEnsemble)):
+        return evaluate(methods[0], model, train_loader, val_loader, test_loader, baseline, metrics, n_bins, mc_samples)
     else:
-        return train_and_evaluate(epochs, model, optimizers, train_loader, val_loader, test_loader,
+        return train_and_evaluate(epochs, methods, model, optimizer, train_loader, val_loader, test_loader,
                                   baseline, baseline_params, ngd_params, metrics, eval_every, n_bins, mc_samples)
 
 
-def evaluate(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
+def evaluate(method: str, model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
              baseline: str = 'SGD', metrics: List[Callable] = [accuracy], n_bins: int = 10, mc_samples: int = 32):
+    if isinstance(model, TempScaling):
+        model.set_temperature(val_loader)
     runs = []
     dataset = train_loader.dataset.root.split('/')[1]
 
@@ -321,9 +321,9 @@ def evaluate(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
     corrupted_results = get_corrupted_results(dataset, model, baseline, baseline, metrics,
                                               clean_results, mc_samples, n_bins)
 
-    param = dict(k=len(runs))
+    param = dict()
     num_epochs = np.sum([run['num_epochs'] + 1 for run in runs])
-    epoch_times = None
+    epoch_times = [None]
     total_time = np.sum([run['epoch_times'][-1] for run in runs])
     avg_time_per_epoch = total_time / num_epochs
     optimizer_name = baseline
@@ -336,6 +336,7 @@ def evaluate(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
     run = dict(
         optimizer_name=optimizer_name,
         model_name=model_name,
+        method=method,
         dataset=dataset,
         num_params=num_params,
         model_summary=model_summary,
@@ -359,117 +360,116 @@ def evaluate(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
     return runs
 
 
-def train_and_evaluate(epochs: int, model: nn.Module, optimizers: List[Union[Optimizer, StructuredNGD]],
+def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim: Union[Optimizer, StructuredNGD],
                        train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
                        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
                        eval_every: int = 100, n_bins: int = 10, mc_samples: int = 32):
     loss_fn = nn.CrossEntropyLoss()
     runs = []
     dataset = train_loader.dataset.root.split('/')[1]
-    for optim in optimizers:
+    if optim is StructuredNGD:
+        params = ngd_params
+    else:
+        params = baseline_params
+    for i, param in enumerate(params):
+        print(optim.__name__, param)
+        early_stopping = EarlyStopping(patience=16)
         if optim is StructuredNGD:
-            params = ngd_params
+            seed = 42
+            optimizer = optim(model.parameters(), len(train_loader.dataset), **param)
         else:
-            params = baseline_params
+            seed = None
+            optimizer = optim(model.parameters(), **param)
+        model.init_weights(seed)
+        run = load_run(dataset, model, baseline)
+        optimizer_name = type(optimizer).__name__
+        if (dataset.lower() in ['cifar10', 'cifar100']) and (optimizer_name != baseline) and (run is None):
+            raise RuntimeError(f"Baseline {baseline} does not exist for this dataset and model!"
+                               f"Please first run the script with this baseline for the dataset and model.")
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=8)
 
-        for param in params:
-            print(optim.__name__, param)
-            early_stopping = EarlyStopping()
-            if optim is StructuredNGD:
-                seed = 42
-                optimizer = optim(model.parameters(), len(train_loader.dataset), **param)
-            else:
-                seed = None
-                optimizer = optim(model.parameters(), **param)
-            model.init_weights(seed)
-            run = load_run(dataset, model, baseline)
-            optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
-            if (dataset.lower() in ['cifar10', 'cifar100']) and (optimizer_name != baseline) and (run is None):
-                raise RuntimeError(f"Baseline {baseline} does not exist for this dataset and model!"
-                                   f"Please first run the script with this baseline for the dataset and model.")
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+        # Initialize computation times, losses and metrics for recording
+        loss, metric, _ = model.evaluate(train_loader, metrics=metrics)
+        epoch_times = [0.0]
+        train_loss = []
+        train_metrics = {}
+        train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
-            # Initialize computation times, losses and metrics for recording
-            loss, metric, _ = model.evaluate(train_loader, metrics=metrics)
-            epoch_times = [0.0]
-            train_loss = []
-            train_metrics = {}
+        loss, metric, _ = model.evaluate(val_loader, metrics=metrics)
+        val_loss = []
+        val_metrics = {}
+        val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
+
+        early_stopping.on_train_begin()
+        for epoch in range(epochs):
+            # Train for one epoch
+            loss, metric, comp_time = model.train(train_loader, optimizer, epoch=epoch,
+                                                  loss_fn=loss_fn, metrics=metrics,
+                                                  eval_every=eval_every)
+            # Record epoch times, loss and metrics for epoch
+            epoch_times.append(comp_time)
             train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
+            # Record loss and metrics for epoch
             loss, metric, _ = model.evaluate(val_loader, metrics=metrics)
-            val_loss = []
-            val_metrics = {}
             val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
-            early_stopping.on_train_begin()
-            for epoch in range(epochs):
-                # Train for one epoch
-                loss, metric, comp_time = model.train(train_loader, optimizer, epoch=epoch,
-                                                      loss_fn=loss_fn, metrics=metrics,
-                                                      eval_every=eval_every)
-                # Record epoch times, loss and metrics for epoch
-                epoch_times.append(comp_time)
-                train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
+            scheduler.step(loss)
+            early_stopping.on_epoch_end(epoch, loss)
+            if early_stopping.stop_training:
+                break
+        early_stopping.on_train_end()
 
-                # Record loss and metrics for epoch
-                loss, metric, _ = model.evaluate(val_loader, metrics=metrics)
-                val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
+        test_loss, test_metrics, bin_data = model.evaluate(test_loader, metrics=metrics, optimizer=optimizer,
+                                                           mc_samples=mc_samples, n_bins=n_bins)
+        clean_results = dict(
+            test_loss=test_loss,
+            test_metrics=test_metrics,
+            bin_data=bin_data
+        )
+        corrupted_results = get_corrupted_results(dataset, model, optimizer, method, baseline, metrics,
+                                                  clean_results, mc_samples, n_bins)
 
-                scheduler.step(loss)
-                early_stopping.on_epoch_end(epoch, loss)
-                if early_stopping.stop_training:
-                    break
-            early_stopping.on_train_end()
+        num_epochs = epoch + 1
+        epoch_times = np.cumsum(epoch_times)
+        total_time = epoch_times[-1]
+        avg_time_per_epoch = epoch_times[-1] / num_epochs
+        optimizer_name = type(optimizer).__name__
+        model_name = model.__name__
+        num_params = model.num_params
+        model_summary = model.summary
 
-            test_loss, test_metrics, bin_data = model.evaluate(test_loader, metrics=metrics, optimizer=optimizer,
-                                                               mc_samples=mc_samples, n_bins=n_bins)
-            clean_results = dict(
-                test_loss=test_loss,
-                test_metrics=test_metrics,
-                bin_data=bin_data
-            )
-            corrupted_results = get_corrupted_results(dataset, model, optimizer, baseline, metrics,
-                                                      clean_results, mc_samples, n_bins)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-            num_epochs = epoch + 1
-            epoch_times = np.cumsum(epoch_times)
-            total_time = epoch_times[-1]
-            avg_time_per_epoch = epoch_times[-1] / num_epochs
-            optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
-            model_name = model.__name__
-            num_params = model.num_params
-            model_summary = model.summary
-
-            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
-            run = dict(
-                optimizer_name=optimizer_name,
-                model_name=model_name,
-                dataset=dataset,
-                num_params=num_params,
-                model_summary=model_summary,
-                params=param,
-                epoch_times=epoch_times,
-                num_epochs=num_epochs,
-                avg_time_per_epoch=avg_time_per_epoch,
-                total_time=total_time,
-                train_loss=train_loss,
-                train_metrics=train_metrics,
-                val_loss=val_loss,
-                val_metrics=val_metrics,
-                test_loss=test_loss,
-                test_metrics=test_metrics,
-                bin_data=bin_data,
-                corrupted_results=corrupted_results,
-                timestamp=timestamp
-            )
-            runs.append(run)
-            save_runs(run)
-            os.makedirs('checkpoints', exist_ok=True)
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict()
-            }, f"checkpoints/{timestamp}.pt")
+        run = dict(
+            optimizer_name=optimizer_name,
+            model_name=model_name,
+            method=methods[i],
+            dataset=dataset,
+            num_params=num_params,
+            model_summary=model_summary,
+            params=param,
+            epoch_times=epoch_times,
+            num_epochs=num_epochs,
+            avg_time_per_epoch=avg_time_per_epoch,
+            total_time=total_time,
+            train_loss=train_loss,
+            train_metrics=train_metrics,
+            val_loss=val_loss,
+            val_metrics=val_metrics,
+            test_loss=test_loss,
+            test_metrics=test_metrics,
+            bin_data=bin_data,
+            corrupted_results=corrupted_results,
+            timestamp=timestamp
+        )
+        runs.append(run)
+        save_runs(run)
+        os.makedirs('checkpoints', exist_ok=True)
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict()
+        }, f"checkpoints/{timestamp}.pt")
         print('Finished Training')
     return runs
 
@@ -753,7 +753,7 @@ def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 
     # Plot corruption errors per dataset and optimizer and grouped by model and error
     plot_corrupted_results(runs, plot_values)
 
-    # Plot robustness of all optimizers for each dataset, model and corruption type
+    # Plot robustness of all methods for each dataset, model and corruption type
     plot_robustness(runs)
 
 
@@ -919,7 +919,7 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
                 plt.fill_between(accuracy, y1=rmce_mean-rmce_std, y2=rmce_mean+rmce_std, alpha=0.1, color='orange')
                 a, b = np.polyfit(accuracy, rmce_mean, 1)
                 plt.plot(accuracy, a * accuracy + b, color='orange')
-                ax.set_title(f"Robustness of Optimizers on {dataset.upper()} for {model} and Corruption Type '{type.title()}'")
+                ax.set_title(f"Robustness of Methods on {dataset.upper()} for {model} and Corruption Type '{type.title()}'")
                 ax.set_xlabel('Test Accuracy (\%)')
                 ax.set_ylabel('\%')
                 ax.legend()
@@ -1013,6 +1013,76 @@ def unique_everseen(seq, key=None):
     seen = set()
     seen_add = seen.add
     return [x for x,k in zip(seq,key) if not (k in seen or seen_add(k))]
+
+
+def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=None, baseline='SGD'):
+    if not type(optimizer) == str:
+        optimizer = type(optimizer).__name__
+    if model == 'DeepEnsemble':
+        runs = load_all_runs()
+        runs = [run for run in runs if optimizer == baseline
+                and dataset.lower() == dataset.lower()]
+        assert(len(runs) > 0)
+        models = []
+        for run in runs:
+            state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")['model_state_dict']
+            model = Model(run['model_name'], **model_params)
+            model.load_state_dict(state_dict=state_dict)
+            models.append(model)
+        model = DeepEnsemble(models=models, **model_params)
+        methods = ['Deep Ensemble']
+    elif model == 'HyperDeepEnsemble':
+        runs = load_all_runs()
+        runs = [run for run in runs if optimizer == baseline
+                and dataset.lower() == dataset.lower()]
+        assert(len(runs) > 0)
+        models = []
+        optimizers = []
+        for run in runs:
+            state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")
+
+            model = Model(run['model_name'], **model_params)
+            model.load_state_dict(state_dict=state_dict['model_state_dict'])
+            models.append(model)
+
+            optimizer = StructuredNGD(model.params())
+            optimizer.load_state_dict(state_dict=state_dict['optimizer_state_dict'])
+            optimizers.append(optimizer)
+        model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
+        methods = ['Hyper Deep Ensemble']
+    elif model == 'BBB':
+        assert(optimizer == baseline)
+        model = Model(model_type=model, bnn=True, **model_params)
+        methods = ['BBB']
+    elif model == 'Dropout':
+        assert(optimizer == baseline)
+        model = Model(model_type=model, dropout_layers='all', p=0.2, **model_params)
+        methods = ['Dropout']
+    elif model == 'LLDropout':
+        assert(optimizer == baseline)
+        model = Model(model_type=model, dropout_layers='last', p=0.2, **model_params)
+        methods = ['LL Dropout']
+    elif model == 'TempScaling':
+        assert(optimizer == baseline)
+        runs = load_all_runs()
+        run = [run for run in runs if run['optimizer_name'] == baseline
+               and run['dataset'].lower() == dataset.lower()][0]
+        state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")['model_state_dict']
+        model = Model(run['model_name'], **model_params)
+        model.load_state_dict(state_dict=state_dict)
+        model = TempScaling(model)
+        methods = ['Temp Scaling']
+    else:
+        model = Model(model_type=model, **model_params)
+        if optimizer == baseline:
+            methods = ['Vanilla']
+        elif optimizer.startswith('StructuredNGD'):
+            methods = []
+            for param in ngd_params:
+                structure = param['structure'].replace('_', ' ').title().replace(' ', '')
+                method = rf"NGD (structure = {structure}, $k = {param['k']})$"
+                methods.append(method)
+    return methods, model
 
 
 class EarlyStopping:

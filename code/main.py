@@ -21,33 +21,14 @@ def main() -> None:
 	n = len(train_loader.dataset)
 	input_shape = iter(train_loader).next()[0].shape[1:]
 
-	if args['model'] == 'DeepEnsemble':
-		runs = load_all_runs()
-		runs = [run for run in runs if run['optimizer_name'] == args['baseline']
-				and run['dataset'].lower() == args['dataset'].lower()]
-		models = []
-		for run in runs:
-			state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")['model_state_dict']
-			model = Model(run['model_name'], num_classes=num_classes, input_shape=input_shape, device=device)
-			model.load_state_dict(state_dict=state_dict)
-			models.append(model)
-		model = DeepEnsemble(models=models, num_classes=num_classes)
-		args['optimizers'] = [eval(args['baseline'])]
-	elif args['model'] == 'TempScaling':
-		runs = load_all_runs()
-		run = [run for run in runs if run['optimizer_name'] == args['baseline']
-			   and run['dataset'].lower() == args['dataset'].lower()][0]
-		state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")['model_state_dict']
-		model = Model(run['model_name'], num_classes=num_classes, input_shape=input_shape, device=device)
-		model.load_state_dict(state_dict=state_dict)
-		model = TempScaling(model)
-		args['optimizers'] = [eval(args['baseline'])]
-	else:
-		model = Model(model_type=args['model'], num_classes=num_classes, device=device, input_shape=input_shape)
-
 	params = get_params(args, baseline=args['baseline'], n=n)
+	model_params = dict(num_classes=num_classes, input_shape=input_shape, device=device)
+	methods, model = get_methods_and_model(
+		args['dataset'], args['model'],  model_params, args['optimizer'], params['ngd'], args['baseline']
+	)
+
 	runs = run_experiments(
-		args['epochs'], model, args['optimizers'], train_loader, val_loader, test_loader, args['baseline'],
+		args['epochs'], methods, model, args['optimizer'], train_loader, val_loader, test_loader, args['baseline'],
 		baseline_params=params['baseline'], ngd_params=params['ngd'], metrics=metrics,
 		eval_every=args['eval_every'], n_bins=args['n_bins'], mc_samples=args['mc_samples_eval']
 	)

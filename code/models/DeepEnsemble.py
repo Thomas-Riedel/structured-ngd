@@ -10,7 +10,7 @@ import numpy as np
 
 
 class DeepEnsemble():
-    def __init__(self, models, num_classes=10, device: str = None):
+    def __init__(self, models, num_classes=10, device: str = None, *args, **kwargs):
         self.__name__ = 'DeepEnsemble'
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -18,6 +18,7 @@ class DeepEnsemble():
         self.num_classes = num_classes
         self.models = models
         self.num_params = np.sum([model.num_params for model in self.models])
+        self.summary = None
         print(f"Using DeepEnsemble with {len(self.models)} models.")
 
     def __call__(self, x):

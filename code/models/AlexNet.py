@@ -9,7 +9,7 @@ NUM_CLASSES = 10
 
 # num_params ~ 23,272,266
 class AlexNet(nn.Module):
-    def __init__(self, num_classes=NUM_CLASSES):
+    def __init__(self, num_classes=NUM_CLASSES, *args, **kwargs):
         super(AlexNet, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1),

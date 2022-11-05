@@ -5,7 +5,7 @@ import os
 import numpy as np
 import pandas as pd
 from optimizers.noisy_optimizer import NoisyOptimizer
-from network import TempScaling, DeepEnsemble
+from network import TempScaling, DeepEnsemble, HyperDeepEnsemble
 import pickle
 
 
@@ -98,7 +98,7 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
     return data_loader
 
 
-def get_corrupted_results(dataset, model, optimizer, baseline, metrics, clean_results, mc_samples, n_bins):
+def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, clean_results, mc_samples, n_bins):
     if not dataset.lower() in ['cifar10', 'cifar100']:
         return None
     model_name = model.__name__
@@ -142,13 +142,12 @@ def get_corrupted_results(dataset, model, optimizer, baseline, metrics, clean_re
             # group bin_data results by types
             corrupted_bin_data = merge_bin_data(bin_data_list)
             bin_data[(severity, corruption_type)] = corrupted_bin_data
-            bin_data[(severity, 'all')] = corrupted_bin_data
 
     sub_df = df[
         (df['severity'] > 0) & (df['corruption_type'] != 'all')
     ].drop(['corruption_type', 'severity'], axis=1).copy()
     clean_accuracy = clean_results['test_metrics']['accuracy']
-    if isinstance(optimizer, NoisyOptimizer):
+    if isinstance(optimizer, NoisyOptimizer) or method in ['BBB', 'Dropout', 'LL Dropout']:
         baseline_results = load_run(dataset, model, baseline)
         baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
         baseline_df = baseline_results['corrupted_results']['df']
@@ -156,7 +155,7 @@ def get_corrupted_results(dataset, model, optimizer, baseline, metrics, clean_re
             (baseline_df['severity'] > 0) & (df['corruption_type'] != 'all')
         ].drop(['corruption_type', 'severity'], axis=1).copy()
     else:
-        if isinstance(model, (TempScaling, DeepEnsemble)):
+        if isinstance(model, (TempScaling, DeepEnsemble, HyperDeepEnsemble)):
             baseline_results = load_run(dataset, model.model, baseline)
             baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
             baseline_df = baseline_results['corrupted_results']['df']
@@ -193,6 +192,7 @@ def get_corrupted_results(dataset, model, optimizer, baseline, metrics, clean_re
     corrupted_results = dict(
         model_name=model_name,
         optimizer_name=optimizer_name,
+        method=method,
         dataset=dataset,
         corruption_error=corruption_error,
         rel_corruption_error=rel_corruption_error,
