@@ -39,6 +39,9 @@ class Model(nn.Module):
 
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.mc_dropout = False
+        if not dropout_layers is None:
+            self.mc_dropout = True
         if bnn:
             const_bnn_prior_parameters = {
                 "prior_mu": 0.0,
@@ -50,6 +53,7 @@ class Model(nn.Module):
                 "moped_delta": 0.5,
             }
             dnn_to_bnn(self.model, const_bnn_prior_parameters)
+            self.model = self.model.to(device)
         self.bnn = bnn
         self.init_weights()
         self.num_classes = num_classes
@@ -88,7 +92,7 @@ class Model(nn.Module):
         :return: (iter_loss, iter_metrics, iter_time), Tuple[List[float], dict, List[float]], list of iterationwise
             losses, metrics and computation times for update
         """
-        if self.bnn:
+        if self.bnn or self.mc_dropout:
             assert(not isinstance(optimizer, NoisyOptimizer))
         # Set model to training mode!
         self.model.train()
@@ -168,7 +172,7 @@ class Model(nn.Module):
         """
         if data_loader is None:
             return None, None, None
-        if not isinstance(optimizer, NoisyOptimizer) and not self.bnn:
+        if not isinstance(optimizer, NoisyOptimizer) and not (self.bnn or self.mc_dropout):
             mc_samples = 1
         assert(mc_samples >= 1)
 

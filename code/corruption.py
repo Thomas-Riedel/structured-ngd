@@ -26,7 +26,7 @@ CORRUPTION_TYPES = dict(
 )
 
 
-def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
+def load_run(dataset, model, optimizer, method='Vanilla', directory: str = 'runs') -> dict:
     if type(model) != str:
         model = model.__name__
     if type(optimizer) != str:
@@ -37,11 +37,9 @@ def load_run(dataset, model, optimizer, directory: str = 'runs') -> dict:
                 run = pickle.load(f)
             if ((run['optimizer_name'].lower() == optimizer.lower()) and
                     (run['model_name'].lower() == model.lower()) and
-                    (run['dataset'].lower() == dataset.lower())):
-                run['total_time'] = run['epoch_times'][-1]
-                if not 'num_epochs' in run:
-                    run['num_epochs'] = len(run['epoch_times']) - 1
-                    run['avg_time_per_epoch'] = run['total_time'] / run['num_epochs']
+                    (run['dataset'].lower() == dataset.lower()) and
+                    (run['method'] == method)
+            ):
                 return run
     return None
 
@@ -221,10 +219,13 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
 
 
 def collect_results(runs, directory='runs', baseline='SGD'):
-    results = pd.DataFrame(columns=['Dataset', 'Model', 'Optimizer', 'Structure', 'k', 'M', 'gamma',
+    results = pd.DataFrame(columns=['Method', 'Dataset', 'Model', 'Optimizer', 'Structure', 'k', 'M', 'gamma',
                                     'Training Loss', 'Test Loss', 'Test Accuracy', 'Top-k Accuracy',
-                                    'ECE', 'MCE', 'Total Time (h)', 'Avg. Time per Epoch (s)', 'Num Epochs'])
+                                    'ECE', 'MCE',
+                                    # 'Total Time (h)', 'Avg. Time per Epoch (s)',
+                                    'Num Epochs'])
     for run in runs:
+        method = run['method']
         dataset = run['dataset']
         model = run['model_name']
         if run['optimizer_name'].startswith('StructuredNGD'):
@@ -242,10 +243,10 @@ def collect_results(runs, directory='runs', baseline='SGD'):
         top_k_accuracy = run['test_metrics']['top_5_accuracy']
         ece = run['bin_data']['expected_calibration_error']
         mce = run['bin_data']['max_calibration_error']
-        total_time = run['total_time']
-        avg_time_per_epoch = run['avg_time_per_epoch']
+        # total_time = run['total_time']
+        # avg_time_per_epoch = run['avg_time_per_epoch']
         num_epochs = run['num_epochs']
-        if run['optimizer_name'] == baseline:
+        if run['optimizer_name'] == baseline and method == 'Vanilla':
             train_loss = compare(train_loss)
             val_loss = compare(val_loss)
             test_loss = compare(test_loss)
@@ -253,12 +254,12 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             top_k_accuracy = compare(100 * top_k_accuracy)
             ece = compare(100 * ece)
             mce = compare(100 * mce)
-            total_time = compare(total_time / 3600)
-            avg_time_per_epoch = compare(avg_time_per_epoch)
-            structure = run['optimizer_name']
-            k = 0
-            M = 0
-            gamma = 0.0
+            # total_time = compare(total_time / 3600)
+            # avg_time_per_epoch = compare(avg_time_per_epoch)
+            structure = '--'
+            k = '--'
+            M = '--'
+            gamma = '--'
         else:
             train_loss = compare(train_loss, baseline_run['train_loss'][-1])
             val_loss = compare(val_loss, baseline_run['val_loss'][-1])
@@ -267,14 +268,15 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             top_k_accuracy = compare(100 * top_k_accuracy, 100 * baseline_run['test_metrics']['top_5_accuracy'])
             ece = compare(100 * ece, 100 * baseline_run['bin_data']['expected_calibration_error'])
             mce = compare(100 * mce, 100 * baseline_run['bin_data']['max_calibration_error'])
-            total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
-            avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
+            # total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
+            # avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
             structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
             k = run['params']['k']
             M = run['params']['mc_samples']
             gamma = run['params']['gamma']
 
         result = pd.DataFrame([{
+            'Method': method,
             'Dataset': dataset.upper(),
             'Model': model,
             'Optimizer': optimizer,
@@ -288,12 +290,12 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             'Test Accuracy': test_accuracy,
             'Top-k Accuracy': top_k_accuracy,
             'ECE': ece, 'MCE': mce,
-            'Total Time (h)': total_time,
-            'Avg. Time per Epoch (s)': avg_time_per_epoch,
+            # 'Total Time (h)': total_time,
+            # 'Avg. Time per Epoch (s)': avg_time_per_epoch,
             'Num Epochs': num_epochs
         }])
         results = pd.concat([results, result], ignore_index=True)
-    results.sort_values(by=['Dataset', 'Model', 'Optimizer'], inplace=True)
+    results.sort_values(by=['Dataset', 'Model', 'Method', 'Optimizer'], inplace=True)
     return results
 
 

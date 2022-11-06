@@ -18,6 +18,7 @@ class HyperDeepEnsemble():
         self.models = models
         self.optimizers = optimizers
         self.num_params = np.sum([model.num_params for model in self.models])
+        self.model = self.models[0].__name__
 
     def __call__(self, x, mc_samples=1):
         logits = torch.zeros((len(self.models), mc_samples, x.shape[0], self.num_classes), device=self.device)

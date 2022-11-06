@@ -91,7 +91,7 @@ class ResNet(nn.Module):
         assert((dropout_layers is None) or (0 <= p < 1))
         self.in_planes = 16
 
-        self.dropout = MonteCarloDropout2d(p=p)
+        self.dropout = MonteCarloDropout(p=p)
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
 
@@ -155,16 +155,6 @@ class MonteCarloDropout(nn.Module):
     def __init__(self, p=0.2, inplace=False):
         super().__init__()
         self.dropout = nn.Dropout(p, inplace)
-
-    def forward(self, x):
-        self.train()
-        return self.dropout(x)
-
-
-class MonteCarloDropout2d(nn.Module):
-    def __init__(self, p=0.2, inplace=False):
-        super().__init__()
-        self.dropout = nn.Dropout2d(p, inplace)
 
     def forward(self, x):
         self.train()

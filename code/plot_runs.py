@@ -318,7 +318,7 @@ def evaluate(method: str, model: nn.Module, train_loader: DataLoader, val_loader
         test_metrics=test_metrics,
         bin_data=bin_data
     )
-    corrupted_results = get_corrupted_results(dataset, model, baseline, baseline, metrics,
+    corrupted_results = get_corrupted_results(dataset, model, baseline, method, baseline, metrics,
                                               clean_results, mc_samples, n_bins)
 
     param = dict()
@@ -327,7 +327,7 @@ def evaluate(method: str, model: nn.Module, train_loader: DataLoader, val_loader
     total_time = np.sum([run['epoch_times'][-1] for run in runs])
     avg_time_per_epoch = total_time / num_epochs
     optimizer_name = baseline
-    model_name = model.__name__
+    model_name = model.model.__name__
     num_params = model.num_params
     model_summary = None
 
@@ -382,7 +382,7 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
             optimizer = optim(model.parameters(), **param)
         model.init_weights(seed)
         run = load_run(dataset, model, baseline)
-        optimizer_name = type(optimizer).__name__
+        optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
         if (dataset.lower() in ['cifar10', 'cifar100']) and (optimizer_name != baseline) and (run is None):
             raise RuntimeError(f"Baseline {baseline} does not exist for this dataset and model!"
                                f"Please first run the script with this baseline for the dataset and model.")
@@ -427,7 +427,7 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
             test_metrics=test_metrics,
             bin_data=bin_data
         )
-        corrupted_results = get_corrupted_results(dataset, model, optimizer, method, baseline, metrics,
+        corrupted_results = get_corrupted_results(dataset, model, optimizer, methods[i], baseline, metrics,
                                                   clean_results, mc_samples, n_bins)
 
         num_epochs = epoch + 1
@@ -500,8 +500,8 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
         os.mkdir('plots')
     runs = [run for run in runs if run['model_name'].startswith('ResNet')]# and
             # (run['params'].get('structure') in [None, 'arrowhead'])]
-    runs = [run for run in runs if (run['num_epochs'] < 250) or
-            (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
+    # runs = [run for run in runs if (run['num_epochs'] < 250) or
+    #         (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
     make_csv(runs)
 
     # plot_results_wrt_parameters(runs)
@@ -953,10 +953,10 @@ def make_csv(runs):
     if not os.path.exists('results'):
         os.mkdir('results')
     collect_results(runs).copy().to_csv('results/results.csv', index=False)
-    collect_corrupted_results_df(runs).copy().to_csv('results/corrupted_results.csv', index=False)
-    collect_corruption_errors(runs).copy().to_csv('results/corruption_errors.csv', index=False)
-    collect_rel_corruption_errors(runs).copy().to_csv('results/rel_corruption_errors.csv', index=False)
-    results_table().copy().to_csv('results/table.csv', index=True)
+    # collect_corrupted_results_df(runs).copy().to_csv('results/corrupted_results.csv', index=False)
+    # collect_corruption_errors(runs).copy().to_csv('results/corruption_errors.csv', index=False)
+    # collect_rel_corruption_errors(runs).copy().to_csv('results/rel_corruption_errors.csv', index=False)
+    # results_table().copy().to_csv('results/table.csv', index=True)
 
 
 def results_table():
@@ -1016,12 +1016,12 @@ def unique_everseen(seq, key=None):
 
 
 def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=None, baseline='SGD'):
-    if not type(optimizer) == str:
-        optimizer = type(optimizer).__name__
+    if type(optimizer) == str:
+        optimizer = optimizer.__name__
     if model == 'DeepEnsemble':
         runs = load_all_runs()
-        runs = [run for run in runs if optimizer == baseline
-                and dataset.lower() == dataset.lower()]
+        runs = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+                and run['dataset'].lower() == dataset.lower()]
         assert(len(runs) > 0)
         models = []
         for run in runs:
@@ -1033,8 +1033,8 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
         methods = ['Deep Ensemble']
     elif model == 'HyperDeepEnsemble':
         runs = load_all_runs()
-        runs = [run for run in runs if optimizer == baseline
-                and dataset.lower() == dataset.lower()]
+        runs = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+                and run['dataset'].lower() == dataset.lower()]
         assert(len(runs) > 0)
         models = []
         optimizers = []
@@ -1045,27 +1045,27 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             model.load_state_dict(state_dict=state_dict['model_state_dict'])
             models.append(model)
 
-            optimizer = StructuredNGD(model.params())
+            optimizer = StructuredNGD(model.parameters(), 50000)
             optimizer.load_state_dict(state_dict=state_dict['optimizer_state_dict'])
             optimizers.append(optimizer)
         model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
         methods = ['Hyper Deep Ensemble']
     elif model == 'BBB':
         assert(optimizer == baseline)
-        model = Model(model_type=model, bnn=True, **model_params)
+        model = Model(model_type='ResNet32', bnn=True, **model_params)
         methods = ['BBB']
     elif model == 'Dropout':
         assert(optimizer == baseline)
-        model = Model(model_type=model, dropout_layers='all', p=0.2, **model_params)
+        model = Model(model_type='ResNet32', dropout_layers='all', p=0.2, **model_params)
         methods = ['Dropout']
     elif model == 'LLDropout':
         assert(optimizer == baseline)
-        model = Model(model_type=model, dropout_layers='last', p=0.2, **model_params)
+        model = Model(model_type='ResNet32', dropout_layers='last', p=0.2, **model_params)
         methods = ['LL Dropout']
     elif model == 'TempScaling':
         assert(optimizer == baseline)
         runs = load_all_runs()
-        run = [run for run in runs if run['optimizer_name'] == baseline
+        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt")['model_state_dict']
         model = Model(run['model_name'], **model_params)
