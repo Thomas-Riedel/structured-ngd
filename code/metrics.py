@@ -21,6 +21,66 @@ class MCE:
         return calibration_error(logits, labels, n_bins=self.n_bins, norm='max')
 
 
+class UCE:
+    def __init__(self, num_classes, n_bins=10):
+        self.n_bins = n_bins
+        self.num_classes = num_classes
+        self.__name__ = 'uce'
+
+    def __call__(self, logits, labels):
+        probs = logits.softmax(-1)
+        preds = probs.argmax(-1)
+        uncertainties = -1/torch.log(self.num_classes) * torch.sum(probs * torch.log(probs + torch.finfo().tiny), axis=-1)
+
+        bins = torch.linspace(0.0, 1.0, self.n_bins + 1)
+        indices = torch.bucketize(uncertainties, bins, right=True)
+
+        bin_errors = torch.zeros(self.n_bins, dtype=float)
+        bin_uncertainties = torch.zeros(self.n_bins, dtype=float)
+        bin_counts = torch.zeros(self.n_bins, dtype=int)
+
+        for b in range(self.n_bins):
+            selected = torch.where(indices == b + 1)[0]
+            if len(selected) > 0:
+                bin_errors[b] = 1 - torch.mean((labels[selected] == preds[selected]).float())
+                bin_uncertainties[b] = torch.mean(uncertainties[selected])
+                bin_counts[b] = len(selected)
+
+        gaps = torch.abs(bin_errors - bin_uncertainties)
+        uce = torch.sum(gaps * bin_counts) / torch.sum(bin_counts)
+        return uce
+
+
+class MUCE:
+    def __init__(self, num_classes, n_bins=10):
+        self.n_bins = n_bins
+        self.num_classes = num_classes
+        self.__name__ = 'muce'
+
+    def __call__(self, logits, labels):
+        probs = logits.softmax(-1)
+        preds = probs.argmax(-1)
+        uncertainties = -1/torch.log(self.num_classes) * torch.sum(probs * torch.log(probs + torch.finfo().tiny), axis=-1)
+
+        bins = torch.linspace(0.0, 1.0, self.n_bins + 1)
+        indices = torch.bucketize(uncertainties, bins, right=True)
+
+        bin_errors = torch.zeros(self.n_bins, dtype=float)
+        bin_uncertainties = torch.zeros(self.n_bins, dtype=float)
+        bin_counts = torch.zeros(self.n_bins, dtype=int)
+
+        for b in range(self.n_bins):
+            selected = torch.where(indices == b + 1)[0]
+            if len(selected) > 0:
+                bin_errors[b] = 1 - torch.mean((labels[selected] == preds[selected]).float())
+                bin_uncertainties[b] = torch.mean(uncertainties[selected])
+                bin_counts[b] = len(selected)
+
+        gaps = torch.abs(bin_errors - bin_uncertainties)
+        muce = torch.max(gaps)
+        return muce
+
+
 class TopkAccuracy:
     def __init__(self, top_k=5):
         self.top_k = top_k

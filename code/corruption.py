@@ -100,6 +100,7 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
     if not dataset.lower() in ['cifar10', 'cifar100']:
         return None
     optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
+    model_name = model.__name__
 
     severity = 0
     corruption = 'clean'
@@ -139,12 +140,14 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
             # group bin_data results by types
             corrupted_bin_data = merge_bin_data(bin_data_list)
             bin_data[(severity, corruption_type)] = corrupted_bin_data
+        bin_data[(severity, 'all')] = merge_bin_data([bin_data[(severity, c)]
+                                                      for c in ['blur', 'noise', 'digital', 'weather']])
 
     sub_df = df[
         (df['severity'] > 0) & (df['corruption_type'] != 'all')
     ].drop(['corruption_type', 'severity'], axis=1).copy()
     clean_accuracy = clean_results['test_metrics']['accuracy']
-    if isinstance(optimizer, NoisyOptimizer) or method in ['BBB', 'Dropout', 'LL Dropout']:
+    if isinstance(optimizer, NoisyOptimizer) or method != 'Vanilla':
         baseline_results = load_run(dataset, model, baseline)
         baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
         baseline_df = baseline_results['corrupted_results']['df']
@@ -152,16 +155,8 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
             (baseline_df['severity'] > 0) & (df['corruption_type'] != 'all')
         ].drop(['corruption_type', 'severity'], axis=1).copy()
     else:
-        if isinstance(model, (TempScaling, DeepEnsemble, HyperDeepEnsemble)):
-            baseline_results = load_run(dataset, model.model, baseline)
-            baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
-            baseline_df = baseline_results['corrupted_results']['df']
-            baseline_df = baseline_df[
-                (baseline_df['severity'] > 0) & (df['corruption_type'] != 'all')
-                ].drop(['corruption_type', 'severity'], axis=1).copy()
-        else:
-            baseline_clean_accuracy = clean_accuracy
-            baseline_df = sub_df.copy()
+        baseline_clean_accuracy = clean_accuracy
+        baseline_df = sub_df.copy()
     corruption_error = ce(sub_df, baseline_df)
     rel_corruption_error = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy)
 
@@ -172,15 +167,18 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
         rel_corruption_error[corruption_type] = rel_corruption_error[CORRUPTION_TYPES[corruption_type]].mean(1)
         rel_corruption_error[f"{corruption_type}_std"] = rel_corruption_error[CORRUPTION_TYPES[corruption_type]].std(1)
 
+    df['method'] = method
     df['dataset'] = dataset
     df['model_name'] = model_name
     df['optimizer_name'] = optimizer_name
 
+    corruption_error['method'] = method
     corruption_error['dataset'] = dataset
     corruption_error['model_name'] = model_name
     corruption_error['optimizer_name'] = optimizer_name
     corruption_error['accuracy'] = clean_results['test_metrics']['accuracy']
 
+    rel_corruption_error['method'] = method
     rel_corruption_error['dataset'] = dataset
     rel_corruption_error['model_name'] = model_name
     rel_corruption_error['optimizer_name'] = optimizer_name
@@ -220,7 +218,7 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
 def collect_results(runs, directory='runs', baseline='SGD'):
     results = pd.DataFrame(columns=['Method', 'Dataset', 'Model', 'Optimizer', 'Structure', 'k', 'M', 'gamma',
                                     'Training Loss', 'Test Loss', 'Test Accuracy', 'Top-k Accuracy',
-                                    'ECE', 'MCE',
+                                    'Test Error', 'Top-k Error', 'ECE', 'MCE',
                                     # 'Total Time (h)', 'Avg. Time per Epoch (s)',
                                     'Num Epochs'])
     for run in runs:
@@ -240,6 +238,8 @@ def collect_results(runs, directory='runs', baseline='SGD'):
         test_loss = run['test_loss']
         test_accuracy = run['test_metrics']['accuracy']
         top_k_accuracy = run['test_metrics']['top_5_accuracy']
+        test_error = 1 - run['test_metrics']['accuracy']
+        top_k_error = 1 - run['test_metrics']['top_5_accuracy']
         ece = run['bin_data']['expected_calibration_error']
         mce = run['bin_data']['max_calibration_error']
         # total_time = run['total_time']
@@ -251,6 +251,8 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             test_loss = compare(test_loss)
             test_accuracy = compare(100 * test_accuracy)
             top_k_accuracy = compare(100 * top_k_accuracy)
+            test_error = compare(100 * test_error)
+            top_k_error = compare(100 * top_k_error)
             ece = compare(100 * ece)
             mce = compare(100 * mce)
             # total_time = compare(total_time / 3600)
@@ -261,6 +263,8 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             test_loss = compare(test_loss, baseline_run['test_loss'])
             test_accuracy = compare(100 * test_accuracy, 100 * baseline_run['test_metrics']['accuracy'])
             top_k_accuracy = compare(100 * top_k_accuracy, 100 * baseline_run['test_metrics']['top_5_accuracy'])
+            test_error = compare(100 * test_error, 100 * (1 - baseline_run['test_metrics']['accuracy']))
+            top_k_error = compare(100 * top_k_error, 100 * (1 - baseline_run['test_metrics']['top_5_accuracy']))
             ece = compare(100 * ece, 100 * baseline_run['bin_data']['expected_calibration_error'])
             mce = compare(100 * mce, 100 * baseline_run['bin_data']['max_calibration_error'])
             # total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
@@ -291,6 +295,8 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             'Test Loss': test_loss,
             'Test Accuracy': test_accuracy,
             'Top-k Accuracy': top_k_accuracy,
+            'Test Error': test_error,
+            'Top-k Error': top_k_error,
             'ECE': ece, 'MCE': mce,
             # 'Total Time (h)': total_time,
             # 'Avg. Time per Epoch (s)': avg_time_per_epoch,

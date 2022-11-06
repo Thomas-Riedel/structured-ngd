@@ -508,7 +508,8 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     # plot_loss(runs)
     # plot_metrics(runs)
     # plot_generalization_gap(runs)
-    # plot_reliability_diagram(runs)
+    plot_reliability_diagram(runs)
+    # plot_uncertainty_diagram(runs)
     plot_corrupted_data(runs)
 
 
@@ -717,7 +718,7 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
         plt.show()
 
 
-def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE']):
+def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE']):
     if type(runs) == dict:
         runs = [runs]
     results = collect_results(runs).copy().sort_values(by=['k', 'Structure'], ascending=[True, False])
@@ -740,7 +741,7 @@ def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy',
                 plt.show()
 
 
-def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE']):
+def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE']):
     if type(runs) == dict:
         runs = [runs]
 
@@ -749,6 +750,7 @@ def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 
         return
     # Plot corrupted reliability diagrams for each dataset, model and optimizer
     # plot_corrupted_reliability_diagrams(runs)
+    # plot_corrupted_uncertainty_diagrams(runs)
 
     # Plot corruption errors per dataset and optimizer and grouped by model and error
     plot_corrupted_results(runs, plot_values)
@@ -813,7 +815,7 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
 
 
 def plot_corrupted_results(runs: Union[List[dict], dict],
-                           plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE'],
+                           plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE'],
                            parameters=['k', 'M', 'gamma']) -> None:
     corrupted_results_df = collect_corrupted_results_df(runs)
 
@@ -838,14 +840,14 @@ def plot_corrupted_results(runs: Union[List[dict], dict],
                 for j, value in enumerate(plot_value):
                     fig, ax = plt.subplots(figsize=(12, 8))
                     if type == 'all':
-                        plot = sns.boxplot(data=sub_df, x='severity', y=value, hue='method', ax=ax)
+                        sns.boxplot(data=sub_df, x='severity', y=value, hue='method', ax=ax, flierprops=dict(marker='o'))
                         value_counts = sub_df.set_index(
                             ['severity', 'method']).sort_values(by=['severity', 'method'],
                                                                    ascending=[True, False]).\
                             groupby(['severity', 'method'], sort=False).apply(lambda x: x.value_counts().sum()).values
                     else:
-                        plot = sns.boxplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
-                                           x='severity', y=value, hue='method', ax=ax)
+                        sns.boxplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                                    x='severity', y=value, hue='method', ax=ax, flierprops=dict(marker='o'))
                         value_counts = sub_df[sub_df['corruption_type'].isin(['clean', type])].set_index(
                             ['severity', 'method']).sort_values(by=['severity', 'method'],
                                                                    ascending=[True, False]). \
