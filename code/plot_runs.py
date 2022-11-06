@@ -327,7 +327,7 @@ def evaluate(method: str, model: nn.Module, train_loader: DataLoader, val_loader
     total_time = np.sum([run['epoch_times'][-1] for run in runs])
     avg_time_per_epoch = total_time / num_epochs
     optimizer_name = baseline
-    model_name = model.model.__name__
+    model_name = model.__name__
     num_params = model.num_params
     model_summary = None
 
@@ -754,7 +754,7 @@ def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 
     plot_corrupted_results(runs, plot_values)
 
     # Plot robustness of all methods for each dataset, model and corruption type
-    plot_robustness(runs)
+    # plot_robustness(runs)
 
 
 def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
@@ -829,38 +829,43 @@ def plot_corrupted_results(runs: Union[List[dict], dict],
             plot_value.remove('Top-5 Accuracy')
         # plot corruption errors per dataset and optimizer grouped by model and error (ECE, accuracy, etc.)
         # 2 x len(plot_values) grid of plots
-        for model in corrupted_results_df[corrupted_results_df['dataset'] == dataset]['model'].unique():
+        for model in set(corrupted_results_df[corrupted_results_df['dataset'] == dataset]['model']):
             sub_df = corrupted_results_df[(corrupted_results_df['dataset'] == dataset) &
                                           (corrupted_results_df['model'] == model)].copy().\
                 sort_values(by=['k', 'structure'], ascending=[True, False]).drop_duplicates()
             sub_df[plot_value] *= 100
             for i, type in enumerate(CORRUPTION_TYPES.keys()):
                 for j, value in enumerate(plot_value):
-                    fig, ax = plt.subplots()
+                    fig, ax = plt.subplots(figsize=(12, 8))
                     if type == 'all':
-                        plot = sns.catplot(data=sub_df, x='severity', y=value, hue='structure', errorbar='sd', kind='box', legend=False, ax=ax)
+                        plot = sns.boxplot(data=sub_df, x='severity', y=value, hue='method', ax=ax)
                         value_counts = sub_df.set_index(
-                            ['severity', 'structure']).sort_values(by=['severity', 'structure'],
+                            ['severity', 'method']).sort_values(by=['severity', 'method'],
                                                                    ascending=[True, False]).\
-                            groupby(['severity', 'structure'], sort=False).apply(lambda x: x.value_counts().sum()).values
+                            groupby(['severity', 'method'], sort=False).apply(lambda x: x.value_counts().sum()).values
                     else:
-                        plot = sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
-                                           x='severity', y=value, hue='structure', errorbar='sd', kind='box', legend=False, ax=ax)
+                        plot = sns.boxplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                                           x='severity', y=value, hue='method', ax=ax)
                         value_counts = sub_df[sub_df['corruption_type'].isin(['clean', type])].set_index(
-                            ['severity', 'structure']).sort_values(by=['severity', 'structure'],
+                            ['severity', 'method']).sort_values(by=['severity', 'method'],
                                                                    ascending=[True, False]). \
-                            groupby(['severity', 'structure'], sort=False).apply(lambda x: x.value_counts().sum()).values
+                            groupby(['severity', 'method'], sort=False).apply(lambda x: x.value_counts().sum()).values
 
-                    lines_per_boxplot = len(plot.ax.lines) // len(plot.ax.artists)
-                    for i, (box, xtick, ytick) in enumerate(zip(plot.ax.artists, plot.ax.get_xticklabels(), plot.ax.get_yticklabels())):
+                    lines_per_boxplot = len(ax.lines) // len(ax.artists)
+                    for i, (box, xtick, ytick) in enumerate(
+                            zip(ax.artists, ax.get_xticklabels(), ax.get_yticklabels())
+                    ):
                         color = box.get_facecolor()
-                        line = plot.ax.lines[i * lines_per_boxplot + 4]  # the median
+                        line = ax.lines[i * lines_per_boxplot + 4]  # the median
                         if value_counts[i] == 1:
                             line.set_color(color)
+                            w = line.get_linewidth()
+                            line.set_linewidth(2 * w)
                     title = f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'"
-                    plot.ax.set_title(title)
+                    ax.set_title(title)
                     plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
-                    plot.fig.tight_layout()
+                    plt.ylabel(f"{value} (\%)")
+                    plt.tight_layout()
                     plt.savefig(f"plots/{dataset}/corrupted/results/{type}_{value}.pdf")
                     plt.show()
                     for parameter in parameters:
@@ -953,9 +958,9 @@ def make_csv(runs):
     if not os.path.exists('results'):
         os.mkdir('results')
     collect_results(runs).copy().to_csv('results/results.csv', index=False)
-    # collect_corrupted_results_df(runs).copy().to_csv('results/corrupted_results.csv', index=False)
-    # collect_corruption_errors(runs).copy().to_csv('results/corruption_errors.csv', index=False)
-    # collect_rel_corruption_errors(runs).copy().to_csv('results/rel_corruption_errors.csv', index=False)
+    collect_corrupted_results_df(runs).copy().to_csv('results/corrupted_results.csv', index=False)
+    collect_corruption_errors(runs).copy().to_csv('results/corruption_errors.csv', index=False)
+    collect_rel_corruption_errors(runs).copy().to_csv('results/rel_corruption_errors.csv', index=False)
     # results_table().copy().to_csv('results/table.csv', index=True)
 
 
@@ -1016,8 +1021,7 @@ def unique_everseen(seq, key=None):
 
 
 def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=None, baseline='SGD'):
-    if type(optimizer) == str:
-        optimizer = optimizer.__name__
+    optimizer = optimizer.__name__
     if model == 'DeepEnsemble':
         runs = load_all_runs()
         runs = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
@@ -1052,15 +1056,24 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
         methods = ['Hyper Deep Ensemble']
     elif model == 'BBB':
         assert(optimizer == baseline)
-        model = Model(model_type='ResNet32', bnn=True, **model_params)
+        runs = load_all_runs()
+        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+               and run['dataset'].lower() == dataset.lower()][0]
+        model = Model(model_type=run['model_name'], bnn=True, **model_params)
         methods = ['BBB']
     elif model == 'Dropout':
         assert(optimizer == baseline)
-        model = Model(model_type='ResNet32', dropout_layers='all', p=0.2, **model_params)
+        runs = load_all_runs()
+        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+               and run['dataset'].lower() == dataset.lower()][0]
+        model = Model(model_type=run['model_name'], dropout_layers='all', p=0.2, **model_params)
         methods = ['Dropout']
     elif model == 'LLDropout':
         assert(optimizer == baseline)
-        model = Model(model_type='ResNet32', dropout_layers='last', p=0.2, **model_params)
+        runs = load_all_runs()
+        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+               and run['dataset'].lower() == dataset.lower()][0]
+        model = Model(model_type=run['model_name'], dropout_layers='last', p=0.2, **model_params)
         methods = ['LL Dropout']
     elif model == 'TempScaling':
         assert(optimizer == baseline)

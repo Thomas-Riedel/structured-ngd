@@ -99,7 +99,6 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
 def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, clean_results, mc_samples, n_bins):
     if not dataset.lower() in ['cifar10', 'cifar100']:
         return None
-    model_name = model.__name__
     optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
 
     severity = 0
@@ -235,7 +234,7 @@ def collect_results(runs, directory='runs', baseline='SGD'):
                         f"M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
         else:
             optimizer = run['optimizer_name']
-        baseline_run = load_run(dataset, model, baseline, directory)
+        baseline_run = load_run(dataset, model, baseline, directory=directory)
         train_loss = run['train_loss'][-1]
         val_loss = run['val_loss'][-1]
         test_loss = run['test_loss']
@@ -256,10 +255,6 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             mce = compare(100 * mce)
             # total_time = compare(total_time / 3600)
             # avg_time_per_epoch = compare(avg_time_per_epoch)
-            structure = '--'
-            k = '--'
-            M = '--'
-            gamma = '--'
         else:
             train_loss = compare(train_loss, baseline_run['train_loss'][-1])
             val_loss = compare(val_loss, baseline_run['val_loss'][-1])
@@ -270,10 +265,17 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             mce = compare(100 * mce, 100 * baseline_run['bin_data']['max_calibration_error'])
             # total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
             # avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
+
+        if run['optimizer_name'].startswith('StructuredNGD'):
             structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
             k = run['params']['k']
             M = run['params']['mc_samples']
             gamma = run['params']['gamma']
+        else:
+            structure = '--'
+            k = '--'
+            M = '--'
+            gamma = '--'
 
         result = pd.DataFrame([{
             'Method': method,
@@ -307,14 +309,15 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
         corrupted_results = run['corrupted_results']
+        method = run['method']
         dataset = corrupted_results['dataset']
         params = run['params']
         if not run['optimizer_name'].startswith('StructuredNGD'):
             optimizer_name = run['optimizer_name']
-            structure = run['optimizer_name']
-            k = 0
-            M = 0
-            gamma = 0.0
+            structure = '--'
+            k = '--'
+            M = '--'
+            gamma = '--'
         else:
             structure = params['structure'].replace('_', ' ').title().replace(' ', '')
             optimizer_name = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
@@ -322,6 +325,8 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
             k = run['params']['k']
             M = run['params']['mc_samples']
             gamma = run['params']['gamma']
+        corrupted_results['df']['model_name'] = run['model_name']
+        corrupted_results['df']['method'] = method
         corrupted_results['df']['optimizer_name'] = optimizer_name
         corrupted_results['df']['structure'] = structure
         corrupted_results['df']['k'] = k
@@ -329,6 +334,7 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
         corrupted_results['df']['gamma'] = gamma
 
         clean_df = pd.DataFrame([dict(
+                method=method,
                 dataset=dataset,
                 model_name=run['model_name'],
                 optimizer_name=optimizer_name,
@@ -357,14 +363,15 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
         corruption_error = run['corrupted_results']['corruption_error']
+        corruption_error['method'] = run['method']
         corruption_error['dataset'] = run['dataset']
         params = run['params']
         if not run['optimizer_name'].startswith('StructuredNGD'):
             corruption_error['optimizer_name'] = run['optimizer_name']
-            corruption_error['Structure'] = run['optimizer_name']
-            corruption_error['k'] = 0
-            corruption_error['M'] = 0
-            corruption_error['gamma'] = 0.0
+            corruption_error['Structure'] = '--'
+            corruption_error['k'] = '--'
+            corruption_error['M'] = '--'
+            corruption_error['gamma'] = '--'
         else:
             structure = params['structure'].replace('_', ' ').title().replace(' ', '')
             corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
@@ -386,14 +393,15 @@ def collect_rel_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
         rel_corruption_error = run['corrupted_results']['rel_corruption_error']
+        rel_corruption_error['method'] = run['method']
         rel_corruption_error['dataset'] = run['dataset']
         params = run['params']
         if not run['optimizer_name'].startswith('StructuredNGD'):
             rel_corruption_error['optimizer_name'] = run['optimizer_name']
-            rel_corruption_error['Structure'] = run['optimizer_name']
-            rel_corruption_error['k'] = 0
-            rel_corruption_error['M'] = 0
-            rel_corruption_error['gamma'] = 0.0
+            rel_corruption_error['Structure'] = '--'
+            rel_corruption_error['k'] = '--'
+            rel_corruption_error['M'] = '--'
+            rel_corruption_error['gamma'] = '--'
         else:
             structure = params['structure'].replace('_', ' ').title().replace(' ', '')
             rel_corruption_error['Structure'] = structure

@@ -20,7 +20,7 @@ class TempScaling(nn.Module):
         self.device = model.device
         self.model = model
         self.temperature = nn.Parameter(torch.ones(1) * 1.5)
-        self.__name__ = 'Temp Scaling'
+        self.__name__ = model.__name__
         self.num_params = model.num_params + 1
         self.summary = model.summary
 

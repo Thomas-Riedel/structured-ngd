@@ -18,7 +18,7 @@ class DeepEnsemble():
         self.num_classes = num_classes
         self.models = models
         self.num_params = np.sum([model.num_params for model in self.models])
-        self.model = self.models[0].__name__
+        self.__name__ = self.models[0].__name__
         self.summary = None
         print(f"Using DeepEnsemble with {len(self.models)} models.")
 
