@@ -1,4 +1,4 @@
-'''Code  by: https://github.com/gpleiss/temperature_scaling'''
+# Reference: https://github.com/gpleiss/temperature_scaling
 import torch
 from torch import nn, optim
 from torch.nn import functional as F
@@ -19,6 +19,7 @@ class TempScaling(nn.Module):
         super(TempScaling, self).__init__()
         self.device = model.device
         self.model = model
+        self.num_classes = model.num_classes
         self.temperature = nn.Parameter(torch.ones(1) * 1.5)
         self.__name__ = model.__name__
         self.num_params = model.num_params + 1
@@ -84,7 +85,7 @@ class TempScaling(nn.Module):
 
     @torch.no_grad()
     def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
-                 loss_fn: Callable = nn.CrossEntropyLoss(), n_bins=10, **kwargs) -> Tuple[float, dict, dict]:
+                 loss_fn: Callable = nn.CrossEntropyLoss(), n_bins=10, top_k=5, **kwargs) -> Tuple[float, dict, dict]:
         """Evaluate data on loss function and metrics.
 
         :param data_loader: torch.utils.data.DataLoader, validation or test dataset
@@ -100,9 +101,11 @@ class TempScaling(nn.Module):
         for metric in metrics:
             metric_vals[metric.__name__] = 0.0
         bin_accuracies = np.zeros(n_bins, dtype=float)
+        bin_accuracies_topk = np.zeros(n_bins, dtype=float)
         bin_confidences = np.zeros(n_bins, dtype=float)
         r_bin_counts = np.zeros(n_bins, dtype=int)
         bin_errors = np.zeros(n_bins, dtype=float)
+        bin_errors_topk = np.zeros(n_bins, dtype=float)
         bin_uncertainties = np.zeros(n_bins, dtype=float)
         u_bin_counts = np.zeros(n_bins, dtype=int)
         bins = np.linspace(0.0, 1.0, n_bins + 1)
@@ -117,13 +120,19 @@ class TempScaling(nn.Module):
             for metric in metrics:
                 metric_vals[metric.__name__] += metric(logits, labels).item()
 
-            probs = logits.softmax(-1).mean(0)
-            uncertainties = -1/torch.log(self.num_classes) * torch.mean(probs * torch.log(probs + torch.finfo().tiny), axis=-1)
+            probs = logits.softmax(-1)
+            num_classes = torch.tensor(self.num_classes, dtype=float)
+            uncertainties = -1/torch.log(num_classes) * torch.sum(probs * torch.log(probs + torch.finfo().tiny), axis=-1)
             confidences, preds = probs.max(-1)
+            _, preds_topk = probs.topk(top_k)
+            labels_topk = labels.unsqueeze(-1).expand_as(preds_topk)
 
+            uncertainties = uncertainties.detach().cpu().numpy()
             labels = labels.detach().cpu().numpy()
+            labels_topk = labels_topk.detach().cpu().numpy()
             confidences = confidences.detach().cpu().numpy()
             preds = preds.detach().cpu().numpy()
+            preds_topk = preds_topk.detach().cpu().numpy()
             r_indices = np.digitize(confidences, bins, right=True)
             u_indices = np.digitize(uncertainties, bins, right=True)
 
@@ -131,11 +140,13 @@ class TempScaling(nn.Module):
                 selected = np.where(r_indices == b + 1)[0]
                 if len(selected) > 0:
                     bin_accuracies[b] += np.sum(labels[selected] == preds[selected])
+                    bin_accuracies_topk[b] += np.sum(labels_topk[selected] == preds_topk[selected])
                     bin_confidences[b] += np.sum(confidences[selected])
                     r_bin_counts[b] += len(selected)
                 selected = np.where(u_indices == b + 1)[0]
                 if len(selected) > 0:
-                    bin_errors[b] += np.sum(labels[selected] == preds[selected])
+                    bin_errors[b] += np.sum(labels[selected] != preds[selected])
+                    bin_errors_topk[b] += (1 - (labels_topk[selected] == preds_topk[selected]).sum(-1)).sum()
                     bin_uncertainties[b] += np.sum(uncertainties[selected])
                     u_bin_counts[b] += len(selected)
 
@@ -149,37 +160,55 @@ class TempScaling(nn.Module):
 
         # Divide each bin by its bin count and avoid division by zero!
         bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
+        bin_accuracies_topk /= np.where(r_bin_counts > 0, r_bin_counts, 1)
         bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
         avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
+        avg_acc_topk = np.sum(bin_accuracies_topk * r_bin_counts) / np.sum(r_bin_counts)
         avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
         gaps = np.abs(bin_accuracies - bin_confidences)
         ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
         mce = np.max(gaps)
+        gaps_topk = np.abs(bin_accuracies_topk - bin_confidences)
+        ece_topk = np.sum(gaps_topk * r_bin_counts) / np.sum(r_bin_counts)
+        mce_topk = np.max(gaps_topk)
 
         bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
+        bin_errors_topk /= np.where(u_bin_counts > 0, u_bin_counts, 1)
         bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-        bin_errors = 1 - bin_errors
         avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
+        avg_err_topk = np.sum(bin_errors_topk * u_bin_counts) / np.sum(u_bin_counts)
         avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
         gaps = np.abs(bin_errors - bin_uncertainties)
         uce = np.sum(gaps * u_bin_counts) / np.sum(u_bin_counts)
         muce = np.max(gaps)
+        gaps_topk = np.abs(bin_errors_topk - bin_uncertainties)
+        uce_topk = np.sum(gaps_topk * u_bin_counts) / np.sum(u_bin_counts)
+        muce_topk = np.max(gaps_topk)
+
         bin_data = dict(
             accuracies=bin_accuracies,
+            accuracies_topk=bin_accuracies_topk,
             confidences=bin_confidences,
             errors=bin_errors,
+            errors_topk=bin_errors_topk,
             uncertainties=bin_uncertainties,
             r_counts=r_bin_counts,
             u_counts=u_bin_counts,
             bins=bins,
             avg_accuracy=avg_acc,
+            avg_accuracy_topk=avg_acc_topk,
             avg_confidence=avg_conf,
             avg_error=avg_err,
+            avg_error_topk=avg_err_topk,
             avg_uncertainty=avg_uncert,
             expected_calibration_error=ece,
             max_calibration_error=mce,
             expected_uncertainty_error=uce,
-            max_uncertainty_error=muce
+            max_uncertainty_error=muce,
+            expected_calibration_error_topk=ece_topk,
+            max_calibration_error_topk=mce_topk,
+            expected_uncertainty_error_topk=uce_topk,
+            max_uncertainty_error_topk=muce_topk
         )
         return loss, metric_vals, bin_data
 

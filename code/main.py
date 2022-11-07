@@ -1,26 +1,29 @@
 from plot_runs import *
 from metrics import *
-from models import *
 
 
 def main() -> None:
 	"""Run script.
 	"""
-	device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
 	args = parse_args()
 
+	device = 'cuda' if args['use_cuda'] else 'cpu'
 	train_loader, val_loader, test_loader = load_data(args['dataset'], args['batch_size'], args['data_split'])
 	num_classes = len(train_loader.dataset.classes)
 	n = len(train_loader.dataset)
 	input_shape = iter(train_loader).next()[0].shape[1:]
 
-	mce = MCE(args['n_bins'])
 	ece = ECE(args['n_bins'])
 	uce = UCE(num_classes, args['n_bins'])
+	mce = MCE(args['n_bins'])
 	muce = MUCE(num_classes, args['n_bins'])
 	top_k_accuracy = TopkAccuracy(top_k=5)
-	metrics = [accuracy, top_k_accuracy, ece, mce, uce, muce]
+	top_k_ece = TopkECE(top_k=5, n_bins=args['n_bins'])
+	top_k_uce = TopkUCE(num_classes=num_classes, top_k=5, n_bins=args['n_bins'])
+	top_k_mce = TopkMCE(top_k=5, n_bins=args['n_bins'])
+	top_k_muce = TopkMUCE(num_classes=num_classes, top_k=5, n_bins=args['n_bins'])
+	brier = Brier(num_classes)
+	metrics = [accuracy, ece, uce, mce, muce, brier, top_k_accuracy, top_k_ece, top_k_uce, top_k_mce, top_k_muce]
 
 	params = get_params(args, baseline=args['baseline'], n=n)
 	model_params = dict(num_classes=num_classes, input_shape=input_shape, device=device)

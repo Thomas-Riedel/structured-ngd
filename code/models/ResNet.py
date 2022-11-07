@@ -95,14 +95,14 @@ class ResNet(nn.Module):
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
 
-        use_dropout = True if dropout_layers == 'all' else False
+        use_dropout = (dropout_layers == 'all')
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1, dropout=use_dropout)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2, dropout=use_dropout)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2, dropout=use_dropout)
+        if dropout_layers == 'last':
+            self.layer3 = nn.Sequential(self.layer3, self.dropout)
         self.linear = nn.Linear(64, num_classes)
 
-        if dropout_layers in ['all', 'last']:
-            self.linear = nn.Sequential(self.linear, self.dropout)
         self.apply(_weights_init)
 
     def _make_layer(self, block, planes, num_blocks, stride, dropout=False):

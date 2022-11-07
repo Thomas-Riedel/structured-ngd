@@ -14,7 +14,7 @@ from torchvision import transforms
 
 from optimizers.rank_k_cov import *
 from torch.optim import *
-from reliability_diagrams import reliability_diagram
+from reliability_diagrams import reliability_diagram, uncertainty_diagram
 from corruption import *
 from metrics import *
 from network import *
@@ -41,7 +41,8 @@ def parse_args() -> dict:
     """
     parser = argparse.ArgumentParser(description='Run methods with parameters.')
     parser.add_argument('-o', '--optimizer', type=str, default='StructuredNGD',
-                        help='Optimizer, one of Adam, SGD, StructuredNGD (capitalization matters!, default: StructuredNGD)')
+                        help='Optimizer, one of Adam, SGD, StructuredNGD '
+                             '(capitalization matters!, default: StructuredNGD)')
     parser.add_argument('-e', '--epochs', type=int, default=1,
                         help='Number of epochs to train models on data (default: 1)')
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10",
@@ -78,6 +79,8 @@ def parse_args() -> dict:
                         help='Number of MC samples during evaluation (default: 32)')
     parser.add_argument('--baseline', type=str, default='SGD',
                         help='Baseline optimizer for comparison of corrupted data')
+    parser.add_argument('--use_cuda', type=bool, default=torch.cuda.is_available(),
+                        help='Whether to use CUDA (default: True if available, False if not)')
 
     args = parser.parse_args(sys.argv[1:])
     args.lr, args.k, args.mc_samples = parse_vals(
@@ -112,7 +115,8 @@ def parse_args() -> dict:
         data_split=args.data_split,
         n_bins=args.n_bins,
         mc_samples_eval=args.mc_samples_eval,
-        baseline=args.baseline
+        baseline=args.baseline,
+        use_cuda=args.use_cuda
     )
     return args_dict
 
@@ -125,12 +129,12 @@ def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
     :return: result, List[Union[int, float]], list of parsed and separated arguments
     """
 
-    def make_sequence(type):
+    def make_sequence(t):
         def f(val):
-            if type == int:
+            if t == int:
                 # argument can be given as "0to11step3" meaning it should be parsed into a list ranging from 0 to 11
                 # including with a step size of 3, i.e. [0, 3, 6, 9]
-                val_list = [type(x) for x in re.split(r'to|step', val)]
+                val_list = [t(x) for x in re.split(r'to|step', val)]
                 if len(val_list) == 3:
                     start, end, step = val_list
                 elif len(val_list) == 2:
@@ -144,12 +148,12 @@ def parse_vals(args: List[str], types: List[type]) -> List[Union[int, float]]:
                     raise ValueError("Supply your parameter as <start>to<end>step<step_size>")
                 return list(range(start, end, step))
             else:
-                return [type(val)]
+                return [t(val)]
         return f
 
     result = []
-    for arg, type in zip(args, types):
-        result.append(list(sorted(set(itertools.chain.from_iterable(map(make_sequence(type), arg.split(',')))))))
+    for arg, t in zip(args, types):
+        result.append(list(sorted(set(itertools.chain.from_iterable(map(make_sequence(t), arg.split(',')))))))
     max_length = np.max([len(x) for x in result])
     for i in range(len(result)):
         if len(result[i]) == 1:
@@ -253,7 +257,7 @@ def get_params(args: dict, baseline='SGD', add_weight_decay=True, n=1) -> dict:
     elif baseline == 'SGD':
         momentum = dict(momentum=0.9, nesterov=True)
     baseline = [dict(lr=lr, weight_decay=add_weight_decay * prior_precision / n, **momentum)
-            for lr, prior_precision in zip(set(args['lr']), set(args['prior_precision']))]
+                for lr, prior_precision in zip(set(args['lr']), set(args['prior_precision']))]
     params = dict(ngd=ngd, baseline=baseline)
     return params
 
@@ -269,10 +273,12 @@ def record_loss_and_metrics(losses, metrics, loss, metric):
     return losses, metrics
 
 
-def run_experiments(epochs: int, methods: List[str], model: nn.Module, optimizer: List[Union[Optimizer, StructuredNGD]],
+def run_experiments(
+        epochs: int, methods: List[str], model: nn.Module, optimizer: List[Union[Optimizer, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
-        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [accuracy],
-        eval_every: int = 100, n_bins: int = 10, mc_samples: int = 32) -> List[dict]:
+        baseline_params: List[dict] = None, ngd_params: List[dict] = None,  metrics: List[Callable] = [accuracy],
+        eval_every: int = 100, n_bins: int = 10, mc_samples: int = 32
+) -> List[dict]:
     """Run an optimizer on data for multiple epochs using multiple hyperparameters and evaluate.
 
     :param epochs: int, number of epochs for training
@@ -300,7 +306,7 @@ def evaluate(method: str, model: nn.Module, train_loader: DataLoader, val_loader
     if isinstance(model, TempScaling):
         model.set_temperature(val_loader)
     runs = []
-    dataset = train_loader.dataset.root.split('/')[1]
+    dataset = train_loader.dataset.root.split('/')[1].upper()
 
     train_loss = []
     train_metrics = {}
@@ -381,10 +387,10 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
             seed = None
             optimizer = optim(model.parameters(), **param)
         model.init_weights(seed)
-        run = load_run(dataset, model, baseline)
+        run = load_run(dataset, model, baseline, method='Vanilla')
         optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
-        if (dataset.lower() in ['cifar10', 'cifar100']) and (optimizer_name != baseline) and (run is None):
-            raise RuntimeError(f"Baseline {baseline} does not exist for this dataset and model!"
+        if methods[i] != 'Vanilla' and run is None:
+            raise RuntimeError(f"Baseline {baseline} does not exist for this dataset and model! "
                                f"Please first run the script with this baseline for the dataset and model.")
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=8)
 
@@ -468,7 +474,8 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
         os.makedirs('checkpoints', exist_ok=True)
         torch.save({
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict()
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_size': len(train_loader.dataset)
         }, f"checkpoints/{timestamp}.pt")
         print('Finished Training')
     return runs
@@ -498,8 +505,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
         runs = [runs]
     if not os.path.exists('plots'):
         os.mkdir('plots')
-    runs = [run for run in runs if run['model_name'].startswith('ResNet')]# and
-            # (run['params'].get('structure') in [None, 'arrowhead'])]
+    # runs = [run for run in runs if  (run['params'].get('structure') in [None, 'arrowhead'])]
     # runs = [run for run in runs if (run['num_epochs'] < 250) or
     #         (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
     make_csv(runs)
@@ -509,8 +515,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     # plot_metrics(runs)
     # plot_generalization_gap(runs)
     plot_reliability_diagram(runs)
-    # plot_uncertainty_diagram(runs)
-    plot_corrupted_data(runs)
+    # plot_corrupted_data(runs)
 
 
 def plot_loss(runs: Union[dict, List[dict]]) -> None:
@@ -699,6 +704,8 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
         dataset = run['dataset']
         if not os.path.exists(f"plots/{dataset}/reliability_diagrams"):
             os.makedirs(f"plots/{dataset}/reliability_diagrams", exist_ok=True)
+        if not os.path.exists(f"plots/{dataset}/uncertainty_diagrams"):
+            os.makedirs(f"plots/{dataset}/uncertainty_diagrams", exist_ok=True)
         if run['optimizer_name'].startswith('StructuredNGD'):
             params = run['params']
             structure = params['structure'].replace('_', ' ').title().replace(' ', '')
@@ -709,16 +716,24 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
             optimizer = run['optimizer_name']
             optimizer_name = run['optimizer_name']
         model = run['model_name']
+        method = run['method']
         title = f"Reliability Diagram on {dataset.upper()} using {model}\n{optimizer}"
         plt.figure()
         bin_data = run['bin_data']
         reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importance='alpha',
                             title=title, draw_averages=True, figsize=(6, 6), dpi=100)
-        plt.savefig(f"plots/{dataset}/reliability_diagrams/{optimizer_name}.pdf")
+        plt.savefig(f"plots/{dataset}/reliability_diagrams/{method}_{optimizer_name}.pdf")
+        plt.show()
+
+        title = f"Uncertainty Diagram on {dataset.upper()} using {method}\n{optimizer}"
+        plt.figure()
+        uncertainty_diagram(bin_data, draw_uce=True, draw_muce=True, draw_bin_importance='alpha',
+                            title=title, draw_averages=True, figsize=(6, 6), dpi=100)
+        plt.savefig(f"plots/{dataset}/uncertainty_diagrams/{method}_{optimizer_name}.pdf")
         plt.show()
 
 
-def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE']):
+def plot_results_wrt_parameters(runs, plot_values=['NLL', 'Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE']):
     if type(runs) == dict:
         runs = [runs]
     results = collect_results(runs).copy().sort_values(by=['k', 'Structure'], ascending=[True, False])
@@ -741,7 +756,7 @@ def plot_results_wrt_parameters(runs, plot_values=['Accuracy', 'Top-5 Accuracy',
                 plt.show()
 
 
-def plot_corrupted_data(runs, plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE']):
+def plot_corrupted_data(runs, plot_values=['NNLL', 'Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE']):
     if type(runs) == dict:
         runs = [runs]
 
@@ -815,7 +830,7 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
 
 
 def plot_corrupted_results(runs: Union[List[dict], dict],
-                           plot_values=['Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE'],
+                           plot_values=['NLL', 'Accuracy', 'Top-5 Accuracy', 'ECE', 'MCE', 'UCE', 'MUCE'],
                            parameters=['k', 'M', 'gamma']) -> None:
     corrupted_results_df = collect_corrupted_results_df(runs)
 
@@ -1051,7 +1066,7 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             model.load_state_dict(state_dict=state_dict['model_state_dict'])
             models.append(model)
 
-            optimizer = StructuredNGD(model.parameters(), 50000)
+            optimizer = StructuredNGD(model.parameters(), state_dict['train_size'])
             optimizer.load_state_dict(state_dict=state_dict['optimizer_state_dict'])
             optimizers.append(optimizer)
         model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
@@ -1095,6 +1110,8 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             methods = []
             for param in ngd_params:
                 structure = param['structure'].replace('_', ' ').title().replace(' ', '')
+                if param['k'] == 0:
+                    structure = 'Diagonal'
                 method = rf"NGD (structure = {structure}, $k = {param['k']})$"
                 methods.append(method)
     return methods, model

@@ -26,7 +26,7 @@ CORRUPTION_TYPES = dict(
 )
 
 
-def load_run(dataset, model, optimizer, method='Vanilla', directory: str = 'runs') -> dict:
+def load_run(dataset, model, optimizer, directory: str = 'runs', method='Vanilla') -> dict:
     if type(model) != str:
         model = model.__name__
     if type(optimizer) != str:
@@ -46,7 +46,7 @@ def load_run(dataset, model, optimizer, method='Vanilla', directory: str = 'runs
 
 def load_all_runs(directory: str = 'runs') -> List[dict]:
     runs = []
-    for file in os.listdir(directory):
+    for file in sorted(os.listdir(directory)):
         if file.endswith(".pkl"):
             with open(os.path.join(directory, file), 'rb') as f:
                 run = pickle.load(f)
@@ -148,7 +148,7 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
     ].drop(['corruption_type', 'severity'], axis=1).copy()
     clean_accuracy = clean_results['test_metrics']['accuracy']
     if isinstance(optimizer, NoisyOptimizer) or method != 'Vanilla':
-        baseline_results = load_run(dataset, model, baseline)
+        baseline_results = load_run(dataset, model, baseline, method='Vanilla')
         baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
         baseline_df = baseline_results['corrupted_results']['df']
         baseline_df = baseline_df[
@@ -217,8 +217,9 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
 
 def collect_results(runs, directory='runs', baseline='SGD'):
     results = pd.DataFrame(columns=['Method', 'Dataset', 'Model', 'Optimizer', 'Structure', 'k', 'M', 'gamma',
-                                    'Training Loss', 'Test Loss', 'Test Accuracy', 'Top-k Accuracy',
-                                    'Test Error', 'Top-k Error', 'ECE', 'MCE',
+                                    'Training Loss', 'Validation Loss', 'Test Loss', 'Test Accuracy', 'Test Error',
+                                    'BS', 'ECE', 'MCE', 'UCE', 'MUCE', 'Top-k Accuracy', 'Top-k Error',
+                                    'Top-k ECE', 'Top-k MCE', 'Top-k UCE', 'Top-k MUCE',
                                     # 'Total Time (h)', 'Avg. Time per Epoch (s)',
                                     'Num Epochs'])
     for run in runs:
@@ -232,7 +233,7 @@ def collect_results(runs, directory='runs', baseline='SGD'):
                         f"M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
         else:
             optimizer = run['optimizer_name']
-        baseline_run = load_run(dataset, model, baseline, directory=directory)
+        baseline_run = load_run(dataset, model, baseline, method='Vanilla', directory=directory)
         train_loss = run['train_loss'][-1]
         val_loss = run['val_loss'][-1]
         test_loss = run['test_loss']
@@ -240,8 +241,15 @@ def collect_results(runs, directory='runs', baseline='SGD'):
         top_k_accuracy = run['test_metrics']['top_5_accuracy']
         test_error = 1 - run['test_metrics']['accuracy']
         top_k_error = 1 - run['test_metrics']['top_5_accuracy']
+        brier_score = run['test_metrics']['brier']
         ece = run['bin_data']['expected_calibration_error']
         mce = run['bin_data']['max_calibration_error']
+        uce = run['bin_data']['expected_uncertainty_error']
+        muce = run['bin_data']['max_uncertainty_error']
+        ece_topk = run['bin_data']['expected_calibration_error_topk']
+        mce_topk = run['bin_data']['max_calibration_error_topk']
+        uce_topk = run['bin_data']['expected_uncertainty_error_topk']
+        muce_topk = run['bin_data']['max_uncertainty_error_topk']
         # total_time = run['total_time']
         # avg_time_per_epoch = run['avg_time_per_epoch']
         num_epochs = run['num_epochs']
@@ -253,8 +261,15 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             top_k_accuracy = compare(100 * top_k_accuracy)
             test_error = compare(100 * test_error)
             top_k_error = compare(100 * top_k_error)
+            brier_score = compare(100 * brier_score)
             ece = compare(100 * ece)
             mce = compare(100 * mce)
+            uce = compare(100 * uce)
+            muce = compare(100 * muce)
+            ece_topk = compare(100 * ece_topk)
+            mce_topk = compare(100 * mce_topk)
+            uce_topk = compare(100 * uce_topk)
+            muce_topk = compare(100 * muce_topk)
             # total_time = compare(total_time / 3600)
             # avg_time_per_epoch = compare(avg_time_per_epoch)
         else:
@@ -265,8 +280,15 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             top_k_accuracy = compare(100 * top_k_accuracy, 100 * baseline_run['test_metrics']['top_5_accuracy'])
             test_error = compare(100 * test_error, 100 * (1 - baseline_run['test_metrics']['accuracy']))
             top_k_error = compare(100 * top_k_error, 100 * (1 - baseline_run['test_metrics']['top_5_accuracy']))
+            brier_score = compare(100 * brier_score, baseline_run['test_metrics']['brier'])
             ece = compare(100 * ece, 100 * baseline_run['bin_data']['expected_calibration_error'])
             mce = compare(100 * mce, 100 * baseline_run['bin_data']['max_calibration_error'])
+            uce = compare(100 * uce, 100 * baseline_run['bin_data']['expected_uncertainty_error'])
+            muce_topk = compare(100 * muce_topk, 100 * baseline_run['bin_data']['max_uncertainty_error_topk'])
+            ece_topk = compare(100 * ece_topk, 100 * baseline_run['bin_data']['expected_calibration_error_topk'])
+            mce_topk = compare(100 * mce_topk, 100 * baseline_run['bin_data']['max_calibration_error_topk'])
+            uce_topk = compare(100 * uce_topk, 100 * baseline_run['bin_data']['expected_uncertainty_error_topk'])
+            muce_topk = compare(100 * muce_topk, 100 * baseline_run['bin_data']['max_uncertainty_error_topk'])
             # total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
             # avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
 
@@ -293,11 +315,10 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             'Training Loss': train_loss,
             'Validation Loss': val_loss,
             'Test Loss': test_loss,
-            'Test Accuracy': test_accuracy,
-            'Top-k Accuracy': top_k_accuracy,
-            'Test Error': test_error,
-            'Top-k Error': top_k_error,
-            'ECE': ece, 'MCE': mce,
+            'Test Accuracy': test_accuracy, 'Test Error': test_error, 'BS': brier_score,
+            'ECE': ece, 'MCE': mce, 'UCE': uce, 'MUCE': muce,
+            'Top-k Accuracy': top_k_accuracy, 'Top-k Error': top_k_error, 'Topk-k ECE': ece_topk,
+            'Topk-k UCE': uce_topk, 'Topk-k MCE': mce_topk, 'Topk-k MUCE': muce_topk,
             # 'Total Time (h)': total_time,
             # 'Avg. Time per Epoch (s)': avg_time_per_epoch,
             'Num Epochs': num_epochs
@@ -355,9 +376,10 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
                 **run['test_metrics']
             )])
         corrupted_results_df = pd.concat([corrupted_results_df, clean_df, corrupted_results['df']], ignore_index=True)
-    corrupted_results_df.rename(columns={'optimizer_name': 'optimizer', 'model_name': 'model', 'accuracy': 'Accuracy',
-                                         'top_5_accuracy': 'Top-5 Accuracy', 'ece': 'ECE', 'mce': 'MCE',
-                                         'loss': 'Loss'}, inplace=True)
+    corrupted_results_df.rename(columns={'optimizer_name': 'optimizer', 'model_name': 'model', 'loss': 'NLL',
+                                         'accuracy': 'Accuracy', 'top_5_accuracy': 'Top-5 Accuracy',
+                                         'ece': 'ECE', 'mce': 'MCE', 'uce': 'UCE', 'muce': 'MUCE', 'loss': 'Loss'},
+                                inplace=True)
     return corrupted_results_df
 
 
@@ -434,33 +456,79 @@ def merge_bin_data(data: List[dict]):
         return {}
     result = data[0]
     bins = result['bins']
-    bin_accuracies = result['counts'] * result['accuracies']
-    bin_confidences = result['counts'] * result['confidences']
-    bin_counts = result['counts']
+    bin_accuracies = result['r_counts'] * result['accuracies']
+    bin_accuracies_topk = result['r_counts'] * result['accuracies_topk']
+    bin_confidences = result['r_counts'] * result['confidences']
+    r_bin_counts = result['r_counts']
+    bin_errors = result['u_counts'] * result['errors']
+    bin_errors_topk = result['u_counts'] * result['errors_topk']
+    bin_uncertainties = result['u_counts'] * result['uncertainties']
+    u_bin_counts = result['u_counts']
 
     for bin_data in data[1:]:
         assert(len(bins) == len(bin_data['bins']))
-        bin_accuracies += bin_data['counts'] * bin_data['accuracies']
-        bin_confidences += bin_data['counts'] * bin_data['confidences']
-        bin_counts += bin_data['counts']
+        bin_accuracies += bin_data['r_counts'] * bin_data['accuracies']
+        bin_accuracies_topk += bin_data['r_counts'] * bin_data['accuracies_topk']
+        bin_confidences += bin_data['r_counts'] * bin_data['confidences']
+        r_bin_counts += bin_data['r_counts']
 
-    bin_accuracies /= np.where(bin_counts > 0, bin_counts, 1)
-    bin_confidences /= np.where(bin_counts > 0, bin_counts, 1)
+        bin_errors += bin_data['u_counts'] * bin_data['errors']
+        bin_errors_topk += bin_data['u_counts'] * bin_data['errors_topk']
+        bin_uncertainties += bin_data['u_counts'] * bin_data['uncertainties']
+        u_bin_counts += bin_data['u_counts']
 
-    avg_acc = np.sum(bin_accuracies * bin_counts) / np.sum(bin_counts)
-    avg_conf = np.sum(bin_confidences * bin_counts) / np.sum(bin_counts)
+    bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
+    bin_accuracies_topk /= np.where(r_bin_counts > 0, r_bin_counts, 1)
+    bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
+    bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
+    bin_errors_topk /= np.where(u_bin_counts > 0, u_bin_counts, 1)
+    bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
+
+    avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
+    avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
+    avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
+    avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
+
+    avg_acc_topk = np.sum(bin_accuracies_topk * r_bin_counts) / np.sum(r_bin_counts)
+    avg_err_topk = np.sum(bin_errors_topk * u_bin_counts) / np.sum(u_bin_counts)
 
     gaps = np.abs(bin_accuracies - bin_confidences)
-    ece = np.sum(gaps * bin_counts) / np.sum(bin_counts)
+    ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
     mce = np.max(gaps)
+    gaps_topk = np.abs(bin_accuracies_topk - bin_confidences)
+    ece_topk = np.sum(gaps_topk * r_bin_counts) / np.sum(r_bin_counts)
+    mce_topk = np.max(gaps_topk)
 
-    return {
-        "accuracies": bin_accuracies,
-        "confidences": bin_confidences,
-        "counts": bin_counts,
-        "bins": bins,
-        "avg_accuracy": avg_acc,
-        "avg_confidence": avg_conf,
-        "expected_calibration_error": ece,
-        "max_calibration_error": mce
-    }
+    gaps = np.abs(bin_errors - bin_uncertainties)
+    uce = np.sum(gaps * u_bin_counts) / np.sum(u_bin_counts)
+    muce = np.max(gaps)
+    gaps_topk = np.abs(bin_errors_topk - bin_uncertainties)
+    uce_topk = np.sum(gaps_topk * u_bin_counts) / np.sum(u_bin_counts)
+    muce_topk = np.max(gaps_topk)
+
+    bin_data = dict(
+        accuracies=bin_accuracies,
+        accuracies_topk=bin_accuracies_topk,
+        confidences=bin_confidences,
+        errors=bin_errors,
+        errors_topk=bin_errors_topk,
+        uncertainties=bin_uncertainties,
+        r_counts=r_bin_counts,
+        u_counts=u_bin_counts,
+        bins=bins,
+        avg_accuracy=avg_acc,
+        avg_accuracy_topk=avg_acc_topk,
+        avg_confidence=avg_conf,
+        avg_error=avg_err,
+        avg_error_topk=avg_err_topk,
+        avg_uncertainty=avg_uncert,
+        expected_calibration_error=ece,
+        max_calibration_error=mce,
+        expected_uncertainty_error=uce,
+        max_uncertainty_error=muce,
+        expected_calibration_error_topk=ece_topk,
+        max_calibration_error_topk=mce_topk,
+        expected_uncertainty_error_topk=uce_topk,
+        max_uncertainty_error_topk=muce_topk
+    )
+    return bin_data
