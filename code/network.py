@@ -207,7 +207,7 @@ class Model(nn.Module):
         bin_data = get_bin_data(logits, labels, num_classes=self.num_classes, n_bins=n_bins)
         uncertainty = get_uncertainty(logits)
 
-        print(f"\tNLL = :{loss}\n")
+        print(f"\tNLL = {loss}\n")
         print("\t{:<25} {:<10}".format('Metric', 'Value'))
         for k, v in metric_vals.items():
             print("\t{:<25} {:<10.3f}".format(k, v))

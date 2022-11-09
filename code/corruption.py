@@ -21,10 +21,10 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
     corruption_errors = pd.DataFrame()
     bin_data = {(severity, corruption_type): clean_results['bin_data']}
     uncertainty = dict(
-        model_uncertainty={(severity, corruption_type): clean_results['model_uncertainty']},
-        predictive_uncertainty={(severity, corruption_type): clean_results['predictive_uncertainty']}
+        model_uncertainty={(severity, corruption_type): clean_results['uncertainty']['model_uncertainty']},
+        predictive_uncertainty={(severity, corruption_type): clean_results['uncertainty']['predictive_uncertainty']}
     )
-    i = 0
+    i = 1
     for severity in SEVERITY_LEVELS:
         for corruption_type in CORRUPTION_TYPES.keys():
             if corruption_type == 'all':
@@ -69,8 +69,8 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
     else:
         baseline_clean_accuracy = clean_accuracy
         baseline_df = sub_df.copy()
-    corruption_errors['mCE'] = ce(sub_df, baseline_df)
-    corruption_errors['Rel. mCE'] = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy)
+    corruption_errors['mCE'] = ce(sub_df, baseline_df).reindex(columns=CORRUPTIONS).values.reshape(-1)
+    corruption_errors['Rel. mCE'] = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy).reindex(columns=CORRUPTIONS).values.reshape(-1)
     corruption_errors['Method'] = method
     corruption_errors['Model'] = model_name
     corruption_errors['Dataset'] = dataset

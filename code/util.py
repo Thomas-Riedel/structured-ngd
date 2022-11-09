@@ -647,9 +647,9 @@ def merge_bin_data(data: List[dict]):
 
 def get_uncertainty(logits):
     return dict(
-        model_uncertainty=model_uncertainty(logits),
-        predictive_uncertainty=predictive_uncertainty(logits),
-        # data_uncertainty=data_uncertainty(logits)
+        model_uncertainty=model_uncertainty(logits).detach().cpu().numpy(),
+        predictive_uncertainty=predictive_uncertainty(logits).detach().cpu().numpy(),
+        # data_uncertainty=data_uncertainty(logits).detach().cpu().numpy()
     )
 
 

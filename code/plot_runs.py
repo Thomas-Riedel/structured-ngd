@@ -262,7 +262,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     # plot_metrics(runs)
     # plot_generalization_gap(runs)
     plot_reliability_diagram(runs)
-    plot_mutual_information(runs)
+    # plot_mutual_information(runs)
     # plot_corrupted_data(runs)
 
 

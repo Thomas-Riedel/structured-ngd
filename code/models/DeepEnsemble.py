@@ -69,7 +69,7 @@ class DeepEnsemble:
         bin_data = get_bin_data(logits, labels, num_classes=self.num_classes, n_bins=n_bins)
         uncertainty = get_uncertainty(logits)
 
-        print(f"\tNLL = :{loss}\n")
+        print(f"\tNLL = {loss}\n")
         print("\t{:<25} {:<10}".format('Metric', 'Value'))
         for k, v in metric_vals.items():
             print("\t{:<25} {:<10.3f}".format(k, v))
@@ -78,9 +78,9 @@ class DeepEnsemble:
 
 def get_uncertainty(logits):
     return dict(
-        model_uncertainty=model_uncertainty(logits),
-        predictive_uncertainty=predictive_uncertainty(logits),
-        # data_uncertainty=data_uncertainty(logits)
+        model_uncertainty=model_uncertainty(logits).detach().cpu().numpy(),
+        predictive_uncertainty=predictive_uncertainty(logits).detach().cpu().numpy(),
+        # data_uncertainty=data_uncertainty(logits).detach().cpu().numpy()
     )
 
 
