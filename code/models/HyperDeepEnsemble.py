@@ -65,7 +65,7 @@ class HyperDeepEnsemble:
                             labels_list.append(labels)
                     mc_logits = torch.cat(mc_logits)
                     model_logits.append(mc_logits)
-                model_logits = torch.cat(model_logits)
+                model_logits = torch.stack(model_logits)
                 logits.append(model_logits)
         logits = torch.stack(logits)
         labels = torch.cat(labels_list)
@@ -77,7 +77,11 @@ class HyperDeepEnsemble:
 
         bin_data = get_bin_data(logits, labels, num_classes=self.num_classes, n_bins=n_bins)
         uncertainty = get_uncertainty(logits)
-        print(loss, metric_vals)
+
+        print(f"\tNLL = :{loss}\n")
+        print("\t{:<25} {:<10}".format('Metric', 'Value'))
+        for k, v in metric_vals.items():
+            print("\t{:<25} {:<10.3f}".format(k, v))
         return loss, metric_vals, bin_data, uncertainty
 
 
@@ -106,6 +110,8 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
     probs = logits.softmax(-1)
     if len(probs.shape) == 3:
         probs = probs.mean(0)
+    if len(probs.shape) == 4:
+        probs = probs.mean(1).mean(0)
     num_classes = torch.tensor(num_classes, dtype=float)
     uncertainties = 1/torch.log(num_classes) * predictive_uncertainty(logits)
     confidences, preds = probs.max(-1)
@@ -137,9 +143,6 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
             bin_uncertainties[b] = np.mean(uncertainties[selected])
             u_bin_counts[b] = len(selected)
 
-    # Divide each bin by its bin count and avoid division by zero!
-    bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-    bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
     avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
     avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
     gaps = np.abs(bin_accuracies - bin_confidences)

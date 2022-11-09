@@ -1,18 +1,19 @@
 import numpy as np
+
 import torch
 import torch.nn as nn
-
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.optim import Adam
-from optimizers.noisy_optimizer import *
 from torchsummary import summary
-from metrics import *
-from models import *
 from bayesian_torch.models.dnn_to_bnn import dnn_to_bnn, get_kl_loss
 
-from typing import Union, Tuple, List, Callable
 import time
+from typing import Union, Tuple, List, Callable
+
+from optimizers.noisy_optimizer import *
+from metrics import *
+from models import *
 from util import *
 
 
@@ -206,7 +207,10 @@ class Model(nn.Module):
         bin_data = get_bin_data(logits, labels, num_classes=self.num_classes, n_bins=n_bins)
         uncertainty = get_uncertainty(logits)
 
-        print(loss, metric_vals)
+        print(f"\tNLL = :{loss}\n")
+        print("\t{:<25} {:<10}".format('Metric', 'Value'))
+        for k, v in metric_vals.items():
+            print("\t{:<25} {:<10.3f}".format(k, v))
         return loss, metric_vals, bin_data, uncertainty
 
     def init_weights(self, seed: Union[int, None] = None) -> None:

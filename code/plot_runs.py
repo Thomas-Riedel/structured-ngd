@@ -49,18 +49,19 @@ def run_experiments(
     else:
         return train_and_evaluate(
             epochs, methods, model, optimizer, train_loader, val_loader, test_loader, baseline,
-            baseline_params, ngd_params, metrics, eval_every, n_bins, mc_samples_test
+            baseline_params, ngd_params, metrics, eval_every, n_bins, mc_samples_val, mc_samples_test
         )
 
 
 def evaluate(
         method: str, model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
-        baseline: str = 'SGD', metrics: List[Callable] = [], n_bins: int = 10, mc_samples_test: int = 32
+        baseline: str = 'SGD', metrics: List[Callable] = [], n_bins: int = 10,
+        mc_samples_val: int = 1, mc_samples_test: int = 32
 ):
     if isinstance(model, TempScaling):
         model.set_temperature(val_loader)
     runs = []
-    dataset = train_loader.dataset.root.split('/')[1].upper()
+    dataset = train_loader.dataset.dataset.root.split('/')[1].upper()
 
     train_loss = []
     train_metrics = {}
@@ -69,18 +70,19 @@ def evaluate(
 
     val_loss = []
     val_metrics = {}
-    loss, metric, _, _ = model.evaluate(val_loader, metrics=metrics, n_bins=n_bins)
+    loss, metric, _, _ = model.evaluate(val_loader, metrics=metrics, mc_samples=mc_samples_val, n_bins=n_bins)
     val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
-    test_loss, test_metrics, bin_data, mutual_info = model.evaluate(test_loader, metrics=metrics, n_bins=n_bins)
+    test_loss, test_metrics, bin_data, uncertainty = model.evaluate(test_loader, metrics=metrics,
+                                                                    mc_samples=mc_samples_test, n_bins=n_bins)
     clean_results = dict(
         test_loss=test_loss,
         test_metrics=test_metrics,
         bin_data=bin_data,
-        mutual_info=mutual_info
+        uncertainty=uncertainty
     )
     corrupted_results = get_corrupted_results(dataset, model, baseline, method, baseline, metrics,
-                                              clean_results, mc_samples, n_bins)
+                                              clean_results, mc_samples_test, n_bins)
 
     param = dict()
     num_epochs = np.sum([run['num_epochs'] + 1 for run in runs])
@@ -113,7 +115,7 @@ def evaluate(
         test_loss=test_loss,
         test_metrics=test_metrics,
         bin_data=bin_data,
-        mutual_info=mutual_info,
+        uncertainty=uncertainty,
         corrupted_results=corrupted_results,
         timestamp=timestamp
     )
@@ -125,10 +127,10 @@ def evaluate(
 def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim: Union[Optimizer, StructuredNGD],
                        train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
                        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [],
-                       eval_every: int = 100, n_bins: int = 10, mc_samples_eval: int = 1, mc_samples_test: int = 32):
+                       eval_every: int = 100, n_bins: int = 10, mc_samples_val: int = 1, mc_samples_test: int = 32):
     loss_fn = nn.NLLLoss()
     runs = []
-    dataset = train_loader.dataset.root.split('/')[1]
+    dataset = train_loader.dataset.dataset.root.split('/')[1]
     if optim is StructuredNGD:
         params = ngd_params
     else:
@@ -151,15 +153,14 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=8)
 
         # Initialize computation times, losses and metrics for recording
-        loss, metric, _, _ = model.evaluate(train_loader, metrics=metrics,
-                                            optimizer=optimizer, mc_samples=mc_samples_eval)
+        loss, metric, _, _ = model.evaluate(train_loader, metrics=metrics, optimizer=optimizer)
         epoch_times = [0.0]
         train_loss = []
         train_metrics = {}
         train_loss, train_metrics = record_loss_and_metrics(train_loss, train_metrics, loss, metric)
 
         loss, metric, _, _ = model.evaluate(val_loader, metrics=metrics,
-                                            optimizer=optimizer, mc_samples=mc_samples_eval)
+                                            optimizer=optimizer, mc_samples=mc_samples_val)
         val_loss = []
         val_metrics = {}
         val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
@@ -176,7 +177,7 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
 
             # Record loss and metrics for epoch
             loss, metric, _, _ = model.evaluate(val_loader, metrics=metrics,
-                                                optimizer=optimizer, mc_samples=mc_samples_eval)
+                                                optimizer=optimizer, mc_samples=mc_samples_val)
             val_loss, val_metrics = record_loss_and_metrics(val_loss, val_metrics, loss, metric)
 
             scheduler.step(loss)
@@ -195,7 +196,7 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
             uncertainty=uncertainty
         )
         corrupted_results = get_corrupted_results(dataset, model, optimizer, methods[i], baseline, metrics,
-                                                  clean_results, mc_samples, n_bins)
+                                                  clean_results, mc_samples_test, n_bins)
 
         num_epochs = epoch + 1
         epoch_times = np.cumsum(epoch_times)

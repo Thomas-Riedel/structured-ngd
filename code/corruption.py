@@ -18,8 +18,7 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
         loss=clean_results['test_loss'],
         **clean_results['test_metrics']
     )])
-    corruption_errors = pd.DataFrame(columns=['method', 'model', 'dataset', 'optimizer',
-                                              'corruption_type', 'corruption', 'mCE', 'rmCE'])
+    corruption_errors = pd.DataFrame()
     bin_data = {(severity, corruption_type): clean_results['bin_data']}
     uncertainty = dict(
         model_uncertainty={(severity, corruption_type): clean_results['model_uncertainty']},
@@ -32,8 +31,9 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
                 continue
             bin_data_list = []
             for corruption in CORRUPTION_TYPES[corruption_type]:
+                print('----------------------------------------------------------------')
                 print(f"[{i} / {len(SEVERITY_LEVELS) * len(CORRUPTIONS)}]; "
-                      f"severity = {severity}, corruption = {corruption}")
+                      f"severity = {severity}, corruption = {corruption}\n")
                 data_loader = load_corrupted_data(dataset, corruption, severity)
                 loss, metric, corrupted_bin_data, corrupted_uncertainty = model.evaluate(
                     data_loader, metrics=metrics, optimizer=optimizer, mc_samples=mc_samples, n_bins=n_bins
@@ -76,7 +76,7 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
     corruption_errors['Dataset'] = dataset
     corruption_errors['Optimizer'] = optimizer_name
     corruption_errors['Corruption'] = CORRUPTIONS
-    corruption_errors['Type'] = corruption_errors['corruption'].apply(get_corruption_type)
+    corruption_errors['Type'] = corruption_errors['Corruption'].apply(get_corruption_type)
     corruption_errors['Accuracy'] = clean_results['test_metrics']['accuracy']
 
     df['Method'] = method

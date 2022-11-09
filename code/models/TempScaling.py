@@ -1,11 +1,13 @@
 # Reference: https://github.com/gpleiss/temperature_scaling
+import numpy as np
 
 import torch
 from torch import nn, optim
 from torch.nn import functional as F
-import numpy as np
+
 from torch.utils.data import DataLoader
 from typing import List, Callable, Tuple
+
 from metrics import *
 from util import *
 
@@ -23,7 +25,7 @@ class TempScaling(nn.Module):
         self.device = model.device
         self.model = model
         self.num_classes = model.num_classes
-        self.temperature = nn.Parameter(torch.ones(1) * 1.5)
+        self.temperature = nn.Parameter(torch.ones(1, device=self.device) * 1.5)
         self.__name__ = model.__name__
         self.num_params = model.num_params + 1
         self.summary = model.summary
@@ -100,12 +102,16 @@ class TempScaling(nn.Module):
         # Set model to evaluation mode!
         self.model.eval()
 
-        logits = torch.zeros((len(data_loader.dataset), self.num_classes), device=self.device)
+        logits = []
+        labels_list = []
         for i, data in enumerate(data_loader):
             images, labels = data
             images = images.to(self.device)
             labels = labels.to(self.device)
-            logits[i] = self(images)
+            logits.append(self(images))
+            labels_list.append(labels)
+        logits = torch.cat(logits)
+        labels = torch.cat(labels_list)
 
         loss = loss_fn(logits, labels).item()
         metric_vals = {}
@@ -114,7 +120,11 @@ class TempScaling(nn.Module):
 
         bin_data = get_bin_data(logits, labels, num_classes=self.num_classes, n_bins=n_bins)
         uncertainty = get_uncertainty(logits)
-        print(loss, metric_vals)
+
+        print(f"\tNLL = :{loss}\n")
+        print("\t{:<25} {:<10}".format('Metric', 'Value'))
+        for k, v in metric_vals.items():
+            print("\t{:<25} {:<10.3f}".format(k, v))
         return loss, metric_vals, bin_data, uncertainty
 
 
@@ -177,6 +187,8 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
     probs = logits.softmax(-1)
     if len(probs.shape) == 3:
         probs = probs.mean(0)
+    if len(probs.shape) == 4:
+        probs = probs.mean(1).mean(0)
     num_classes = torch.tensor(num_classes, dtype=float)
     uncertainties = 1/torch.log(num_classes) * predictive_uncertainty(logits)
     confidences, preds = probs.max(-1)

@@ -46,7 +46,7 @@ class Brier:
             probs = probs.mean(0)
         if len(probs.shape) == 4:
             probs = probs.mean(1).mean(0)
-        labels_onehot = F.one_hot(labels, num_classes=self.num_classes)
+        labels_onehot = F.one_hot(labels.to(torch.int64), num_classes=self.num_classes)
         return ((probs - labels_onehot) ** 2).sum(-1).mean()
 
 
@@ -80,7 +80,7 @@ class UCE:
             probs = probs.mean(1).mean(0)
         preds = probs.argmax(-1)
         if self.num_classes == -1:
-            num_classes = torch.tensor(F.one_hot(labels).shape[1], dtype=float)
+            num_classes = torch.tensor(F.one_hot(labels.to(torch.int64)).shape[-1], dtype=float)
         else:
             num_classes = self.num_classes
         uncertainties = 1/torch.log(num_classes) * predictive_uncertainty(probs)
@@ -134,7 +134,7 @@ class MUCE:
             probs = probs.mean(1).mean(0)
         preds = probs.argmax(-1)
         if self.num_classes == -1:
-            num_classes = torch.tensor(F.one_hot(labels).shape[1], dtype=float)
+            num_classes = torch.tensor(F.one_hot(labels.to(torch.int64)).shape[-1], dtype=float)
         else:
             num_classes = self.num_classes
         uncertainties = 1/torch.log(self.num_classes) * predictive_uncertainty(probs)
@@ -168,8 +168,7 @@ class ACE:
             probs = probs.mean(0)
         if len(probs.shape) == 4:
             probs = probs.mean(1).mean(0)
-        preds = probs.argmax(-1)
-        preds = preds.detach().cpu().numpy()
+        probs = probs.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
         return torch.tensor(ace(labels, probs, self.n_bins))
 
@@ -186,8 +185,7 @@ class SCE:
             probs = probs.mean(0)
         if len(probs.shape) == 4:
             probs = probs.mean(1).mean(0)
-        preds = probs.argmax(-1)
-        preds = preds.detach().cpu().numpy()
+        probs = probs.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
         return torch.tensor(sce(labels, probs, self.n_bins))
 

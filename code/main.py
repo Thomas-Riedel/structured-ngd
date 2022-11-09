@@ -9,7 +9,7 @@ def main() -> None:
 
 	device = 'cuda' if args['use_cuda'] else 'cpu'
 	train_loader, val_loader, test_loader = load_data(args['dataset'], args['batch_size'], args['data_split'])
-	num_classes = len(train_loader.dataset.classes)
+	num_classes = len(train_loader.dataset.dataset.classes)
 	n = len(train_loader.dataset)
 	input_shape = iter(train_loader).next()[0].shape[1:]
 
@@ -30,13 +30,13 @@ def main() -> None:
 	params = get_params(args, baseline=args['baseline'], n=n)
 	model_params = dict(num_classes=num_classes, input_shape=input_shape, device=device)
 	methods, model = get_methods_and_model(
-		args['dataset'], args['model'],  model_params, args['optimizer'], params['ngd'], args['baseline']
+		args['dataset'], args['model'],  model_params, args['optimizer'], params['ngd'], args['baseline'], args['use_cuda']
 	)
 
 	runs = run_experiments(
 		args['epochs'], methods, model, args['optimizer'], train_loader, val_loader, test_loader, args['baseline'],
 		baseline_params=params['baseline'], ngd_params=params['ngd'], metrics=metrics, eval_every=args['eval_every'],
-		n_bins=args['n_bins'], mc_samples_eval=args['mc_samples_eval'], mc_samples_test=args['mc_samples_test']
+		n_bins=args['n_bins'], mc_samples_val=args['mc_samples_val'], mc_samples_test=args['mc_samples_test']
 	)
 	save_runs(runs)
 

@@ -61,7 +61,7 @@ def parse_args() -> dict:
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10",
                         help='Dataset for training, one of CIFAR10, CIFAR100, MNIST, FashionMNIST (default: CIFAR10)')
     parser.add_argument('-m', '--model', type=str, default="ResNet20",
-                        help='ResNet model (default: ResNet18)')
+                        help='ResNet model (default: ResNet20)')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size for data loaders (default: 128)')
     parser.add_argument('--lr', type=str, default='1e-3',
@@ -120,6 +120,8 @@ def parse_args() -> dict:
         lr=args.lr,
         k=args.k,
         mc_samples=args.mc_samples,
+        mc_samples_val=args.mc_samples_val,
+        mc_samples_test=args.mc_samples_test,
         structure=args.structure,
         eval_every=args.eval_every,
         momentum_grad=args.momentum_grad,
@@ -129,7 +131,6 @@ def parse_args() -> dict:
         gamma=args.gamma,
         data_split=args.data_split,
         n_bins=args.n_bins,
-        mc_samples_eval=args.mc_samples_eval,
         baseline=args.baseline,
         use_cuda=args.use_cuda
     )
@@ -658,6 +659,8 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
     probs = logits.softmax(-1)
     if len(probs.shape) == 3:
         probs = probs.mean(0)
+    elif len(probs.shape) == 4:
+        probs = probs.mean(1).mean(0)
     num_classes = torch.tensor(num_classes, dtype=float)
     uncertainties = 1/torch.log(num_classes) * predictive_uncertainty(logits)
     confidences, preds = probs.max(-1)
@@ -689,9 +692,6 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
             bin_uncertainties[b] = np.mean(uncertainties[selected])
             u_bin_counts[b] = len(selected)
 
-    # Divide each bin by its bin count and avoid division by zero!
-    bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-    bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
     avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
     avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
     gaps = np.abs(bin_accuracies - bin_confidences)
@@ -822,11 +822,11 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
         for run in runs:
             state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt", map_location=device)
 
-            model = Model(run['model_name'], **model_params).to(device)
+            model = Model(run['model_name'], **model_params)
             model.load_state_dict(state_dict=state_dict['model_state_dict'])
             models.append(model)
 
-            optimizer = StructuredNGD(model.parameters(), state_dict['train_size']).to(device)
+            optimizer = StructuredNGD(model.parameters(), state_dict['train_size'])
             optimizer.load_state_dict(state_dict=state_dict['optimizer_state_dict'])
             optimizers.append(optimizer)
         model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
