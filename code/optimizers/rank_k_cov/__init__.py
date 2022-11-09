@@ -145,14 +145,14 @@ class StructuredNGD(NoisyOptimizer):
             raise ValueError("Closure needs to be specified for Noisy Optimizer!")
 
         losses = []
-        outputs = []
+        preds = []
 
         for i in range(self.mc_samples):
             self._sample_weight_and_collect(i)  # (2)
             with torch.enable_grad():
-                loss, output = closure()
+                loss, pred = closure()
             losses.append(loss.detach())
-            outputs.append(output.detach())
+            preds.append(pred.detach())
             self._collect_grad_samples(i)
 
         # Update parameters
@@ -166,7 +166,7 @@ class StructuredNGD(NoisyOptimizer):
 
         # Average losses and predictions over all MC samples and return
         avg_loss = torch.mean(torch.stack(losses, dim=0))
-        avg_pred = torch.mean(torch.stack(outputs, dim=0), axis=0)
+        avg_pred = torch.mean(torch.stack(preds, dim=0), axis=0)
         return avg_loss, avg_pred
 
     def _stash_param_averages(self) -> None:

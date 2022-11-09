@@ -1,4 +1,4 @@
-# Code by https://github.com/akamaster/pytorch_resnet_cifar10
+# Reference: https://github.com/akamaster/pytorch_resnet_cifar10
 '''
 Properly implemented ResNet-s for CIFAR10 as described in paper [1].
 

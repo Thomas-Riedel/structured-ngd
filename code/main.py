@@ -13,17 +13,19 @@ def main() -> None:
 	n = len(train_loader.dataset)
 	input_shape = iter(train_loader).next()[0].shape[1:]
 
+	accuracy = Accuracy()
+	top_k_accuracy = TopkAccuracy(top_k=5)
 	ece = ECE(args['n_bins'])
 	uce = UCE(num_classes, args['n_bins'])
 	mce = MCE(args['n_bins'])
 	muce = MUCE(num_classes, args['n_bins'])
-	top_k_accuracy = TopkAccuracy(top_k=5)
-	top_k_ece = TopkECE(top_k=5, n_bins=args['n_bins'])
-	top_k_uce = TopkUCE(num_classes=num_classes, top_k=5, n_bins=args['n_bins'])
-	top_k_mce = TopkMCE(top_k=5, n_bins=args['n_bins'])
-	top_k_muce = TopkMUCE(num_classes=num_classes, top_k=5, n_bins=args['n_bins'])
+	ace = ACE()
+	sce = SCE()
 	brier = Brier(num_classes)
-	metrics = [accuracy, ece, uce, mce, muce, brier, top_k_accuracy, top_k_ece, top_k_uce, top_k_mce, top_k_muce]
+	model_uncert = ModelUncertainty()
+	pred_uncert = PredictiveUncertainty()
+
+	metrics = [accuracy, ece, uce, mce, muce, top_k_accuracy, sce, ace, brier, model_uncert, pred_uncert]
 
 	params = get_params(args, baseline=args['baseline'], n=n)
 	model_params = dict(num_classes=num_classes, input_shape=input_shape, device=device)
@@ -33,8 +35,8 @@ def main() -> None:
 
 	runs = run_experiments(
 		args['epochs'], methods, model, args['optimizer'], train_loader, val_loader, test_loader, args['baseline'],
-		baseline_params=params['baseline'], ngd_params=params['ngd'], metrics=metrics,
-		eval_every=args['eval_every'], n_bins=args['n_bins'], mc_samples=args['mc_samples_eval']
+		baseline_params=params['baseline'], ngd_params=params['ngd'], metrics=metrics, eval_every=args['eval_every'],
+		n_bins=args['n_bins'], mc_samples_eval=args['mc_samples_eval'], mc_samples_test=args['mc_samples_test']
 	)
 	save_runs(runs)
 

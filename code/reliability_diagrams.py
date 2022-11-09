@@ -12,17 +12,7 @@ def _reliability_diagram_subplot(ax, bin_data,
                                  draw_bin_importance=False,
                                  title="Reliability Diagram",
                                  xlabel="Confidence",
-                                 ylabel=None,
-                                 plot_topk=False,
-                                 top_k=5):
-    if ylabel is None:
-        ylabel = "Expected Accuracy"
-        if plot_topk:
-            ylabel = f"Expected Top--{top_k} Accuracy"
-    if plot_topk:
-        acc_label = f"Top--{top_k} Accuracy"
-    else:
-        acc_label = "Accuracy"
+                                 ylabel="Expected Accuracy"):
     """Draws a reliability diagram into a subplot."""
     accuracies = bin_data["accuracies"]
     confidences = bin_data["confidences"]
@@ -56,7 +46,7 @@ def _reliability_diagram_subplot(ax, bin_data,
     blue[:, 3] = alphas
 
     acc_plt = ax.bar(positions, accuracies, bottom=0, width=widths, linewidth=1,
-                     edgecolor=blue, color=blue, label=acc_label)
+                     edgecolor=blue, color=blue, label="Accuracy")
     gap_plt = ax.bar(positions, np.abs(accuracies - confidences),
                      bottom=np.minimum(accuracies, confidences), width=widths,
                      edgecolor=red, color=red, linewidth=1, label="Gap")
@@ -69,20 +59,12 @@ def _reliability_diagram_subplot(ax, bin_data,
     ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
 
     text = ''
-    if plot_topk:
-        if draw_ece:
-            ece_topk = (bin_data["expected_calibration_error_topk"] * 100)
-            text += f"Top--{top_k} ECE={ece_topk:5.2f}\n"
-        if draw_mce:
-            mce_topk = (bin_data["max_calibration_error_topk"] * 100)
-            text += f"Top--{top_k} MCE={mce_topk:5.2f}"
-    else:
-        if draw_ece:
-            ece = (bin_data["expected_calibration_error"] * 100)
-            text += f"ECE={ece:5.2f}\n"
-        if draw_mce:
-            mce = (bin_data["max_calibration_error"] * 100)
-            text += f"MCE={mce:5.2f}"
+    if draw_ece:
+        ece = (bin_data["expected_calibration_error"] * 100)
+        text += f"ECE={ece:5.2f}\n"
+    if draw_mce:
+        mce = (bin_data["max_calibration_error"] * 100)
+        text += f"MCE={mce:5.2f}"
     if draw_ece or draw_mce:
         ax.text(0.98, 0.04, text, color="black", fontsize=14,
                 ha="right", va="bottom", transform=ax.transAxes,
@@ -129,7 +111,7 @@ def _confidence_histogram_subplot(ax, bin_data,
 
 
 def _reliability_diagram_combined(bin_data, draw_ece, draw_mce, draw_bin_importance, draw_averages,
-                                  title, plot_topk, figsize, dpi, return_fig):
+                                  title, figsize, dpi, return_fig):
     """Draws a reliability diagram and confidence histogram using the output
     from compute_calibration()."""
     figsize = (figsize[0], figsize[0] * 1.4)
@@ -141,7 +123,7 @@ def _reliability_diagram_combined(bin_data, draw_ece, draw_mce, draw_bin_importa
     plt.subplots_adjust(hspace=-0.1)
 
     _reliability_diagram_subplot(ax[0], bin_data, draw_ece, draw_mce, draw_bin_importance,
-                                 title=title, plot_topk=plot_topk, xlabel="")
+                                 title=title, xlabel="")
 
     # Draw the confidence histogram upside down.
     orig_counts = bin_data["r_counts"]
@@ -161,7 +143,7 @@ def _reliability_diagram_combined(bin_data, draw_ece, draw_mce, draw_bin_importa
 
 def reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importance='alpha',
                         draw_averages=True, title="Reliability Diagram",
-                        figsize=(6, 6), dpi=100, return_fig=False, plot_topk=False):
+                        figsize=(6, 6), dpi=100, return_fig=False):
     """Draws a reliability diagram and confidence histogram in a single plot.
 
     First, the model's predictions are divided up into bins based on their
@@ -204,7 +186,7 @@ def reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importa
     """
     # bin_data = compute_calibration(true_labels, pred_labels, confidences, num_bins)
     return _reliability_diagram_combined(bin_data, draw_ece, draw_mce, draw_bin_importance,
-                                         draw_averages, title, plot_topk=plot_topk, figsize=figsize,
+                                         draw_averages, title, figsize=figsize,
                                          dpi=dpi, return_fig=return_fig)
 
 
@@ -214,17 +196,7 @@ def _uncertainty_diagram_subplot(ax, bin_data,
                                  draw_bin_importance='alpha',
                                  title="Uncertainty Diagram",
                                  xlabel="Entropy",
-                                 ylabel=None,
-                                 plot_topk=False,
-                                 top_k=5):
-    if ylabel is None:
-        ylabel = f"Expected Top--1 Error"
-        if plot_topk:
-            ylabel = f"Expected Top--{top_k} Error"
-    if plot_topk:
-        error_label = f"Top--{top_k} Error"
-    else:
-        error_label = "Top--1 Error"
+                                 ylabel="Expected Top--1 Error"):
     """Draws a reliability diagram into a subplot."""
     errors = bin_data["errors"]
     uncertainties = bin_data["uncertainties"]
@@ -232,7 +204,7 @@ def _uncertainty_diagram_subplot(ax, bin_data,
     bins = bin_data["bins"]
 
     bin_size = 1.0 / len(counts)
-    positions = bins[:-1] + bin_size/2.0
+    positions = bins[:-1] + bin_size / 2.0
 
     widths = bin_size
     alphas = 0.3
@@ -243,7 +215,7 @@ def _uncertainty_diagram_subplot(ax, bin_data,
     if draw_bin_importance == "alpha":
         alphas = 0.2 + 0.8 * normalized_counts
     elif draw_bin_importance == "width":
-        widths = 0.1 * bin_size + 0.9 * bin_size*normalized_counts
+        widths = 0.1 * bin_size + 0.9 * bin_size * normalized_counts
 
     pink = np.zeros((len(counts), 4))
     pink[:, 0] = 245 / 255.
@@ -258,7 +230,7 @@ def _uncertainty_diagram_subplot(ax, bin_data,
     green[:, 3] = alphas
 
     error_plt = ax.bar(positions, errors, bottom=0, width=widths, linewidth=1,
-                       edgecolor=green, color=green, label=error_label)
+                       edgecolor=green, color=green, label="Top--1 Error")
     gap_plt = ax.bar(positions, np.abs(errors - uncertainties),
                      bottom=np.minimum(errors, uncertainties), width=widths,
                      edgecolor=pink, color=pink, linewidth=1, label="Gap")
@@ -271,20 +243,12 @@ def _uncertainty_diagram_subplot(ax, bin_data,
     ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
 
     text = ''
-    if plot_topk:
-        if draw_uce:
-            uce_topk = (bin_data["expected_uncertainty_error_topk"] * 100)
-            text += f"Top--{top_k} ECE={uce_topk:5.2f}\n"
-        if draw_muce:
-            muce_topk = (bin_data["max_uncertainty_error_topk"] * 100)
-            text += f"Top--{top_k} MCE={muce_topk:5.2f}"
-    else:
-        if draw_uce:
-            uce = (bin_data["expected_uncertainty_error"] * 100)
-            text += f"UCE={uce:5.2f}\n"
-        if draw_muce:
-            muce = (bin_data["max_uncertainty_error"] * 100)
-            text += f"MUCE={muce:5.2f}"
+    if draw_uce:
+        uce = (bin_data["expected_uncertainty_error"] * 100)
+        text += f"UCE={uce:5.2f}\n"
+    if draw_muce:
+        muce = (bin_data["max_uncertainty_error"] * 100)
+        text += f"MUCE={muce:5.2f}"
     if draw_uce or draw_muce:
         ax.text(0.98, 0.04, text, color="black", fontsize=14,
                 ha="right", va="bottom", transform=ax.transAxes,
@@ -327,7 +291,7 @@ def _uncertainty_histogram_subplot(ax, bin_data, draw_averages=True, title="Exam
 
 
 def _uncertainty_diagram_combined(bin_data, draw_uce, draw_muce, draw_bin_importance, draw_averages,
-                                  title, plot_topk, figsize, dpi, return_fig):
+                                  title, figsize, dpi, return_fig):
     """Draws an uncertainty diagram and confidence histogram using the output
     from compute_calibration()."""
     figsize = (figsize[0], figsize[0] * 1.4)
@@ -358,7 +322,7 @@ def _uncertainty_diagram_combined(bin_data, draw_uce, draw_muce, draw_bin_import
 
 def uncertainty_diagram(bin_data, draw_uce=True, draw_muce=True, draw_bin_importance='alpha',
                         draw_averages=True, title="Uncertainty Diagram",
-                        figsize=(6, 6), dpi=100, return_fig=False, plot_topk=False):
+                        figsize=(6, 6), dpi=100, return_fig=False):
     """Draws a reliability diagram and confidence histogram in a single plot.
 
     First, the model's predictions are divided up into bins based on their
@@ -401,5 +365,5 @@ def uncertainty_diagram(bin_data, draw_uce=True, draw_muce=True, draw_bin_import
     """
     # bin_data = compute_calibration(true_labels, pred_labels, confidences, num_bins)
     return _uncertainty_diagram_combined(bin_data, draw_uce, draw_muce, draw_bin_importance,
-                                         draw_averages, title, plot_topk=plot_topk, figsize=figsize,
+                                         draw_averages, title, figsize=figsize,
                                          dpi=dpi, return_fig=return_fig)

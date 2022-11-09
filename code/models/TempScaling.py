@@ -1,10 +1,13 @@
 # Reference: https://github.com/gpleiss/temperature_scaling
+
 import torch
 from torch import nn, optim
 from torch.nn import functional as F
 import numpy as np
 from torch.utils.data import DataLoader
 from typing import List, Callable, Tuple
+from metrics import *
+from util import *
 
 
 class TempScaling(nn.Module):
@@ -25,8 +28,8 @@ class TempScaling(nn.Module):
         self.num_params = model.num_params + 1
         self.summary = model.summary
 
-    def forward(self, input):
-        logits = self.model(input)
+    def forward(self, images):
+        logits = self.model(images)
         return self.temperature_scale(logits)
 
     def temperature_scale(self, logits):
@@ -44,19 +47,18 @@ class TempScaling(nn.Module):
         We're going to set it to optimize NLL.
         valid_loader (DataLoader): validation set loader
         """
-        self.cuda()
-        nll_criterion = nn.CrossEntropyLoss().cuda()
-        ece_criterion = _ECELoss().cuda()
+        nll_criterion = nn.CrossEntropyLoss().to(self.device)
+        ece_criterion = _ECELoss().to(self.device)
 
         # First: collect all the logits and labels for the validation set
         logits_list = []
         labels_list = []
         with torch.no_grad():
-            for input, label in val_loader:
-                input, label = input.to(self.device), label.to(self.device)
-                logits = self.model(input)
+            for images, labels in val_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                logits = self.model(images)
                 logits_list.append(logits)
-                labels_list.append(label)
+                labels_list.append(labels)
             logits = torch.cat(logits_list).to(self.device)
             labels = torch.cat(labels_list).to(self.device)
 
@@ -84,8 +86,10 @@ class TempScaling(nn.Module):
         return self
 
     @torch.no_grad()
-    def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
-                 loss_fn: Callable = nn.CrossEntropyLoss(), n_bins=10, top_k=5, **kwargs) -> Tuple[float, dict, dict]:
+    def evaluate(
+            self, data_loader: DataLoader, metrics: List[Callable] = [],
+            loss_fn: Callable = nn.CrossEntropyLoss(), n_bins=10, **kwargs
+    ) -> Tuple[float, dict, dict, np.array]:
         """Evaluate data on loss function and metrics.
 
         :param data_loader: torch.utils.data.DataLoader, validation or test dataset
@@ -96,121 +100,22 @@ class TempScaling(nn.Module):
         # Set model to evaluation mode!
         self.model.eval()
 
-        loss = 0.0
-        metric_vals = {}
-        for metric in metrics:
-            metric_vals[metric.__name__] = 0.0
-        bin_accuracies = np.zeros(n_bins, dtype=float)
-        bin_accuracies_topk = np.zeros(n_bins, dtype=float)
-        bin_confidences = np.zeros(n_bins, dtype=float)
-        r_bin_counts = np.zeros(n_bins, dtype=int)
-        bin_errors = np.zeros(n_bins, dtype=float)
-        bin_errors_topk = np.zeros(n_bins, dtype=float)
-        bin_uncertainties = np.zeros(n_bins, dtype=float)
-        u_bin_counts = np.zeros(n_bins, dtype=int)
-        bins = np.linspace(0.0, 1.0, n_bins + 1)
-
+        logits = torch.zeros((len(data_loader.dataset), self.num_classes), device=self.device)
         for i, data in enumerate(data_loader):
             images, labels = data
             images = images.to(self.device)
             labels = labels.to(self.device)
+            logits[i] = self(images)
 
-            logits = self(images)
-            loss += loss_fn(logits, labels).item()
-            for metric in metrics:
-                metric_vals[metric.__name__] += metric(logits, labels).item()
-
-            probs = logits.softmax(-1)
-            num_classes = torch.tensor(self.num_classes, dtype=float)
-            uncertainties = -1/torch.log(num_classes) * torch.sum(probs * torch.log(probs + torch.finfo().tiny), axis=-1)
-            confidences, preds = probs.max(-1)
-            _, preds_topk = probs.topk(top_k)
-            labels_topk = labels.unsqueeze(-1).expand_as(preds_topk)
-
-            uncertainties = uncertainties.detach().cpu().numpy()
-            labels = labels.detach().cpu().numpy()
-            labels_topk = labels_topk.detach().cpu().numpy()
-            confidences = confidences.detach().cpu().numpy()
-            preds = preds.detach().cpu().numpy()
-            preds_topk = preds_topk.detach().cpu().numpy()
-            r_indices = np.digitize(confidences, bins, right=True)
-            u_indices = np.digitize(uncertainties, bins, right=True)
-
-            for b in range(n_bins):
-                selected = np.where(r_indices == b + 1)[0]
-                if len(selected) > 0:
-                    bin_accuracies[b] += np.sum(labels[selected] == preds[selected])
-                    bin_accuracies_topk[b] += np.sum(labels_topk[selected] == preds_topk[selected])
-                    bin_confidences[b] += np.sum(confidences[selected])
-                    r_bin_counts[b] += len(selected)
-                selected = np.where(u_indices == b + 1)[0]
-                if len(selected) > 0:
-                    bin_errors[b] += np.sum(labels[selected] != preds[selected])
-                    bin_errors_topk[b] += (1 - (labels_topk[selected] == preds_topk[selected]).sum(-1)).sum()
-                    bin_uncertainties[b] += np.sum(uncertainties[selected])
-                    u_bin_counts[b] += len(selected)
-
-            # Write to TensorBoard
-            # writer.add_scalar("Loss", loss, counter)
-
+        loss = loss_fn(logits, labels).item()
+        metric_vals = {}
         for metric in metrics:
-            metric_vals[metric.__name__] /= len(data_loader)
-        loss /= len(data_loader)
+            metric_vals[metric.__name__] = metric(logits, labels).item()
+
+        bin_data = get_bin_data(logits, labels, num_classes=self.num_classes, n_bins=n_bins)
+        uncertainty = get_uncertainty(logits)
         print(loss, metric_vals)
-
-        # Divide each bin by its bin count and avoid division by zero!
-        bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-        bin_accuracies_topk /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-        bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-        avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
-        avg_acc_topk = np.sum(bin_accuracies_topk * r_bin_counts) / np.sum(r_bin_counts)
-        avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
-        gaps = np.abs(bin_accuracies - bin_confidences)
-        ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
-        mce = np.max(gaps)
-        gaps_topk = np.abs(bin_accuracies_topk - bin_confidences)
-        ece_topk = np.sum(gaps_topk * r_bin_counts) / np.sum(r_bin_counts)
-        mce_topk = np.max(gaps_topk)
-
-        bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-        bin_errors_topk /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-        bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-        avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
-        avg_err_topk = np.sum(bin_errors_topk * u_bin_counts) / np.sum(u_bin_counts)
-        avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
-        gaps = np.abs(bin_errors - bin_uncertainties)
-        uce = np.sum(gaps * u_bin_counts) / np.sum(u_bin_counts)
-        muce = np.max(gaps)
-        gaps_topk = np.abs(bin_errors_topk - bin_uncertainties)
-        uce_topk = np.sum(gaps_topk * u_bin_counts) / np.sum(u_bin_counts)
-        muce_topk = np.max(gaps_topk)
-
-        bin_data = dict(
-            accuracies=bin_accuracies,
-            accuracies_topk=bin_accuracies_topk,
-            confidences=bin_confidences,
-            errors=bin_errors,
-            errors_topk=bin_errors_topk,
-            uncertainties=bin_uncertainties,
-            r_counts=r_bin_counts,
-            u_counts=u_bin_counts,
-            bins=bins,
-            avg_accuracy=avg_acc,
-            avg_accuracy_topk=avg_acc_topk,
-            avg_confidence=avg_conf,
-            avg_error=avg_err,
-            avg_error_topk=avg_err_topk,
-            avg_uncertainty=avg_uncert,
-            expected_calibration_error=ece,
-            max_calibration_error=mce,
-            expected_uncertainty_error=uce,
-            max_uncertainty_error=muce,
-            expected_calibration_error_topk=ece_topk,
-            max_calibration_error_topk=mce_topk,
-            expected_uncertainty_error_topk=uce_topk,
-            max_uncertainty_error_topk=muce_topk
-        )
-        return loss, metric_vals, bin_data
+        return loss, metric_vals, bin_data, uncertainty
 
 
 class _ECELoss(nn.Module):
@@ -232,7 +137,7 @@ class _ECELoss(nn.Module):
     "Obtaining Well Calibrated Probabilities Using Bayesian Binning." AAAI.
     2015.
     """
-    def __init__(self, n_bins=15):
+    def __init__(self, n_bins=10):
         """
         n_bins (int): number of confidence interval bins
         """
@@ -255,5 +160,116 @@ class _ECELoss(nn.Module):
                 accuracy_in_bin = accuracies[in_bin].float().mean()
                 avg_confidence_in_bin = confidences[in_bin].mean()
                 ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
-
         return ece
+
+
+def get_uncertainty(logits):
+    return dict(
+        model_uncertainty=model_uncertainty(logits),
+        predictive_uncertainty=predictive_uncertainty(logits),
+        data_uncertainty=data_uncertainty(logits)
+    )
+
+
+def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
+    if num_classes == -1:
+        num_classes = F.one_hot(labels).shape[-1]
+    probs = logits.softmax(-1)
+    if len(probs.shape) == 3:
+        probs = probs.mean(0)
+    num_classes = torch.tensor(num_classes, dtype=float)
+    uncertainties = 1/torch.log(num_classes) * predictive_uncertainty(logits)
+    confidences, preds = probs.max(-1)
+
+    uncertainties = uncertainties.detach().cpu().numpy()
+    labels = labels.detach().cpu().numpy()
+    confidences = confidences.detach().cpu().numpy()
+    preds = preds.detach().cpu().numpy()
+
+    bin_accuracies = np.zeros(n_bins, dtype=float)
+    bin_confidences = np.zeros(n_bins, dtype=float)
+    r_bin_counts = np.zeros(n_bins, dtype=int)
+    bin_errors = np.zeros(n_bins, dtype=float)
+    bin_uncertainties = np.zeros(n_bins, dtype=float)
+    u_bin_counts = np.zeros(n_bins, dtype=int)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    r_indices = np.digitize(confidences, bins, right=True)
+    u_indices = np.digitize(uncertainties, bins, right=True)
+
+    for b in range(n_bins):
+        selected = np.where(r_indices == b + 1)[0]
+        if len(selected) > 0:
+            bin_accuracies[b] = np.mean(labels[selected] == preds[selected])
+            bin_confidences[b] = np.mean(confidences[selected])
+            r_bin_counts[b] = len(selected)
+        selected = np.where(u_indices == b + 1)[0]
+        if len(selected) > 0:
+            bin_errors[b] = np.mean(labels[selected] != preds[selected])
+            bin_uncertainties[b] = np.mean(uncertainties[selected])
+            u_bin_counts[b] = len(selected)
+
+    # Divide each bin by its bin count and avoid division by zero!
+    bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
+    bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
+    avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
+    avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
+    gaps = np.abs(bin_accuracies - bin_confidences)
+    ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
+    mce = np.max(gaps)
+
+    bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
+    bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
+    avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
+    avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
+    gaps = np.abs(bin_errors - bin_uncertainties)
+    uce = np.sum(gaps * u_bin_counts) / np.sum(u_bin_counts)
+    muce = np.max(gaps)
+
+    bin_data = dict(
+        accuracies=bin_accuracies,
+        confidences=bin_confidences,
+        errors=bin_errors,
+        uncertainties=bin_uncertainties,
+        r_counts=r_bin_counts,
+        u_counts=u_bin_counts,
+        bins=bins,
+        avg_accuracy=avg_acc,
+        avg_confidence=avg_conf,
+        avg_error=avg_err,
+        avg_uncertainty=avg_uncert,
+        expected_calibration_error=ece,
+        max_calibration_error=mce,
+        expected_uncertainty_error=uce,
+        max_uncertainty_error=muce
+    )
+    return bin_data
+
+
+def entropy(probs, labels=None):
+    return -torch.sum(probs * torch.log(probs + torch.finfo().tiny), axis=-1)
+
+
+def model_uncertainty(logits, labels=None):
+    if len(logits.shape) == 2:
+        logits = logits.unsqueeze(0)
+    pred_uncert = predictive_uncertainty(logits)
+    data_uncert = data_uncertainty(logits)
+    return pred_uncert - data_uncert
+
+
+def predictive_uncertainty(logits, labels=None):
+    if len(logits.shape) == 2:
+        logits = logits.unsqueeze(0)
+    probs = logits.softmax(-1)
+    if len(probs.shape) == 4:
+        probs = probs.mean(1)
+    return entropy(probs.mean(0))
+
+
+def data_uncertainty(logits, labels=None):
+    if len(logits.shape) == 2:
+        logits = logits.unsqueeze(0)
+    probs = logits.softmax(-1)
+    if len(probs.shape) == 4:
+        probs = probs.mean(1)
+    return entropy(probs).mean(0)

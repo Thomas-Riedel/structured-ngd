@@ -1,99 +1,4 @@
-from typing import Union, List
-import torch
-from torch.utils.data import DataLoader, TensorDataset, ConcatDataset
-import os
-import numpy as np
-import pandas as pd
-from optimizers.noisy_optimizer import NoisyOptimizer
-from network import TempScaling, DeepEnsemble, HyperDeepEnsemble
-import pickle
-
-
-SEVERITY_LEVELS = [1, 2, 3, 4, 5]
-
-CORRUPTIONS = [
-    'brightness', 'defocus_blur', 'fog', 'gaussian_blur', 'glass_blur', 'jpeg_compression', 'motion_blur', 'saturate',
-    'snow', 'speckle_noise', 'contrast', 'elastic_transform', 'frost', 'gaussian_noise', 'impulse_noise', 'pixelate',
-    'shot_noise', 'spatter', 'zoom_blur'
-]
-
-CORRUPTION_TYPES = dict(
-    all=CORRUPTIONS,
-    noise=['gaussian_noise', 'shot_noise', 'impulse_noise', 'speckle_noise'],
-    blur=['defocus_blur', 'glass_blur', 'motion_blur', 'zoom_blur', 'gaussian_blur'],
-    weather=['snow', 'frost', 'fog', 'brightness', 'spatter'],
-    digital=['contrast', 'elastic_transform', 'pixelate', 'jpeg_compression', 'saturate']
-)
-
-
-def load_run(dataset, model, optimizer, directory: str = 'runs', method='Vanilla') -> dict:
-    if type(model) != str:
-        model = model.__name__
-    if type(optimizer) != str:
-        optimizer = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
-    for file in sorted(os.listdir(directory)):
-        if file.endswith(".pkl"):
-            with open(os.path.join(directory, file), 'rb') as f:
-                run = pickle.load(f)
-            if ((run['optimizer_name'].lower() == optimizer.lower()) and
-                    (run['model_name'].lower() == model.lower()) and
-                    (run['dataset'].lower() == dataset.lower()) and
-                    (run['method'] == method)
-            ):
-                return run
-    return None
-
-
-def load_all_runs(directory: str = 'runs') -> List[dict]:
-    runs = []
-    for file in sorted(os.listdir(directory)):
-        if file.endswith(".pkl"):
-            with open(os.path.join(directory, file), 'rb') as f:
-                run = pickle.load(f)
-            run['total_time'] = run['epoch_times'][-1]
-            if not 'num_epochs' in run:
-                run['num_epochs'] = len(run['epoch_times']) - 1
-                run['avg_time_per_epoch'] = run['total_time'] / run['num_epochs']
-            if run['params'].get('k') == 0:
-                run['params']['structure'] = 'diagonal'
-            runs.append(run)
-    return runs
-
-
-def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severity: int, batch_size: int = 128):
-    path = '/storage/group/dataset_mirrors/01_incoming'
-    if dataset.lower() == 'cifar10':
-        data_name = 'CIFAR-10-C'
-    elif dataset.lower() == 'cifar100':
-        data_name = 'CIFAR-100-C'
-    else:
-        raise ValueError()
-    data_size = 10000
-
-    # load labels
-    directory = os.path.join(path, data_name, 'data')
-    path_to_file = os.path.join(directory, 'labels.npy')
-    labels = torch.from_numpy(np.load(path_to_file))[:data_size]
-
-    if type(corruption) == str:
-        corruption = [corruption]
-
-    data = []
-    for c in corruption:
-        path_to_file = os.path.join(directory, f"{c}.npy")
-
-        # load corrupted inputs and preprocess
-        corrupted_input = torch.from_numpy(np.load(path_to_file)).permute(0, 3, 1, 2).float()
-        corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
-        mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
-        std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
-        corrupted_input = (corrupted_input - mean) / std
-
-        data.append(TensorDataset(corrupted_input, labels))
-    data = ConcatDataset(data)
-    # define dataloader
-    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2)
-    return data_loader
+from util import *
 
 
 def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, clean_results, mc_samples, n_bins):
@@ -113,7 +18,13 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
         loss=clean_results['test_loss'],
         **clean_results['test_metrics']
     )])
+    corruption_errors = pd.DataFrame(columns=['method', 'model', 'dataset', 'optimizer',
+                                              'corruption_type', 'corruption', 'mCE', 'rmCE'])
     bin_data = {(severity, corruption_type): clean_results['bin_data']}
+    uncertainty = dict(
+        model_uncertainty={(severity, corruption_type): clean_results['model_uncertainty']},
+        predictive_uncertainty={(severity, corruption_type): clean_results['predictive_uncertainty']}
+    )
     i = 0
     for severity in SEVERITY_LEVELS:
         for corruption_type in CORRUPTION_TYPES.keys():
@@ -121,9 +32,12 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
                 continue
             bin_data_list = []
             for corruption in CORRUPTION_TYPES[corruption_type]:
+                print(f"[{i} / {len(SEVERITY_LEVELS) * len(CORRUPTIONS)}]; "
+                      f"severity = {severity}, corruption = {corruption}")
                 data_loader = load_corrupted_data(dataset, corruption, severity)
-                loss, metric, corrupted_bin_data = model.evaluate(data_loader, metrics=metrics, optimizer=optimizer,
-                                                                  mc_samples=mc_samples, n_bins=n_bins)
+                loss, metric, corrupted_bin_data, corrupted_uncertainty = model.evaluate(
+                    data_loader, metrics=metrics, optimizer=optimizer, mc_samples=mc_samples, n_bins=n_bins
+                )
                 bin_data_list.append(corrupted_bin_data)
                 corrupted_result = pd.DataFrame([dict(
                         corruption_type=corruption_type,
@@ -134,14 +48,12 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
                     )])
                 df = pd.concat([df, corrupted_result], ignore_index=True)
                 i += 1
-                print(f"[{i} / {len(SEVERITY_LEVELS) * len(CORRUPTIONS)}]; "
-                      f"severity = {severity}, corruption = {corruption}")
 
             # group bin_data results by types
             corrupted_bin_data = merge_bin_data(bin_data_list)
             bin_data[(severity, corruption_type)] = corrupted_bin_data
-        bin_data[(severity, 'all')] = merge_bin_data([bin_data[(severity, c)]
-                                                      for c in ['blur', 'noise', 'digital', 'weather']])
+            uncertainty['model_uncertainty'][(severity, corruption_type)] = corrupted_uncertainty['model_uncertainty']
+            uncertainty['predictive_uncertainty'][(severity, corruption_type)] = corrupted_uncertainty['predictive_uncertainty']
 
     sub_df = df[
         (df['severity'] > 0) & (df['corruption_type'] != 'all')
@@ -157,51 +69,51 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
     else:
         baseline_clean_accuracy = clean_accuracy
         baseline_df = sub_df.copy()
-    corruption_error = ce(sub_df, baseline_df)
-    rel_corruption_error = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy)
+    corruption_errors['mCE'] = ce(sub_df, baseline_df)
+    corruption_errors['Rel. mCE'] = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy)
+    corruption_errors['Method'] = method
+    corruption_errors['Model'] = model_name
+    corruption_errors['Dataset'] = dataset
+    corruption_errors['Optimizer'] = optimizer_name
+    corruption_errors['Corruption'] = CORRUPTIONS
+    corruption_errors['Type'] = corruption_errors['corruption'].apply(get_corruption_type)
+    corruption_errors['Accuracy'] = clean_results['test_metrics']['accuracy']
 
-    for corruption_type in CORRUPTION_TYPES.keys():
-        corruption_error[corruption_type] = corruption_error[CORRUPTION_TYPES[corruption_type]].mean(1)
-        corruption_error[f"{corruption_type}_std"] = corruption_error[CORRUPTION_TYPES[corruption_type]].std(1)
-
-        rel_corruption_error[corruption_type] = rel_corruption_error[CORRUPTION_TYPES[corruption_type]].mean(1)
-        rel_corruption_error[f"{corruption_type}_std"] = rel_corruption_error[CORRUPTION_TYPES[corruption_type]].std(1)
-
-    df['method'] = method
-    df['dataset'] = dataset
-    df['model_name'] = model_name
-    df['optimizer_name'] = optimizer_name
-
-    corruption_error['method'] = method
-    corruption_error['dataset'] = dataset
-    corruption_error['model_name'] = model_name
-    corruption_error['optimizer_name'] = optimizer_name
-    corruption_error['accuracy'] = clean_results['test_metrics']['accuracy']
-
-    rel_corruption_error['method'] = method
-    rel_corruption_error['dataset'] = dataset
-    rel_corruption_error['model_name'] = model_name
-    rel_corruption_error['optimizer_name'] = optimizer_name
-    rel_corruption_error['accuracy'] = clean_results['test_metrics']['accuracy']
+    df['Method'] = method
+    df['Dataset'] = dataset
+    df['Model'] = model_name
+    df['Optimizer'] = optimizer_name
 
     corrupted_results = dict(
         model_name=model_name,
         optimizer_name=optimizer_name,
         method=method,
         dataset=dataset,
-        corruption_error=corruption_error,
-        rel_corruption_error=rel_corruption_error,
+        corruption_errors=corruption_errors,
         df=df,
-        bin_data=bin_data
+        bin_data=bin_data,
+        uncertainty=uncertainty
     )
     return corrupted_results
+
+
+def get_corruption_type(x):
+    if x in ['gaussian_noise', 'shot_noise', 'impulse_noise', 'speckle_noise']:
+        return 'noise'
+    if x in ['defocus_blur', 'glass_blur', 'motion_blur', 'zoom_blur', 'gaussian_blur']:
+        return 'blur'
+    if x in ['snow', 'frost', 'fog', 'brightness', 'spatter']:
+        return 'weather'
+    if x in ['contrast', 'elastic_transform', 'pixelate', 'jpeg_compression', 'saturate']:
+        return 'digital'
+    return 'all'
 
 
 def ce(df, baseline_corrupted_df):
     result = pd.DataFrame()
     for corruption in CORRUPTIONS:
-        sub_df = df[df.corruption == corruption]
-        sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption]
+        sub_df = df[df.corruption == corruption].copy()
+        sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption].copy()
         result[corruption] = [np.sum(1 - sub_df.accuracy) / np.sum(1 - sub_baseline_df.accuracy)]
     return result
 
@@ -209,326 +121,8 @@ def ce(df, baseline_corrupted_df):
 def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
     result = pd.DataFrame()
     for corruption in CORRUPTIONS:
-        sub_df = df[df.corruption == corruption]
-        sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption]
+        sub_df = df[df.corruption == corruption].copy()
+        sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption].copy()
         result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(baseline_clean_accuracy - sub_baseline_df.accuracy)]
     return result
 
-
-def collect_results(runs, directory='runs', baseline='SGD'):
-    results = pd.DataFrame(columns=['Method', 'Dataset', 'Model', 'Optimizer', 'Structure', 'k', 'M', 'gamma',
-                                    'Training Loss', 'Validation Loss', 'Test Loss', 'Test Accuracy', 'Test Error',
-                                    'BS', 'ECE', 'MCE', 'UCE', 'MUCE', 'Top-k Accuracy', 'Top-k Error',
-                                    'Top-k ECE', 'Top-k MCE', 'Top-k UCE', 'Top-k MUCE',
-                                    # 'Total Time (h)', 'Avg. Time per Epoch (s)',
-                                    'Num Epochs'])
-    for run in runs:
-        method = run['method']
-        dataset = run['dataset']
-        model = run['model_name']
-        if run['optimizer_name'].startswith('StructuredNGD'):
-            params = run['params']
-            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
-            optimizer = f"NGD (structure = {structure}, $k = {params['k']}, " \
-                        f"M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
-        else:
-            optimizer = run['optimizer_name']
-        baseline_run = load_run(dataset, model, baseline, method='Vanilla', directory=directory)
-        train_loss = run['train_loss'][-1]
-        val_loss = run['val_loss'][-1]
-        test_loss = run['test_loss']
-        test_accuracy = run['test_metrics']['accuracy']
-        top_k_accuracy = run['test_metrics']['top_5_accuracy']
-        test_error = 1 - run['test_metrics']['accuracy']
-        top_k_error = 1 - run['test_metrics']['top_5_accuracy']
-        brier_score = run['test_metrics']['brier']
-        ece = run['bin_data']['expected_calibration_error']
-        mce = run['bin_data']['max_calibration_error']
-        uce = run['bin_data']['expected_uncertainty_error']
-        muce = run['bin_data']['max_uncertainty_error']
-        ece_topk = run['bin_data']['expected_calibration_error_topk']
-        mce_topk = run['bin_data']['max_calibration_error_topk']
-        uce_topk = run['bin_data']['expected_uncertainty_error_topk']
-        muce_topk = run['bin_data']['max_uncertainty_error_topk']
-        # total_time = run['total_time']
-        # avg_time_per_epoch = run['avg_time_per_epoch']
-        num_epochs = run['num_epochs']
-        if run['optimizer_name'] == baseline and method == 'Vanilla':
-            train_loss = compare(train_loss)
-            val_loss = compare(val_loss)
-            test_loss = compare(test_loss)
-            test_accuracy = compare(100 * test_accuracy)
-            top_k_accuracy = compare(100 * top_k_accuracy)
-            test_error = compare(100 * test_error)
-            top_k_error = compare(100 * top_k_error)
-            brier_score = compare(100 * brier_score)
-            ece = compare(100 * ece)
-            mce = compare(100 * mce)
-            uce = compare(100 * uce)
-            muce = compare(100 * muce)
-            ece_topk = compare(100 * ece_topk)
-            mce_topk = compare(100 * mce_topk)
-            uce_topk = compare(100 * uce_topk)
-            muce_topk = compare(100 * muce_topk)
-            # total_time = compare(total_time / 3600)
-            # avg_time_per_epoch = compare(avg_time_per_epoch)
-        else:
-            train_loss = compare(train_loss, baseline_run['train_loss'][-1])
-            val_loss = compare(val_loss, baseline_run['val_loss'][-1])
-            test_loss = compare(test_loss, baseline_run['test_loss'])
-            test_accuracy = compare(100 * test_accuracy, 100 * baseline_run['test_metrics']['accuracy'])
-            top_k_accuracy = compare(100 * top_k_accuracy, 100 * baseline_run['test_metrics']['top_5_accuracy'])
-            test_error = compare(100 * test_error, 100 * (1 - baseline_run['test_metrics']['accuracy']))
-            top_k_error = compare(100 * top_k_error, 100 * (1 - baseline_run['test_metrics']['top_5_accuracy']))
-            brier_score = compare(100 * brier_score, baseline_run['test_metrics']['brier'])
-            ece = compare(100 * ece, 100 * baseline_run['bin_data']['expected_calibration_error'])
-            mce = compare(100 * mce, 100 * baseline_run['bin_data']['max_calibration_error'])
-            uce = compare(100 * uce, 100 * baseline_run['bin_data']['expected_uncertainty_error'])
-            muce_topk = compare(100 * muce_topk, 100 * baseline_run['bin_data']['max_uncertainty_error_topk'])
-            ece_topk = compare(100 * ece_topk, 100 * baseline_run['bin_data']['expected_calibration_error_topk'])
-            mce_topk = compare(100 * mce_topk, 100 * baseline_run['bin_data']['max_calibration_error_topk'])
-            uce_topk = compare(100 * uce_topk, 100 * baseline_run['bin_data']['expected_uncertainty_error_topk'])
-            muce_topk = compare(100 * muce_topk, 100 * baseline_run['bin_data']['max_uncertainty_error_topk'])
-            # total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
-            # avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
-
-        if run['optimizer_name'].startswith('StructuredNGD'):
-            structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
-            k = run['params']['k']
-            M = run['params']['mc_samples']
-            gamma = run['params']['gamma']
-        else:
-            structure = '--'
-            k = '--'
-            M = '--'
-            gamma = '--'
-
-        result = pd.DataFrame([{
-            'Method': method,
-            'Dataset': dataset.upper(),
-            'Model': model,
-            'Optimizer': optimizer,
-            'Structure': structure,
-            'k': k,
-            'M': M,
-            'gamma': gamma,
-            'Training Loss': train_loss,
-            'Validation Loss': val_loss,
-            'Test Loss': test_loss,
-            'Test Accuracy': test_accuracy, 'Test Error': test_error, 'BS': brier_score,
-            'ECE': ece, 'MCE': mce, 'UCE': uce, 'MUCE': muce,
-            'Top-k Accuracy': top_k_accuracy, 'Top-k Error': top_k_error, 'Topk-k ECE': ece_topk,
-            'Topk-k UCE': uce_topk, 'Topk-k MCE': mce_topk, 'Topk-k MUCE': muce_topk,
-            # 'Total Time (h)': total_time,
-            # 'Avg. Time per Epoch (s)': avg_time_per_epoch,
-            'Num Epochs': num_epochs
-        }])
-        results = pd.concat([results, result], ignore_index=True)
-    results.sort_values(by=['Dataset', 'Model', 'Method', 'Optimizer'], inplace=True)
-    return results
-
-
-def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
-    if type(runs) == dict:
-        runs = [runs]
-    corrupted_results_df = pd.DataFrame()
-    for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
-        corrupted_results = run['corrupted_results']
-        method = run['method']
-        dataset = corrupted_results['dataset']
-        params = run['params']
-        if not run['optimizer_name'].startswith('StructuredNGD'):
-            optimizer_name = run['optimizer_name']
-            structure = '--'
-            k = '--'
-            M = '--'
-            gamma = '--'
-        else:
-            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
-            optimizer_name = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
-            structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
-            k = run['params']['k']
-            M = run['params']['mc_samples']
-            gamma = run['params']['gamma']
-        corrupted_results['df']['model_name'] = run['model_name']
-        corrupted_results['df']['method'] = method
-        corrupted_results['df']['optimizer_name'] = optimizer_name
-        corrupted_results['df']['structure'] = structure
-        corrupted_results['df']['k'] = k
-        corrupted_results['df']['M'] = M
-        corrupted_results['df']['gamma'] = gamma
-
-        clean_df = pd.DataFrame([dict(
-                method=method,
-                dataset=dataset,
-                model_name=run['model_name'],
-                optimizer_name=optimizer_name,
-                structure=structure,
-                k=k,
-                M=M,
-                gamma=gamma,
-                corruption_type='clean',
-                corruption='clean',
-                severity=0,
-                loss=run['test_loss'],
-                **run['test_metrics']
-            )])
-        corrupted_results_df = pd.concat([corrupted_results_df, clean_df, corrupted_results['df']], ignore_index=True)
-    corrupted_results_df.rename(columns={'optimizer_name': 'optimizer', 'model_name': 'model', 'loss': 'NLL',
-                                         'accuracy': 'Accuracy', 'top_5_accuracy': 'Top-5 Accuracy',
-                                         'ece': 'ECE', 'mce': 'MCE', 'uce': 'UCE', 'muce': 'MUCE', 'loss': 'Loss'},
-                                inplace=True)
-    return corrupted_results_df
-
-
-def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
-    if type(runs) == dict:
-        runs = [runs]
-    corruption_errors = pd.DataFrame()
-    for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
-        corruption_error = run['corrupted_results']['corruption_error']
-        corruption_error['method'] = run['method']
-        corruption_error['dataset'] = run['dataset']
-        params = run['params']
-        if not run['optimizer_name'].startswith('StructuredNGD'):
-            corruption_error['optimizer_name'] = run['optimizer_name']
-            corruption_error['Structure'] = '--'
-            corruption_error['k'] = '--'
-            corruption_error['M'] = '--'
-            corruption_error['gamma'] = '--'
-        else:
-            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
-            corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
-            corruption_error['Structure'] = structure
-            corruption_error['k'] = params['k']
-            corruption_error['M'] = params['mc_samples']
-            corruption_error['gamma'] = params['gamma']
-        for key, value in run['test_metrics'].items():
-            corruption_error[key] = value
-        corruption_errors = pd.concat([corruption_errors, corruption_error], ignore_index=True)
-    return corruption_errors
-
-
-def collect_rel_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
-    if type(runs) == dict:
-        runs = [runs]
-    rel_corruption_errors = pd.DataFrame()
-    for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
-        rel_corruption_error = run['corrupted_results']['rel_corruption_error']
-        rel_corruption_error['method'] = run['method']
-        rel_corruption_error['dataset'] = run['dataset']
-        params = run['params']
-        if not run['optimizer_name'].startswith('StructuredNGD'):
-            rel_corruption_error['optimizer_name'] = run['optimizer_name']
-            rel_corruption_error['Structure'] = '--'
-            rel_corruption_error['k'] = '--'
-            rel_corruption_error['M'] = '--'
-            rel_corruption_error['gamma'] = '--'
-        else:
-            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
-            rel_corruption_error['Structure'] = structure
-            rel_corruption_error['k'] = params['k']
-            rel_corruption_error['M'] = params['mc_samples']
-            rel_corruption_error['gamma'] = params['gamma']
-            rel_corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
-        for key, value in run['test_metrics'].items():
-            rel_corruption_error[key] = value
-        rel_corruption_errors = pd.concat([rel_corruption_errors, rel_corruption_error], ignore_index=True)
-    return rel_corruption_errors
-
-
-def compare(x, y=None, f='{:.1f}'):
-    if y is None:
-        return f.format(x)
-    sign = ['+', '±', ''][1 - np.sign(x - y).astype(int)]
-    relative_diff = 100 * (x / y - 1)
-    return f"{f.format(x)} ({sign}{f.format(relative_diff)}%)"
-
-
-def merge_bin_data(data: List[dict]):
-    if len(data) == 0:
-        return {}
-    result = data[0]
-    bins = result['bins']
-    bin_accuracies = result['r_counts'] * result['accuracies']
-    bin_accuracies_topk = result['r_counts'] * result['accuracies_topk']
-    bin_confidences = result['r_counts'] * result['confidences']
-    r_bin_counts = result['r_counts']
-    bin_errors = result['u_counts'] * result['errors']
-    bin_errors_topk = result['u_counts'] * result['errors_topk']
-    bin_uncertainties = result['u_counts'] * result['uncertainties']
-    u_bin_counts = result['u_counts']
-
-    for bin_data in data[1:]:
-        assert(len(bins) == len(bin_data['bins']))
-        bin_accuracies += bin_data['r_counts'] * bin_data['accuracies']
-        bin_accuracies_topk += bin_data['r_counts'] * bin_data['accuracies_topk']
-        bin_confidences += bin_data['r_counts'] * bin_data['confidences']
-        r_bin_counts += bin_data['r_counts']
-
-        bin_errors += bin_data['u_counts'] * bin_data['errors']
-        bin_errors_topk += bin_data['u_counts'] * bin_data['errors_topk']
-        bin_uncertainties += bin_data['u_counts'] * bin_data['uncertainties']
-        u_bin_counts += bin_data['u_counts']
-
-    bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-    bin_accuracies_topk /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-    bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-    bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-    bin_errors_topk /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-    bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-
-    avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
-    avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
-    avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
-    avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
-
-    avg_acc_topk = np.sum(bin_accuracies_topk * r_bin_counts) / np.sum(r_bin_counts)
-    avg_err_topk = np.sum(bin_errors_topk * u_bin_counts) / np.sum(u_bin_counts)
-
-    gaps = np.abs(bin_accuracies - bin_confidences)
-    ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
-    mce = np.max(gaps)
-    gaps_topk = np.abs(bin_accuracies_topk - bin_confidences)
-    ece_topk = np.sum(gaps_topk * r_bin_counts) / np.sum(r_bin_counts)
-    mce_topk = np.max(gaps_topk)
-
-    gaps = np.abs(bin_errors - bin_uncertainties)
-    uce = np.sum(gaps * u_bin_counts) / np.sum(u_bin_counts)
-    muce = np.max(gaps)
-    gaps_topk = np.abs(bin_errors_topk - bin_uncertainties)
-    uce_topk = np.sum(gaps_topk * u_bin_counts) / np.sum(u_bin_counts)
-    muce_topk = np.max(gaps_topk)
-
-    bin_data = dict(
-        accuracies=bin_accuracies,
-        accuracies_topk=bin_accuracies_topk,
-        confidences=bin_confidences,
-        errors=bin_errors,
-        errors_topk=bin_errors_topk,
-        uncertainties=bin_uncertainties,
-        r_counts=r_bin_counts,
-        u_counts=u_bin_counts,
-        bins=bins,
-        avg_accuracy=avg_acc,
-        avg_accuracy_topk=avg_acc_topk,
-        avg_confidence=avg_conf,
-        avg_error=avg_err,
-        avg_error_topk=avg_err_topk,
-        avg_uncertainty=avg_uncert,
-        expected_calibration_error=ece,
-        max_calibration_error=mce,
-        expected_uncertainty_error=uce,
-        max_uncertainty_error=muce,
-        expected_calibration_error_topk=ece_topk,
-        max_calibration_error_topk=mce_topk,
-        expected_uncertainty_error_topk=uce_topk,
-        max_uncertainty_error_topk=muce_topk
-    )
-    return bin_data

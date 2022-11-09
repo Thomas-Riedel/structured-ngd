@@ -13,12 +13,12 @@ from bayesian_torch.models.dnn_to_bnn import dnn_to_bnn, get_kl_loss
 
 from typing import Union, Tuple, List, Callable
 import time
+from util import *
 
 
 class Model(nn.Module):
     def __init__(self, model_type: str = 'ResNet20', num_classes: int = 10, input_shape=(3, 32, 32),
-                 device: str = None, runs: List[dict] = None,
-                 bnn: bool = False, dropout_layers: Union[None, str] = None, p: float = 0.2) -> None:
+                 device: str = None, bnn: bool = False, dropout_layers: Union[None, str] = None, p: float = 0.2) -> None:
         """torch.nn.Module class
 
         :param model_type: str, specify what ResNet model to use
@@ -48,8 +48,8 @@ class Model(nn.Module):
                 "prior_sigma": 1.0,
                 "posterior_mu_init": 0.0,
                 "posterior_rho_init": -3.0,
-                "type": "Reparameterization",  # Flipout or Reparameterization
-                "moped_enable": False,  # True to initialize mu/sigma from the pretrained dnn weights
+                "type": "Reparameterization",
+                "moped_enable": False,
                 "moped_delta": 0.5,
             }
             dnn_to_bnn(self.model, const_bnn_prior_parameters)
@@ -78,8 +78,8 @@ class Model(nn.Module):
         return self.model(x)
 
     def train(self, data_loader: DataLoader, optimizer: Union[Adam, NoisyOptimizer],
-              epoch: int = 0, metrics: List[Callable] = [accuracy], eval_every: int = 100,
-              loss_fn: Callable = nn.CrossEntropyLoss()) -> Tuple[List[float], dict, List[float]]:
+              epoch: int = 0, metrics: List[Callable] = [], eval_every: int = 100,
+              loss_fn: Callable = nn.NLLLoss()) -> Tuple[List[float], dict, List[float]]:
         """Training loop for one epoch.
 
         :param data_loader: torch.utils.data.DataLoader, training dataset
@@ -116,19 +116,21 @@ class Model(nn.Module):
             if self.bnn:
                 def closure():
                     optimizer.zero_grad()
-                    preds = self(images)
+                    logits = self(images)
+                    preds = F.log_softmax(logits, dim=-1)
                     kl = get_kl_loss(self.model)
                     ce_loss = loss_fn(preds, labels)
-                    loss = ce_loss + kl / images.shape[0]
+                    loss = ce_loss + kl / len(data_loader.dataset)
                     loss.backward()
-                    return ce_loss, preds
+                    return ce_loss, logits
             else:
                 def closure():
                     optimizer.zero_grad()
-                    preds = self(images)
+                    logits = self(images)
+                    preds = F.log_softmax(logits, dim=-1)
                     loss = loss_fn(preds, labels)
                     loss.backward()
-                    return loss, preds
+                    return loss, logits
 
             # Perform forward pass, compute loss, backpropagate, update parameters
             with Timer(self.device) as t:
@@ -161,143 +163,51 @@ class Model(nn.Module):
 
     @torch.no_grad()
     def evaluate(self, data_loader: DataLoader, metrics: List[Callable] = [],
-                 loss_fn: Callable = nn.CrossEntropyLoss(),
-                 optimizer = None, mc_samples: int = 1, n_bins=10, top_k=5) -> Tuple[float, dict, dict]:
+                 loss_fn: Callable = nn.NLLLoss(),
+                 optimizer=None, mc_samples: int = 1, n_bins: int = 10) -> Tuple[float, dict, dict, dict]:
         """Evaluate data on loss function and metrics.
 
         :param data_loader: torch.utils.data.DataLoader, validation or test dataset
         :param metrics: List[Callable], list of metrics to run for evaluation
         :param loss_fn: Callable, loss function to optimize
-        :return: (loss, metric_vals, bin_data), Tuple[float, dict, dict], tuple of loss and specified metrics on validation set
+        :return: (loss, metric_vals, bin_data), Tuple[float, dict, dict],
+            tuple of loss and specified metrics on validation set
         """
-        if data_loader is None:
-            return None, None, None
         if not isinstance(optimizer, NoisyOptimizer) and not (self.bnn or self.mc_dropout):
             mc_samples = 1
         assert(mc_samples >= 1)
-
         # Set model to evaluation mode!
         self.model.eval()
 
-        loss = 0.0
+        # If noisy optimizer (NGD) is used, sample weights once, perform full forward pass and repeat for all MC samples
+        logits = []
+        labels_list = []
+        with Sampler(optimizer):
+            for mc_sample in range(mc_samples):
+                mc_logits = []
+                if isinstance(optimizer, NoisyOptimizer):
+                    optimizer._sample_weight()
+                for i, data in enumerate(data_loader):
+                    images, labels = data
+                    images = images.to(self.device)
+                    labels = labels.to(self.device)
+                    mc_logits.append(self(images))
+                    if mc_sample == 0:
+                        labels_list.append(labels)
+                mc_logits = torch.cat(mc_logits)
+                logits.append(mc_logits)
+        logits = torch.stack(logits)
+        labels = torch.cat(labels_list)
+        loss = loss_fn(F.log_softmax(logits, dim=-1).mean(0), labels).item()
+
         metric_vals = {}
         for metric in metrics:
-            metric_vals[metric.__name__] = 0.0
-        bin_accuracies = np.zeros(n_bins, dtype=float)
-        bin_accuracies_topk = np.zeros(n_bins, dtype=float)
-        bin_confidences = np.zeros(n_bins, dtype=float)
-        r_bin_counts = np.zeros(n_bins, dtype=int)
-        bin_errors_topk = np.zeros(n_bins, dtype=float)
-        bin_errors = np.zeros(n_bins, dtype=float)
-        bin_uncertainties = np.zeros(n_bins, dtype=float)
-        u_bin_counts = np.zeros(n_bins, dtype=int)
-        bins = np.linspace(0.0, 1.0, n_bins + 1)
+            metric_vals[metric.__name__] = metric(logits, labels).item()
+        bin_data = get_bin_data(logits, labels, num_classes=self.num_classes, n_bins=n_bins)
+        uncertainty = get_uncertainty(logits)
 
-        for i, data in enumerate(data_loader):
-            images, labels = data
-            images = images.to(self.device)
-            labels = labels.to(self.device)
-
-            with Sampler(optimizer):
-                logits = torch.zeros((mc_samples, images.shape[0], self.num_classes), device=self.device)
-                for i in range(mc_samples):
-                    if isinstance(optimizer, NoisyOptimizer):
-                        optimizer._sample_weight()
-                    logits[i] = self(images)
-                    loss += loss_fn(logits[i], labels).item()
-                    for metric in metrics:
-                        metric_vals[metric.__name__] += metric(logits[i], labels).item()
-
-            probs = logits.softmax(-1).mean(0)
-            num_classes = torch.tensor(self.num_classes, dtype=float)
-            uncertainties = -1/torch.log(num_classes) * torch.sum(probs * torch.log(probs + torch.finfo().tiny), axis=-1)
-            confidences, preds = probs.max(-1)
-            _, preds_topk = probs.topk(top_k)
-            labels_topk = labels.unsqueeze(-1).expand_as(preds_topk)
-
-            uncertainties = uncertainties.detach().cpu().numpy()
-            labels = labels.detach().cpu().numpy()
-            labels_topk = labels_topk.detach().cpu().numpy()
-            confidences = confidences.detach().cpu().numpy()
-            preds = preds.detach().cpu().numpy()
-            preds_topk = preds_topk.detach().cpu().numpy()
-            r_indices = np.digitize(confidences, bins, right=True)
-            u_indices = np.digitize(uncertainties, bins, right=True)
-
-            for b in range(n_bins):
-                selected = np.where(r_indices == b + 1)[0]
-                if len(selected) > 0:
-                    bin_accuracies[b] += np.sum(labels[selected] == preds[selected])
-                    bin_accuracies_topk[b] += np.sum(labels_topk[selected] == preds_topk[selected])
-                    bin_confidences[b] += np.sum(confidences[selected])
-                    r_bin_counts[b] += len(selected)
-                selected = np.where(u_indices == b + 1)[0]
-                if len(selected) > 0:
-                    bin_errors[b] += np.sum(labels[selected] != preds[selected])
-                    bin_errors_topk[b] += (1 - (labels_topk[selected] == preds_topk[selected]).sum(-1)).sum()
-                    bin_uncertainties[b] += np.sum(uncertainties[selected])
-                    u_bin_counts[b] += len(selected)
-            # Write to TensorBoard
-            # writer.add_scalar("Loss", loss, counter)
-
-        for metric in metrics:
-            metric_vals[metric.__name__] /= len(data_loader) * mc_samples
-        loss /= len(data_loader) * mc_samples
         print(loss, metric_vals)
-
-        # Divide each bin by its bin count and avoid division by zero!
-        bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-        bin_accuracies_topk /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-        bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-        avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
-        avg_acc_topk = np.sum(bin_accuracies_topk * r_bin_counts) / np.sum(r_bin_counts)
-        avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
-        gaps = np.abs(bin_accuracies - bin_confidences)
-        ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
-        mce = np.max(gaps)
-        gaps_topk = np.abs(bin_accuracies_topk - bin_confidences)
-        ece_topk = np.sum(gaps_topk * r_bin_counts) / np.sum(r_bin_counts)
-        mce_topk = np.max(gaps_topk)
-
-        bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-        bin_errors_topk /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-        bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-        avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
-        avg_err_topk = np.sum(bin_errors_topk * u_bin_counts) / np.sum(u_bin_counts)
-        avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
-        gaps = np.abs(bin_errors - bin_uncertainties)
-        uce = np.sum(gaps * u_bin_counts) / np.sum(u_bin_counts)
-        muce = np.max(gaps)
-        gaps_topk = np.abs(bin_errors_topk - bin_uncertainties)
-        uce_topk = np.sum(gaps_topk * u_bin_counts) / np.sum(u_bin_counts)
-        muce_topk = np.max(gaps_topk)
-
-        bin_data = dict(
-            accuracies=bin_accuracies,
-            accuracies_topk=bin_accuracies_topk,
-            confidences=bin_confidences,
-            errors=bin_errors,
-            errors_topk=bin_errors_topk,
-            uncertainties=bin_uncertainties,
-            r_counts=r_bin_counts,
-            u_counts=u_bin_counts,
-            bins=bins,
-            avg_accuracy=avg_acc,
-            avg_accuracy_topk=avg_acc_topk,
-            avg_confidence=avg_conf,
-            avg_error=avg_err,
-            avg_error_topk=avg_err_topk,
-            avg_uncertainty=avg_uncert,
-            expected_calibration_error=ece,
-            max_calibration_error=mce,
-            expected_uncertainty_error=uce,
-            max_uncertainty_error=muce,
-            expected_calibration_error_topk=ece_topk,
-            max_calibration_error_topk=mce_topk,
-            expected_uncertainty_error_topk=uce_topk,
-            max_uncertainty_error_topk=muce_topk
-        )
-        return loss, metric_vals, bin_data
+        return loss, metric_vals, bin_data, uncertainty
 
     def init_weights(self, seed: Union[int, None] = None) -> None:
         """Initialize weights.
