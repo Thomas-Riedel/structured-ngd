@@ -18,8 +18,9 @@ from util import *
 
 
 class Model(nn.Module):
-    def __init__(self, model_type: str = 'ResNet20', num_classes: int = 10, input_shape=(3, 32, 32),
-                 device: str = None, bnn: bool = False, dropout_layers: Union[None, str] = None, p: float = 0.2) -> None:
+    def __init__(
+            self, model_type: str = 'ResNet20', num_classes: int = 10, input_shape=(3, 32, 32),
+            device: str = None, bnn: bool = False, dropout_layers: Union[None, str] = None, p: float = 0.2) -> None:
         """torch.nn.Module class
 
         :param model_type: str, specify what ResNet model to use
@@ -41,7 +42,7 @@ class Model(nn.Module):
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.mc_dropout = False
-        if not dropout_layers is None:
+        if dropout_layers is not None:
             self.mc_dropout = True
         if bnn:
             const_bnn_prior_parameters = {
@@ -218,7 +219,7 @@ class Model(nn.Module):
 
         :param seed: int, seed for random initialization
         """
-        if not seed is None:
+        if seed is not None:
             torch.manual_seed(seed)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):

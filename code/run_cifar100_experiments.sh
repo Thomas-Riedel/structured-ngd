@@ -29,7 +29,7 @@ python main.py --optimizers StructuredNGD --structure arrowhead --lr 1e-1 --n_bi
 python main.py --optimizers StructuredNGD --structure rank_cov  --lr 1e-1 --n_bins 10 --epochs 250 --dataset CIFAR100 --model ResNet32 --k 0,1,3,5 --mc_samples_val 8 --mc_samples_test 64 --mc_samples 5
 python main.py --optimizers StructuredNGD --structure arrowhead --lr 1e-1 --n_bins 10 --epochs 250 --dataset CIFAR100 --model ResNet32 --k   1,3,5 --mc_samples_val 8 --mc_samples_test 64 --mc_samples 5
 
-# Hyper-Deep Ensembles for individual M with gammma set to 1 and all possible values k for structure Rank Covariance
+# Hyper-Deep Ensembles for individual M with gamma set to 1 and all possible values k for structure Rank Covariance
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=rank_cov;M=1'
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=rank_cov;M=3'
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=rank_cov;M=5'
@@ -39,7 +39,7 @@ python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_t
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=rank_cov;gamma=0.1'
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=rank_cov;gamma=0.0'
 
-# Hyper-Deep Ensembles for individual M with gammma set to 1 and all possible values k for structure Arrowhead
+# Hyper-Deep Ensembles for individual M with gamma set to 1 and all possible values k for structure Arrowhead
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=arrowhead;M=1'
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=arrowhead;M=3'
 python main.py ---n_bins 10 --dataset CIFAR100 --mc_samples_val 8 --mc_samples_test 64 --model 'HyperDeepEnsemble|structure=arrowhead;M=5'

@@ -33,7 +33,7 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
             for corruption in CORRUPTION_TYPES[corruption_type]:
                 print('----------------------------------------------------------------')
                 print(f"[{i} / {len(SEVERITY_LEVELS) * len(CORRUPTIONS)}]; "
-                      f"severity = {severity}, corruption = {corruption}\n")
+                      f"severity = {severity}, corruption = {corruption}, type = {corruption_type}\n")
                 data_loader = load_corrupted_data(dataset, corruption, severity)
                 loss, metric, corrupted_bin_data, corrupted_uncertainty = model.evaluate(
                     data_loader, metrics=metrics, optimizer=optimizer, mc_samples=mc_samples, n_bins=n_bins

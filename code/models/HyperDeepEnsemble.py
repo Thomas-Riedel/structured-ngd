@@ -42,7 +42,8 @@ class HyperDeepEnsemble:
         :param data_loader: torch.utils.data.DataLoader, validation or test dataset
         :param metrics: List[Callable], list of metrics to run for evaluation
         :param loss_fn: Callable, loss function to optimize
-        :return: (loss, metric_vals, bin_data), Tuple[float, dict, dict], tuple of loss and specified metrics on validation set
+        :return: (loss, metric_vals, bin_data), Tuple[float, dict, dict], tuple of loss and specified metrics on
+            validation set
         """
         # Set model to evaluation mode!
         for model in self.models:
@@ -149,8 +150,6 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
     ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
     mce = np.max(gaps)
 
-    bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-    bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
     avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
     avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
     gaps = np.abs(bin_errors - bin_uncertainties)
@@ -175,7 +174,6 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
         max_uncertainty_error=muce
     )
     return bin_data
-
 
 
 def entropy(probs, labels=None):

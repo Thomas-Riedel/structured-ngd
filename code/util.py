@@ -80,18 +80,18 @@ def parse_args() -> dict:
                         help='Second moment strength (default: 0.999)')
     parser.add_argument('--prior_precision', type=float, default=0.4,
                         help='Spherical prior precision (default: 0.4)')
-    parser.add_argument('--damping', type=float, default=0.1,
-                        help='Damping strength for matrix inversion (default: 0.1)')
+    parser.add_argument('--damping', type=float, default=0.001,
+                        help='Damping strength for matrix inversion (default: 0.001)')
     parser.add_argument('--gamma', type=float, default=1.0,
                         help='Regularization parameter in ELBO (default: 1.0)')
     parser.add_argument('-s', '--data_split', type=float, default=0.8,
                         help='Data split for training and validation set (default: 0.8)')
     parser.add_argument('--n_bins', type=int, default=10,
                         help='Number of bins for reliability diagrams (default: 10)')
-    parser.add_argument('--mc_samples_val', type=int, default=1,
-                        help='Number of MC samples during evaluation (default: 1)')
-    parser.add_argument('--mc_samples_test', type=int, default=32,
-                        help='Number of MC samples during testing (default: 32)')
+    parser.add_argument('--mc_samples_val', type=int, default=8,
+                        help='Number of MC samples during evaluation (default: 8)')
+    parser.add_argument('--mc_samples_test', type=int, default=64,
+                        help='Number of MC samples during testing (default: 64)')
     parser.add_argument('--baseline', type=str, default='SGD',
                         help='Baseline optimizer for comparison of corrupted data')
     parser.add_argument('--use_cuda', type=bool, default=torch.cuda.is_available(),
@@ -515,34 +515,18 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
             k = run['params']['k']
             M = run['params']['mc_samples']
             gamma = run['params']['gamma']
-        corrupted_results['df']['model_name'] = run['model_name']
-        corrupted_results['df']['method'] = method
-        corrupted_results['df']['optimizer_name'] = optimizer_name
+        corrupted_results['df']['Optimizer'] = optimizer_name
         corrupted_results['df']['Structure'] = structure
         corrupted_results['df']['k'] = k
         corrupted_results['df']['M'] = M
         corrupted_results['df']['gamma'] = gamma
 
-        clean_df = pd.DataFrame([dict(
-            method=method,
-            dataset=dataset,
-            model_name=run['model_name'],
-            optimizer_name=optimizer_name,
-            structure=structure,
-            k=k,
-            M=M,
-            gamma=gamma,
-            corruption_type='clean',
-            corruption='clean',
-            severity=0,
-            loss=run['test_loss'],
-            **run['test_metrics']
-        )])
-        corrupted_results_df = pd.concat([corrupted_results_df, clean_df, corrupted_results['df']], ignore_index=True)
-    corrupted_results_df.rename(columns={'optimizer_name': 'optimizer', 'model_name': 'model', 'loss': 'NLL',
-                                         'accuracy': 'Accuracy', 'top_5_accuracy': 'Top-5 Accuracy',
-                                         'ece': 'ECE', 'mce': 'MCE', 'uce': 'UCE', 'muce': 'MUCE',
-                                         'brier': 'BS', 'mutual_information': 'MI'},
+        corrupted_results_df = pd.concat([corrupted_results_df, corrupted_results['df']], ignore_index=True)
+    corrupted_results_df.rename(columns={'loss': 'NLL', 'accuracy': 'Accuracy', 'top_5_accuracy': 'Top-5 Accuracy',
+                                         'ece': 'ECE', 'mce': 'MCE', 'uce': 'UCE', 'muce': 'MUCE', 'ace': 'ACE',
+                                         'sce': 'SCE', 'brier': 'BS',
+                                         'predictive_uncertainty': 'Predictive Uncertainty',
+                                         'model_uncertainty': 'Model Uncertainty'},
                                 inplace=True)
     return corrupted_results_df
 
@@ -554,9 +538,7 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
     for run in runs:
         if not run['dataset'].lower() in ['cifar10', 'cifar100']:
             continue
-        corruption_error = run['corrupted_results']['corruption_error']
-        corruption_error['method'] = run['method']
-        corruption_error['dataset'] = run['dataset']
+        corruption_error = run['corrupted_results']['corruption_errors']
         params = run['params']
         if not run['optimizer_name'].startswith('StructuredNGD'):
             corruption_error['optimizer_name'] = run['optimizer_name']
@@ -575,6 +557,28 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
             corruption_error[key] = value
         corruption_errors = pd.concat([corruption_errors, corruption_error], ignore_index=True)
     return corruption_errors
+
+
+def collect_uncertainty(runs: Union[List[dict], dict]) -> pd.DataFrame:
+    if type(runs) == dict:
+        runs = [runs]
+    df_uncertainty = pd.DataFrame(columns=['Dataset', 'Model', 'Method', 'Predictive Uncertainty',
+                               'Model Uncertainty', 'severity', 'corruption type'])
+    for run in runs:
+        if run['dataset'].lower() not in ['cifar10', 'cifar100']:
+            continue
+        uncertainty = run['corrupted_results']['uncertainty']
+        for severity, corruption_type in uncertainty['predictive_uncertainty'].keys():
+            df = pd.DataFrame()
+            df['Model Uncertainty'] = uncertainty['model_uncertainty'][(severity, corruption_type)]
+            df['Predictive Uncertainty'] = uncertainty['predictive_uncertainty'][(severity, corruption_type)]
+            df['severity'] = severity
+            df['corruption type'] = corruption_type
+            df['Method'] = run['method']
+            df['Dataset'] = run['dataset']
+            df['Model'] = run['model_name']
+            df_uncertainty = pd.concat([df_uncertainty, df])
+    return df_uncertainty
 
 
 def compare(x, y=None, f='{:.1f}'):
@@ -726,7 +730,6 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
     return bin_data
 
 
-
 def make_csv(runs):
     if not os.path.exists('results'):
         os.mkdir('results')
@@ -736,42 +739,48 @@ def make_csv(runs):
     # results_table().copy().to_csv('results/table.csv', index=True)
 
 
-def results_table():
-    corrupted_results = pd.read_csv('results/corrupted_results.csv')
-    corruption_errors = pd.read_csv('results/corruption_errors.csv')
-    rel_corruption_errors = pd.read_csv('results/rel_corruption_errors.csv')
-    corruption_errors.index = corruption_errors.optimizer_name
-    rel_corruption_errors.index = rel_corruption_errors.optimizer_name
-
-    f_interval = lambda x: rf"{100 * x.mean():.1f} ($\pm$ {100 * x.std():.1f})"
-    corrupted_results = corrupted_results[corrupted_results.corruption_type != 'clean']. \
-        drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer', 'corruption_type']). \
-        agg(f_interval).unstack('corruption_type').swaplevel(axis=1)
-    corrupted_results_all = pd.read_csv('results/corrupted_results.csv')
-
-    corrupted_results_all = corrupted_results_all[corrupted_results_all.corruption_type != 'clean']. \
-        drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer']).agg(f_interval)
-    corrupted_results = pd.concat([corrupted_results, pd.concat({'all': corrupted_results_all}, axis=1)], axis=1)
-
-    for c in CORRUPTION_TYPES.keys():
-        f_interval = lambda x: rf"{100 * x[c]:.1f} ($\pm$ {100 * x[f'{c}_std']:.1f})"
-        corrupted_results[c, 'mCE'] = corruption_errors[[c, f"{c}_std"]].apply(
-            f_interval, axis=1
-        )
-        corrupted_results[c, 'Rel. mCE'] = rel_corruption_errors[[c, f"{c}_std"]].apply(
-            f_interval, axis=1
-        )
-    corrupted_results.sort_index(inplace=True)
-    corrupted_results.rename(
-        columns={'all': 'All', 'noise': 'Noise', 'blur': 'Blur', 'weather': 'Weather', 'digital': 'Digital'}, inplace=True
-    )
-    corrupted_results = corrupted_results.reindex(
-        columns=corrupted_results.columns.reindex(['All', 'Noise', 'Blur', 'Weather', 'Digital'], level=0)[0]
-    )
-    corrupted_results = corrupted_results.reindex(
-        columns=corrupted_results.columns.reindex(['mCE', 'Rel. mCE', 'Accuracy', 'ECE', 'MCE'], level=1)[0]
-    )
-    return corrupted_results
+# def results_table():
+#     corrupted_results = pd.read_csv('results/corrupted_results.csv')
+#     corrupted_results_all = corrupted_results.copy()
+#     corrupted_results_all['corruption_type'] = 'all'
+#     corrupted_results = pd.concat([corrupted_results, corrupted_results_all])
+#     corrupted_results = corrupted_results.groupby(['Dataset', 'Method', 'corruption_type']).agg(['mean', 'std']).fillna(0)
+#
+#     corruption_errors = pd.read_csv('results/corruption_errors.csv')
+#     corruption_errors_all = corruption_errors.copy()
+#     corruption_errors_all['Type'] = 'all'
+#     corruption_errors = pd.concat([corruption_errors, corruption_errors_all])
+#     corruption_errors = corruption_errors.groupby(['Dataset', 'Method', 'Type']).agg(['mean', 'std'])
+#
+#     # f_interval = lambda x: rf"{100 * x.mean():.1f} ($\pm$ {100 * x.std():.1f})"
+#     # corrupted_results = corrupted_results[corrupted_results.corruption_type != 'clean']. \
+#     #     drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer', 'corruption_type']). \
+#     #     agg(f_interval).unstack('corruption_type').swaplevel(axis=1)
+#     # corrupted_results_all = pd.read_csv('results/corrupted_results.csv')
+#     #
+#     # corrupted_results_all = corrupted_results_all[corrupted_results_all.corruption_type != 'clean']. \
+#     #     drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer']).agg(f_interval)
+#     # corrupted_results = pd.concat([corrupted_results, pd.concat({'all': corrupted_results_all}, axis=1)], axis=1)
+#     #
+#     # for c in CORRUPTION_TYPES.keys():
+#     #     f_interval = lambda x: rf"{100 * x[c]:.1f} ($\pm$ {100 * x[f'{c}_std']:.1f})"
+#     #     corrupted_results[c, 'mCE'] = corruption_errors[[c, f"{c}_std"]].apply(
+#     #         f_interval, axis=1
+#     #     )
+#     #     corrupted_results[c, 'Rel. mCE'] = rel_corruption_errors[[c, f"{c}_std"]].apply(
+#     #         f_interval, axis=1
+#     #     )
+#     # corrupted_results.sort_index(inplace=True)
+#     # corrupted_results.rename(
+#     #     columns={'all': 'All', 'noise': 'Noise', 'blur': 'Blur', 'weather': 'Weather', 'digital': 'Digital'}, inplace=True
+#     # )
+#     # corrupted_results = corrupted_results.reindex(
+#     #     columns=corrupted_results.columns.reindex(['All', 'Noise', 'Blur', 'Weather', 'Digital'], level=0)[0]
+#     # )
+#     # corrupted_results = corrupted_results.reindex(
+#     #     columns=corrupted_results.columns.reindex(['mCE', 'Rel. mCE', 'Accuracy', 'ECE', 'MCE'], level=1)[0]
+#     # )
+#     return corruption_errors, corrupted_results
 
 
 
