@@ -1,5 +1,5 @@
 import torch.utils.data
-from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100, STL10, SVHN, ImageNet
+from torchvision.datasets import FashionMNIST, MNIST, CIFAR10, CIFAR100, STL10, SVHN, ImageNet, ImageFolder
 from torch.utils.data.sampler import SubsetRandomSampler
 from torchvision import transforms
 from torch.optim import *
@@ -30,20 +30,6 @@ CIFAR_TRANSFORM = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.485, 0.456, 0.406),
                          (0.229, 0.224, 0.225))]
-)
-
-SEVERITY_LEVELS = [1, 2, 3, 4, 5]
-CORRUPTIONS = [
-    'brightness', 'defocus_blur', 'fog', 'gaussian_blur', 'glass_blur', 'jpeg_compression', 'motion_blur', 'saturate',
-    'snow', 'speckle_noise', 'contrast', 'elastic_transform', 'frost', 'gaussian_noise', 'impulse_noise', 'pixelate',
-    'shot_noise', 'spatter', 'zoom_blur'
-]
-CORRUPTION_TYPES = dict(
-    all=CORRUPTIONS,
-    noise=['gaussian_noise', 'shot_noise', 'impulse_noise', 'speckle_noise'],
-    blur=['defocus_blur', 'glass_blur', 'motion_blur', 'zoom_blur', 'gaussian_blur'],
-    weather=['snow', 'frost', 'fog', 'brightness', 'spatter'],
-    digital=['contrast', 'elastic_transform', 'pixelate', 'jpeg_compression', 'saturate']
 )
 
 
@@ -80,8 +66,8 @@ def parse_args() -> dict:
                         help='Second moment strength (default: 0.999)')
     parser.add_argument('--prior_precision', type=float, default=0.4,
                         help='Spherical prior precision (default: 0.4)')
-    parser.add_argument('--damping', type=float, default=0.001,
-                        help='Damping strength for matrix inversion (default: 0.001)')
+    parser.add_argument('--damping', type=float, default=0.1,
+                        help='Damping strength for matrix inversion (default: 0.1)')
     parser.add_argument('--gamma', type=float, default=1.0,
                         help='Regularization parameter in ELBO (default: 1.0)')
     parser.add_argument('-s', '--data_split', type=float, default=0.8,
@@ -191,21 +177,23 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
     """
     assert (0 < split < 1)
 
+    img_size = (32, 32)
+    if dataset.lower() == 'imagenet':
+        img_size = (64, 64)
     if dataset.lower().startswith('cifar'):
         transform_augmented = CIFAR_TRANSFORM_AUGMENTED
         transform = CIFAR_TRANSFORM
     else:
+        transform = transforms.Compose([transforms.ToTensor(),
+                                        transforms.Resize(img_size),
+                                        transforms.Normalize((0.5, 0.5, 0.5),
+                                                             (0.5, 0.5, 0.5))]
+        )
         transform_augmented = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Resize((32, 32)),
-            transforms.RandomCrop(32, padding=pad_size),
+            transforms.Resize(img_size),
+            transforms.RandomCrop(img_size, padding=pad_size),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.Normalize((0.5, 0.5, 0.5),
-                                 (0.5, 0.5, 0.5)), ]
-        )
-
-        transform = transforms.Compose([
-            transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5),
                                  (0.5, 0.5, 0.5))]
         )
@@ -226,8 +214,8 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
         training_data = STL10('data/STL10/train', download=True, split='train', transform=transform_augmented)
         test_data = STL10('data/STL10/test', download=True, split='test', transform=transform)
     elif dataset.lower() == "imagenet":
-        training_data = ImageNet('data/ImageNet/train', download=True, split='train', transform=transform_augmented)
-        test_data = ImageNet('data/ImageNet/test', download=True, split='val', transform=transform)
+        training_data = TinyImageNet(split='train', transform=transform_augmented)
+        test_data = TinyImageNet(split='val', transform=transform)
     elif dataset.lower() == "svhn":
         training_data = SVHN('data/SVHN/train', download=True, split='train', transform=transform_augmented)
         test_data = SVHN('data/SVHN/test', download=True, split='test', transform=transform)
@@ -337,42 +325,6 @@ def load_all_runs(directory: str = 'runs', method_unique: bool = False) -> List[
             runs.append(run)
             methods.append(run['method'])
     return runs
-
-
-def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severity: int, batch_size: int = 128):
-    path = '/storage/group/dataset_mirrors/01_incoming'
-    if dataset.lower() == 'cifar10':
-        data_name = 'CIFAR-10-C'
-    elif dataset.lower() == 'cifar100':
-        data_name = 'CIFAR-100-C'
-    else:
-        raise ValueError()
-    data_size = 10000
-
-    # load labels
-    directory = os.path.join(path, data_name, 'data')
-    path_to_file = os.path.join(directory, 'labels.npy')
-    labels = torch.from_numpy(np.load(path_to_file))[:data_size]
-
-    if type(corruption) == str:
-        corruption = [corruption]
-
-    data = []
-    for c in corruption:
-        path_to_file = os.path.join(directory, f"{c}.npy")
-
-        # load corrupted inputs and preprocess
-        corrupted_input = torch.from_numpy(np.load(path_to_file)).permute(0, 3, 1, 2).float()
-        corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
-        mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
-        std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
-        corrupted_input = (corrupted_input - mean) / std
-
-        data.append(TensorDataset(corrupted_input, labels))
-    data = ConcatDataset(data)
-    # define dataloader
-    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2)
-    return data_loader
 
 
 def collect_results(runs, directory='runs', baseline='SGD'):
@@ -702,8 +654,6 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
     ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
     mce = np.max(gaps)
 
-    bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-    bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
     avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
     avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
     gaps = np.abs(bin_errors - bin_uncertainties)
@@ -884,3 +834,11 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
                 method = rf"NGD (structure = {structure}, $k = {param['k']})$"
                 methods.append(method)
     return methods, model
+
+
+class TinyImageNet(ImageFolder):
+    def __init__(self, root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
+                 split='train',
+                 transform=transforms.Compose([transforms.ToTensor()])):
+        super().__init__(os.path.join(root, split), transform)
+        self.root = '/ImageNet'

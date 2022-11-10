@@ -256,7 +256,7 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     # runs = [run for run in runs if  (run['params'].get('structure') in [None, 'arrowhead'])]
     # runs = [run for run in runs if (run['num_epochs'] < 250) or
     #         (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
-    make_csv(runs)
+    # make_csv(runs)
 
     # plot_results_wrt_parameters(runs)
     # plot_loss(runs)
@@ -477,22 +477,6 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
         plt.show()
 
 
-def plot_mutual_information(runs: Union[dict, List[dict]]):
-    if type(runs) == dict:
-        runs = [runs]
-    datasets = list(set([run['dataset'] for run in runs]))
-    for dataset in datasets:
-        os.makedirs(f"plots/{dataset}", exist_ok=True)
-        mutual_info = pd.DataFrame()
-        for run in runs:
-            mutual_info[run['method']] = run['mutual_information']
-        mutual_info = mutual_info.loc[:, mutual_info.std() > 0.0]
-        sns.kdeplot(data=mutual_info, cut=0, fill=True)
-        mi_latex = r"$\mathcal{I} (Y ; \hat{Y})$"
-        plt.title(f"Mutual Information {mi_latex} for Dataset {dataset.upper()}")
-        plt.savefig(f"plots/{dataset}/mutual_info.pdf")
-
-
 def plot_ablation_study(runs, plot_values=('NLL', 'Accuracy', 'ECE',
                                            'UCE', 'MCE', 'MUCE', 'Top-5 Accuracy', 'SCE', 'ACE', 'BS',
                                            'Model Uncertainty', 'Predictive Uncertainty')):
@@ -538,7 +522,7 @@ def plot_corrupted_data(runs, plot_values=('NLL', 'Accuracy', 'ECE',
     # plot_robustness(runs)
 
     # Plot predictive uncertainty under data shift
-    # plot_uncertainty(runs)
+    plot_uncertainty(runs)
 
 
 def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
@@ -638,27 +622,24 @@ def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
         if not dataset.lower() in ['cifar10', 'cifar100']:
             continue
         os.makedirs(f"plots/{dataset}/corrupted/shift_intensity", exist_ok=True)
-        plot_value = plot_values.copy()
-        if dataset.lower() == 'cifar10':
-            plot_value.remove('Top-5 Accuracy')
         # plot corruption errors per dataset and optimizer grouped by model and error (ECE, accuracy, etc.)
         # 2 x len(plot_values) grid of plots
         for model in set(corrupted_results_df[corrupted_results_df['Dataset'] == dataset]['Model']):
             sub_df = corrupted_results_df[(corrupted_results_df['Dataset'] == dataset) &
                                           (corrupted_results_df['Model'] == model)].copy()
             for i, corruption_type in enumerate(CORRUPTION_TYPES.keys()):
-                for j, value in enumerate(plot_value):
+                for j, value in enumerate(plot_values):
                     fig, ax = plt.subplots(figsize=(12, 8))
                     if corruption_type == 'all':
                         sns.boxplot(data=sub_df, x='severity', y=value, hue='Method', ax=ax, flierprops=dict(marker='o'))
                         value_counts = sub_df.set_index(
                             ['severity', 'Method']).sort_values(by=['severity', 'Method'],
-                                                                   ascending=[True, False]).\
+                                                                ascending=[True, False]).\
                             groupby(['severity', 'Method'], sort=False).apply(lambda x: x.value_counts().sum()).values
                     else:
-                        sns.boxplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
+                        sns.boxplot(data=sub_df[sub_df['corruption_type'].isin(['clean', corruption_type])],
                                     x='severity', y=value, hue='Method', ax=ax, flierprops=dict(marker='o'))
-                        value_counts = sub_df[sub_df['corruption_type'].isin(['clean', type])].set_index(
+                        value_counts = sub_df[sub_df['corruption_type'].isin(['clean', corruption_type])].set_index(
                             ['severity', 'Method']).sort_values(by=['severity', 'Method'],
                                                                    ascending=[True, False]). \
                             groupby(['severity', 'Method'], sort=False).apply(lambda x: x.value_counts().sum()).values
@@ -682,7 +663,7 @@ def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
                         plt.ylabel(rf"{value} (\%)")
 
                     plt.tight_layout()
-                    plt.savefig(f"plots/{dataset}/corrupted/shift_intensity/{type}_{value}.pdf")
+                    plt.savefig(f"plots/{dataset}/corrupted/shift_intensity/{corruption_type}_{value}.pdf")
                     plt.show()
                     # for parameter in parameters:
                     #     plt.figure()
@@ -744,6 +725,7 @@ def plot_uncertainty(runs: Union[List[dict], dict]) -> None:
 
         g = sns.FacetGrid(uncertainty[uncertainty.Dataset == dataset], col='Method', hue='severity', margin_titles=True)
         g.map(sns.kdeplot, 'Predictive Uncertainty', bw_adjust=0.2, clip=(0, np.log(num_classes)))
+        g.add_legend()
         plt.savefig(f"plots/{dataset}/predictive_uncertainty.pdf")
 
         # g = sns.FacetGrid(uncertainty[

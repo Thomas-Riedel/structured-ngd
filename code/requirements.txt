@@ -7,3 +7,6 @@ torchmetrics
 torchsummary
 pandas==1.4.1
 bayesian-torch
+accimage
+Wand
+opencv-python

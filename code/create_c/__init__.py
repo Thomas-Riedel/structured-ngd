@@ -1,0 +1,1 @@
+from .make_tiny_imagenet_c import *

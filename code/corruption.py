@@ -1,8 +1,74 @@
+from torchvision.datasets import ImageFolder
+
+from create_c import *
 from util import *
+from torchvision import transforms
+
+
+SEVERITY_LEVELS = [1, 2, 3, 4, 5]
+CORRUPTIONS = [
+    'brightness', 'defocus_blur', 'fog', 'gaussian_blur', 'glass_blur', 'jpeg_compression', 'motion_blur', 'saturate',
+    'snow', 'speckle_noise', 'contrast', 'elastic_transform', 'frost', 'gaussian_noise', 'impulse_noise', 'pixelate',
+    'shot_noise', 'spatter', 'zoom_blur'
+]
+CORRUPTION_TYPES = dict(
+    all=CORRUPTIONS,
+    noise=['gaussian_noise', 'shot_noise', 'impulse_noise', 'speckle_noise'],
+    blur=['defocus_blur', 'glass_blur', 'motion_blur', 'zoom_blur', 'gaussian_blur'],
+    weather=['snow', 'frost', 'fog', 'brightness', 'spatter'],
+    digital=['contrast', 'elastic_transform', 'pixelate', 'jpeg_compression', 'saturate']
+)
+
+
+def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severity: int, batch_size: int = 128):
+    path = '/storage/group/dataset_mirrors/01_incoming'
+    if dataset.lower() == 'cifar10':
+        data_name = 'CIFAR-10-C'
+    elif dataset.lower() == 'cifar100':
+        data_name = 'CIFAR-100-C'
+    elif dataset.lower() == 'imagenet':
+        data_name = 'ImageNet-C'
+    else:
+        raise ValueError()
+    if dataset.lower() in ['cifar10', 'cifar100']:
+        data_size = 10000
+
+        # load labels
+        directory = os.path.join(path, data_name, 'data')
+        path_to_file = os.path.join(directory, 'labels.npy')
+        labels = torch.from_numpy(np.load(path_to_file))[:data_size]
+
+        if type(corruption) == str:
+            corruption = [corruption]
+
+        data = []
+        for c in corruption:
+            path_to_file = os.path.join(directory, f"{c}.npy")
+
+            # load corrupted inputs and preprocess
+            corrupted_input = torch.from_numpy(np.load(path_to_file)).permute(0, 3, 1, 2).float()
+            corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
+            mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
+            std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
+            corrupted_input = (corrupted_input - mean) / std
+
+            data.append(TensorDataset(corrupted_input, labels))
+        data = ConcatDataset(data)
+    else:
+        transform = transforms.Compose([transforms.ToTensor(),
+                                        transforms.Normalize((0.5, 0.5, 0.5),
+                                                             (0.5, 0.5, 0.5))]
+                                       )
+        data = TinyImageNetCorrupted(severity=severity, corruption=corruption,
+                                     root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
+                                     transform=transform)
+    # define dataloader
+    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2)
+    return data_loader
 
 
 def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, clean_results, mc_samples, n_bins):
-    if not dataset.lower() in ['cifar10', 'cifar100']:
+    if not dataset.lower() in ['cifar10', 'cifar100', 'imagenet']:
         return None
     optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
     model_name = model.__name__
@@ -126,3 +192,13 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
         result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(baseline_clean_accuracy - sub_baseline_df.accuracy)]
     return result
 
+
+class TinyImageNetCorrupted(ImageFolder):
+    def __init__(self, severity, corruption,
+                 root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
+                 transform=transforms.Compose([transforms.ToTensor()])):
+        assert(corruption in CORRUPTIONS)
+        transform.transforms.insert(0, lambda x: eval(corruption)(x, severity=severity).astype(np.uint8))
+        # test data does not contain labels so set val as test data (without training on it!!!)
+        super().__init__(os.path.join(root, 'val'), transform)
+        self.root = '/ImageNet'

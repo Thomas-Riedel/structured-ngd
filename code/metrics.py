@@ -83,7 +83,7 @@ class UCE:
             num_classes = torch.tensor(F.one_hot(labels.to(torch.int64)).shape[-1], dtype=float)
         else:
             num_classes = self.num_classes
-        uncertainties = 1/torch.log(num_classes) * predictive_uncertainty(probs)
+        uncertainties = 1/torch.log(num_classes) * entropy(probs)
 
         bins = torch.linspace(0.0, 1.0, self.n_bins + 1, device=logits.device)
         indices = torch.bucketize(uncertainties, bins, right=True)
@@ -137,7 +137,7 @@ class MUCE:
             num_classes = torch.tensor(F.one_hot(labels.to(torch.int64)).shape[-1], dtype=float)
         else:
             num_classes = self.num_classes
-        uncertainties = 1/torch.log(self.num_classes) * predictive_uncertainty(probs)
+        uncertainties = 1/torch.log(num_classes) * entropy(probs)
 
         bins = torch.linspace(0.0, 1.0, self.n_bins + 1, device=logits.device)
         indices = torch.bucketize(uncertainties, bins, right=True)
@@ -282,8 +282,8 @@ import numpy as np
 def one_hot_encode(labels, num_classes=None):
     """One hot encoder for turning a vector of labels into a OHE matrix."""
     if num_classes is None:
-        num_classes = len(np.unique(labels))
-    return np.eye(num_classes)[labels]
+        num_classes = len(torch.unique(labels))
+    return torch.eye(num_classes)[labels]
 
 
 def mean(inputs):
@@ -292,27 +292,27 @@ def mean(inputs):
     if len(inputs) == 0:  # pylint: disable=g-explicit-length-test
         return 0
     else:
-        return np.mean(inputs)
+        return torch.mean(inputs)
 
 
 def get_adaptive_bins(predictions, num_bins):
     """Returns upper edges for binning an equal number of datapoints per bin."""
-    if np.size(predictions) == 0:
-        return np.linspace(0, 1, num_bins+1)[:-1]
+    if torch.size(predictions) == 0:
+        return torch.linspace(0, 1, num_bins+1)[:-1]
 
-    edge_indices = np.linspace(0, len(predictions), num_bins, endpoint=False)
+    edge_indices = torch.linspace(0, len(predictions), num_bins, endpoint=False)
 
     # Round into integers for indexing. If num_bins does not evenly divide
     # len(predictions), this means that bin sizes will alternate between SIZE and
     # SIZE+1.
-    edge_indices = np.round(edge_indices).astype(int)
+    edge_indices = torch.round(edge_indices).astype(int)
 
     # If there are many more bins than data points, some indices will be
     # out-of-bounds by one. Set them to be within bounds:
-    edge_indices = np.minimum(edge_indices, len(predictions) - 1)
+    edge_indices = torch.minimum(edge_indices, len(predictions) - 1)
 
     # Obtain the edge values:
-    edges = np.sort(predictions)[edge_indices]
+    edges = torch.sort(predictions)[edge_indices]
 
     # Following the convention of numpy.digitize, we do not include the leftmost
     # edge (i.e. return the upper bin edges):
