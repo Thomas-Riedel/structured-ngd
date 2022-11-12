@@ -220,17 +220,12 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
             bin_uncertainties[b] = np.mean(uncertainties[selected])
             u_bin_counts[b] = len(selected)
 
-    # Divide each bin by its bin count and avoid division by zero!
-    bin_accuracies /= np.where(r_bin_counts > 0, r_bin_counts, 1)
-    bin_confidences /= np.where(r_bin_counts > 0, r_bin_counts, 1)
     avg_acc = np.sum(bin_accuracies * r_bin_counts) / np.sum(r_bin_counts)
     avg_conf = np.sum(bin_confidences * r_bin_counts) / np.sum(r_bin_counts)
     gaps = np.abs(bin_accuracies - bin_confidences)
     ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
     mce = np.max(gaps)
 
-    bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-    bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
     avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
     avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
     gaps = np.abs(bin_errors - bin_uncertainties)

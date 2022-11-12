@@ -116,13 +116,15 @@ class Model(nn.Module):
             labels = labels.to(self.device)
 
             if self.bnn:
+                # Tampering term for BBB
+                gamma = 0.1
                 def closure():
                     optimizer.zero_grad()
                     logits = self(images)
                     preds = F.log_softmax(logits, dim=-1)
                     kl = get_kl_loss(self.model)
                     ce_loss = loss_fn(preds, labels)
-                    loss = ce_loss + kl / len(data_loader.dataset)
+                    loss = ce_loss + gamma * kl / len(data_loader.dataset)
                     loss.backward()
                     return ce_loss, logits
             else:

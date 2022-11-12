@@ -62,8 +62,8 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
         data = TinyImageNetCorrupted(severity=severity, corruption=corruption,
                                      root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
                                      transform=transform)
-    # define dataloader
-    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2)
+    # Define dataloader (no shuffling )
+    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2, shuffle=False)
     return data_loader
 
 
@@ -125,7 +125,7 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
         (df['severity'] > 0) & (df['corruption_type'] != 'all')
     ].drop(['corruption_type', 'severity'], axis=1).copy()
     clean_accuracy = clean_results['test_metrics']['accuracy']
-    if isinstance(optimizer, NoisyOptimizer) or method != 'Vanilla':
+    if method != 'Vanilla':
         baseline_results = load_run(dataset, model, baseline, method='Vanilla')
         baseline_clean_accuracy = baseline_results['test_metrics']['accuracy']
         baseline_df = baseline_results['corrupted_results']['df']
@@ -198,7 +198,23 @@ class TinyImageNetCorrupted(ImageFolder):
                  root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
                  transform=transforms.Compose([transforms.ToTensor()])):
         assert(corruption in CORRUPTIONS)
-        transform.transforms.insert(0, lambda x: eval(corruption)(x, severity=severity).astype(np.uint8))
+        assert(0 <= severity <= 5)
+        self.severity = severity
+        if severity > 0:
+            transform.transforms.insert(0, lambda x: eval(corruption)(x, severity=severity).astype(np.uint8))
         # test data does not contain labels so set val as test data (without training on it!!!)
         super().__init__(os.path.join(root, 'val'), transform)
         self.root = '/ImageNet'
+
+    def __getitem__(self, index):
+        # For reproducibility, corruptions are the same for each severity but different between images
+        np.random.seed(self.severity * len(self) + index)
+
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target

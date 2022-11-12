@@ -17,6 +17,8 @@ from optimizers.rank_k_cov import *
 from torch.optim import *
 from reliability_diagrams import reliability_diagram, uncertainty_diagram
 from corruption import *
+from PIL import Image
+from create_c import *
 from metrics import *
 from network import *
 from util import *
@@ -62,7 +64,7 @@ def evaluate(
     if isinstance(model, TempScaling):
         model.set_temperature(val_loader)
     runs = []
-    dataset = train_loader.dataset.dataset.root.split('/')[1].upper()
+    dataset = train_loader.dataset.dataset.root.split('/')[1]
 
     train_loss = []
     train_metrics = {}
@@ -253,9 +255,6 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     if type(runs) == dict:
         runs = [runs]
     os.makedirs('plots', exist_ok=True)
-    # runs = [run for run in runs if  (run['params'].get('structure') in [None, 'arrowhead'])]
-    # runs = [run for run in runs if (run['num_epochs'] < 250) or
-    #         (run['optimizer_name'] == 'SGD') or (run['dataset'] == 'stl10')]
     # make_csv(runs)
 
     # plot_results_wrt_parameters(runs)
@@ -510,6 +509,11 @@ def plot_corrupted_data(runs, plot_values=('NLL', 'Accuracy', 'ECE',
     runs = [run for run in runs if run['dataset'].lower() in ['cifar10', 'cifar100']]
     if len(runs) == 0:
         return
+
+    show_corrupted_images(path='tiny_imagenet/val_1230.JPEG', corruption='gaussian_noise')
+    show_corrupted_images(path='tiny_imagenet/val_1230.JPEG', corruption='gaussian_noise')
+    show_corrupted_images(path='tiny_imagenet/val_1230.JPEG', corruption='gaussian_noise')
+
     # Plot corrupted reliability diagrams for each dataset, model and optimizer
     # plot_corrupted_reliability_diagrams(runs)
 
@@ -522,7 +526,33 @@ def plot_corrupted_data(runs, plot_values=('NLL', 'Accuracy', 'ECE',
     # plot_robustness(runs)
 
     # Plot predictive uncertainty under data shift
-    plot_uncertainty(runs)
+    # plot_uncertainty(runs)
+
+
+def show_corrupted_images(path='Tiny-ImageNet/val_1230.JPEG', corruption='gaussian_noise', show=False):
+    dataset = os.path.dirname(path) + '-C'
+    basename = os.path.splitext(os.path.basename(path))[0]
+    img = Image.open(path)
+    os.makedirs(f"plots/{dataset}", exist_ok=True)
+    y = []
+    for s in [0, 1, 2, 3, 4, 5]:
+        np.random.seed(s)
+        if s == 0:
+            f = lambda x: x
+        else:
+            f = lambda x: eval(corruption)(x, s).astype(np.uint8)
+        x = f(np.array(img))
+        y.append(x)
+        y.append(np.zeros((x.shape[0], 1, x.shape[2]), dtype=np.uint8))
+        img = Image.fromarray(x)
+        img.save(os.path.join('plots', dataset, f"{corruption}_{s}_{basename}.png"))
+        if show:
+            img.show()
+    y = np.concatenate(y, axis=1)
+    img = Image.fromarray(y)
+    img.save(os.path.join('plots', dataset, f"{corruption}_{basename}.png"))
+    if show:
+        img.show()
 
 
 def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
@@ -611,11 +641,10 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
             plt.show()
 
 
-# plot_values change with data shift
 def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
-                                 plot_values=['NLL', 'Accuracy', 'ECE', 'UCE', 'MCE', 'MUCE', 'Top-5 Accuracy',
-                                              'SCE', 'ACE', 'BS', 'Model Uncertainty', 'Predictive Uncertainty'],
-                                 parameters=['k', 'M', 'gamma']) -> None:
+                                 plot_values=('NLL', 'Accuracy', 'ECE', 'UCE', 'MCE', 'MUCE', 'Top-5 Accuracy',
+                                              'SCE', 'ACE', 'BS', 'Model Uncertainty', 'Predictive Uncertainty')
+                                 ) -> None:
     corrupted_results_df = collect_corrupted_results_df(runs)
 
     for dataset in corrupted_results_df['Dataset'].unique():
@@ -629,31 +658,40 @@ def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
                                           (corrupted_results_df['Model'] == model)].copy()
             for i, corruption_type in enumerate(CORRUPTION_TYPES.keys()):
                 for j, value in enumerate(plot_values):
-                    fig, ax = plt.subplots(figsize=(12, 8))
+                    num_methods = len(sub_df['Method'].unique())
+                    fig, ax = plt.subplots(figsize=(16, 6))
                     if corruption_type == 'all':
-                        sns.boxplot(data=sub_df, x='severity', y=value, hue='Method', ax=ax, flierprops=dict(marker='o'))
-                        value_counts = sub_df.set_index(
-                            ['severity', 'Method']).sort_values(by=['severity', 'Method'],
-                                                                ascending=[True, False]).\
-                            groupby(['severity', 'Method'], sort=False).apply(lambda x: x.value_counts().sum()).values
+                        sns.boxplot(data=sub_df, x='severity', y=value, hue='Method', ax=ax, showfliers=False)
+                        # value_counts = sub_df.set_index(
+                        #     ['severity', 'Method']).sort_values(by=['severity', 'Method'],
+                        #                                         ascending=[True, False]).\
+                        #     groupby(['severity', 'Method'], sort=False).apply(lambda x: x.value_counts().sum()).values
                     else:
                         sns.boxplot(data=sub_df[sub_df['corruption_type'].isin(['clean', corruption_type])],
-                                    x='severity', y=value, hue='Method', ax=ax, flierprops=dict(marker='o'))
-                        value_counts = sub_df[sub_df['corruption_type'].isin(['clean', corruption_type])].set_index(
-                            ['severity', 'Method']).sort_values(by=['severity', 'Method'],
-                                                                   ascending=[True, False]). \
-                            groupby(['severity', 'Method'], sort=False).apply(lambda x: x.value_counts().sum()).values
+                                    x='severity', y=value, hue='Method', ax=ax, showfliers=False)
+                        # value_counts = sub_df[sub_df['corruption_type'].isin(['clean', corruption_type])].set_index(
+                        #     ['severity', 'Method']).sort_values(by=['severity', 'Method'],
+                        #                                            ascending=[True, False]). \
+                        #     groupby(['severity', 'Method'], sort=False).apply(lambda x: x.value_counts().sum()).values
 
-                    lines_per_boxplot = len(ax.lines) // len(ax.artists)
-                    for i, (box, xtick, ytick) in enumerate(
-                            zip(ax.artists, ax.get_xticklabels(), ax.get_yticklabels())
-                    ):
-                        color = box.get_facecolor()
-                        line = ax.lines[i * lines_per_boxplot + 4]  # the median
-                        if value_counts[i] == 1:
+                    lines_per_boxplot = 5
+                    num_children = 7
+                    for k, box in enumerate(ax.get_children()[::num_children]):
+                        if k == num_methods:
+                            break
+                        height = box.get_height()
+                        if height == 0:
+                            line = ax.lines[k * lines_per_boxplot + 4]  # the median
+                            color = box.get_facecolor()
                             line.set_color(color)
                             w = line.get_linewidth()
-                            line.set_linewidth(3 * w)
+                            line.set_linewidth(2 * w)
+                        # else:
+                        #     break
+                    labels = [item.get_text() for item in ax.get_xticklabels()]
+                    labels[0] = 'Test'
+                    ax.set_xticklabels(labels)
+
                     title = f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{corruption_type.title()}'"
                     ax.set_title(title)
                     plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
@@ -680,7 +718,7 @@ def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
                     #     plt.show()
 
 
-# mCE, Rel. mCE for different methods, HyperDeepEnsemble
+# mCE, Rel. mCE for different methods
 def plot_robustness(runs: Union[List[dict], dict]) -> None:
     corruption_errors = collect_corruption_errors(runs)
     datasets = list(set([run['dataset'] for run in runs]))
@@ -689,26 +727,39 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
     for dataset in datasets:
         os.makedirs(f"plots/{dataset}/corrupted/robustness", exist_ok=True)
         os.makedirs(f"plots/{dataset}/corrupted/robustness_parameters/", exist_ok=True)
-        sub_df = corruption_errors[corruption_errors['dataset'] == dataset].copy().sort_values(by='Method')
+        sub_df = corruption_errors[corruption_errors.Dataset == dataset].copy().sort_values(by='Method')
+        sub_df = sub_df.melt(id_vars=['Method', 'Accuracy'], value_vars=['mCE', 'Rel. mCE'])
         for corruption_type in CORRUPTION_TYPES.keys():
-            for method in sub_df.methd.unique():
-                plt.figure()
-                if corruption_type == 'all':
-                    sns.catplot(sub_df, hue='Method', y='mCE') #,x='Accuracy')
-                else:
-                    sns.catplot(sub_df[sub_df.corruption_type == corruption_type], hue='Method', y='mCE') #,x='Accuracy')
-                plt.title(f"mCE on {dataset.upper()} for Corruption Type '{type.title()}'")
-                plt.savefig(f"plots/{dataset}/corrupted/robustness/mCE_{type}.pdf")
-                plt.show()
+            fig, ax = plt.subplots()
+            if corruption_type == 'all':
+                sns.lineplot(sub_df, y='value', x='Accuracy', style='variable', hue='variable')
+                # sns.lmplot(sub_df, y='mCE', x='Accuracy')
+                sns.scatterplot(sub_df.groupby(['Method', 'variable']).mean().reset_index().sort_values(by='Accuracy'),
+                                hue='Method', y='value', x='Accuracy')
+                # sns.lmplot(sub_df.groupby(['Method', 'variable']).mean().reset_index().sort_values(by='Accuracy'),
+                #                 hue='variable', y='value', x='Accuracy')
+                # sns.pointplot(sub_df, hue='Method', y='mCE', x='Accuracy')
+            else:
+                pass
+                # sns.lineplot(sub_df[sub_df.Type == corruption_type], y='mCE', x='Accuracy')
+                # sns.lmplot(sub_df, y='mCE', x='Accuracy')
+                # sns.scatterplot(sub_df, hue='Method', y='mCE', x='Accuracy')
+                # # sns.pointplot(sub_df[sub_df.Type == corruption_type], hue='Method', y='mCE', x='Accuracy')
+            ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(100 * x))
+            ax.xaxis.set_major_formatter(ticks)
+            ax.yaxis.set_major_formatter(ticks)
+            plt.title(f"mCE on {dataset.upper()} for Corruption Type '{corruption_type.title()}'")
+            plt.savefig(f"plots/{dataset}/corrupted/robustness/mCE_{corruption_type}.pdf")
+            plt.show()
 
-                plt.figure()
-                if corruption_type == 'all':
-                    sns.catplot(sub_df, hue='Method', y='Rel. mCE') #,x='Accuracy')
-                else:
-                    sns.catplot(sub_df[sub_df.corruption_type == corruption_type], hue='Method', y='Rel. mCE') #,x='Accuracy')
-                plt.title(f"mCE on {dataset.upper()} for Corruption Type '{type.title()}'")
-                plt.savefig(f"plots/{dataset}/corrupted/robustness/rmCE_{type}.pdf")
-                plt.show()
+            plt.figure()
+            if corruption_type == 'all':
+                sns.scatterplot(sub_df, hue='Method', y='Rel. mCE', x='Accuracy')
+            else:
+                sns.scatterplot(sub_df[sub_df.Type == corruption_type], hue='Method', y='Rel. mCE', x='Accuracy')
+            plt.title(f"mCE on {dataset.upper()} for Corruption Type '{corruption_type.title()}'")
+            plt.savefig(f"plots/{dataset}/corrupted/robustness/rmCE_{corruption_type}.pdf")
+            plt.show()
 
 
 def plot_uncertainty(runs: Union[List[dict], dict]) -> None:
@@ -716,15 +767,10 @@ def plot_uncertainty(runs: Union[List[dict], dict]) -> None:
     uncertainty = collect_uncertainty(runs)
     for dataset in datasets:
         os.makedirs(f"plots/{dataset}", exist_ok=True)
-        if dataset.lower() == 'cifar10':
-            num_classes = 10
-        elif dataset.lower() == 'cifar100':
-            num_classes = 100
-        else:
-            raise ValueError(f"Don't recognize the dataset")
 
-        g = sns.FacetGrid(uncertainty[uncertainty.Dataset == dataset], col='Method', hue='severity', margin_titles=True)
-        g.map(sns.kdeplot, 'Predictive Uncertainty', bw_adjust=0.2, clip=(0, np.log(num_classes)))
+        g = sns.FacetGrid(uncertainty[(uncertainty.Dataset == dataset)],
+                          col='Method', row='severity', margin_titles=True, hue='severity')
+        g.map(sns.distplot, 'Predictive Uncertainty')
         g.add_legend()
         plt.savefig(f"plots/{dataset}/predictive_uncertainty.pdf")
 
@@ -734,7 +780,6 @@ def plot_uncertainty(runs: Union[List[dict], dict]) -> None:
         #                   col='Method', hue='severity', margin_titles=True)
         # g.map(sns.kdeplot, 'Model Uncertainty', bw_adjust=0.2, clip=(0, np.log(num_classes)))
         # plt.savefig(f"plots/{dataset}/model_uncertainty.pdf")
-
 
 
 def reorderLegend(ax=None,order=None,unique=False):

@@ -293,7 +293,7 @@ def gaussian_blur(x, severity=1):
 
 def glass_blur(x, severity=1):
     # sigma, max_delta, iterations
-    c = [(0.1,1,1), (0.5,1,1), (0.6,1,2), (0.7,2,1), (0.9,2,2)][severity - 1]
+    c = [(0.1, 1, 1), (0.5, 1, 1), (0.6, 1, 2), (0.7, 2, 1), (0.9, 2, 2)][severity - 1]
 
     x = np.uint8(gaussian(np.array(x) / 255., sigma=c[0], multichannel=True) * 255)
 
@@ -324,7 +324,7 @@ def defocus_blur(x, severity=1):
 
 
 def motion_blur(x, severity=1):
-    c = [(10,1), (10,1.5), (10,2), (10,2.5), (12,3)][severity - 1]
+    c = [(10, 1), (10, 1.5), (10, 2), (10, 2.5), (12, 3)][severity - 1]
 
     output = BytesIO()
     x.save(output, format='PNG')
@@ -355,7 +355,7 @@ def zoom_blur(x, severity=1):
 
 
 def fog(x, severity=1):
-    c = [(.4,3), (.7,3), (1,2.5), (1.5,2), (2,1.75)][severity - 1]
+    c = [(.4, 3), (.7, 3), (1, 2.5), (1.5, 2), (2, 1.75)][severity - 1]
 
     x = np.array(x) / 255.
     max_val = x.max()
@@ -377,11 +377,11 @@ def frost(x, severity=1):
 
 
 def snow(x, severity=1):
-    c = [(0.1,0.2,1,0.6,8,3,0.8),
-         (0.1,0.2,1,0.5,10,4,0.8),
-         (0.15,0.3,1.75,0.55,10,4,0.7),
-         (0.25,0.3,2.25,0.6,12,6,0.65),
-         (0.3,0.3,1.25,0.65,14,12,0.6)][severity - 1]
+    c = [(0.1, 0.2, 1, 0.6, 8, 3, 0.8),
+         (0.1, 0.2, 1, 0.5, 10, 4, 0.8),
+         (0.15, 0.3, 1.75, 0.55, 10, 4, 0.7),
+         (0.25, 0.3, 2.25, 0.6, 12, 6, 0.65),
+         (0.3, 0.3, 1.25, 0.65, 14, 12, 0.6)][severity - 1]
 
     x = np.array(x, dtype=np.float32) / 255.
     snow_layer = np.random.normal(size=x.shape[:2], loc=c[0], scale=c[1])  # [:2] for monochrome
@@ -405,11 +405,11 @@ def snow(x, severity=1):
 
 
 def spatter(x, severity=1):
-    c = [(0.62,0.1,0.7,0.7,0.6,0),
-         (0.65,0.1,0.8,0.7,0.6,0),
-         (0.65,0.3,1,0.69,0.6,0),
-         (0.65,0.1,0.7,0.68,0.6,1),
-         (0.65,0.1,0.5,0.67,0.6,1)][severity - 1]
+    c = [(0.62, 0.1, 0.7, 0.7, 0.6, 0),
+         (0.65, 0.1, 0.8, 0.7, 0.6, 0),
+         (0.65, 0.3, 1, 0.69, 0.6, 0),
+         (0.65, 0.1, 0.7, 0.68, 0.6, 1),
+         (0.65, 0.1, 0.5, 0.67, 0.6, 1)][severity - 1]
     x = np.array(x, dtype=np.float32) / 255.
 
     liquid_layer = np.random.normal(size=x.shape[:2], loc=c[0], scale=c[1])
@@ -511,11 +511,11 @@ def pixelate(x, severity=1):
 # mod of https://gist.github.com/erniejunior/601cdf56d2b424757de5
 def elastic_transform(image, severity=1):
     IMSIZE = 64
-    c = [(IMSIZE*0, IMSIZE*0, IMSIZE*0.08),
-         (IMSIZE*0.05, IMSIZE*0.3, IMSIZE*0.06),
-         (IMSIZE*0.1, IMSIZE*0.08, IMSIZE*0.06),
-         (IMSIZE*0.1, IMSIZE*0.03, IMSIZE*0.03),
-         (IMSIZE*0.16, IMSIZE*0.03, IMSIZE*0.02)][severity - 1]
+    c = [(IMSIZE * 0, IMSIZE * 0, IMSIZE * 0.08),
+         (IMSIZE * 0.05, IMSIZE * 0.3, IMSIZE * 0.06),
+         (IMSIZE * 0.1, IMSIZE * 0.08, IMSIZE * 0.06),
+         (IMSIZE * 0.1, IMSIZE * 0.03, IMSIZE * 0.03),
+         (IMSIZE * 0.16, IMSIZE * 0.03, IMSIZE * 0.02)][severity - 1]
 
     image = np.array(image, dtype=np.float32) / 255.
     shape = image.shape
@@ -559,6 +559,5 @@ def save_distorted(method=gaussian_noise):
             distorted_dataset, batch_size=100, shuffle=False, num_workers=6)
 
         for _ in distorted_dataset_loader: continue
-
 
 # /////////////// End Further Setup ///////////////

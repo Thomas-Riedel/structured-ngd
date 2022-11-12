@@ -170,7 +170,7 @@ class ACE:
             probs = probs.mean(1).mean(0)
         probs = probs.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
-        return torch.tensor(ace(labels, probs, self.n_bins))
+        return torch.tensor(adaptive_calibration_error(labels, probs, self.n_bins))
 
 
 class SCE:
@@ -187,7 +187,7 @@ class SCE:
             probs = probs.mean(1).mean(0)
         probs = probs.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
-        return torch.tensor(sce(labels, probs, self.n_bins))
+        return torch.tensor(static_calibration_error(labels, probs, self.n_bins))
 
 
 class ModelUncertainty:
@@ -282,8 +282,8 @@ import numpy as np
 def one_hot_encode(labels, num_classes=None):
     """One hot encoder for turning a vector of labels into a OHE matrix."""
     if num_classes is None:
-        num_classes = len(torch.unique(labels))
-    return torch.eye(num_classes)[labels]
+        num_classes = len(np.unique(labels))
+    return np.eye(num_classes)[labels]
 
 
 def mean(inputs):
@@ -292,27 +292,27 @@ def mean(inputs):
     if len(inputs) == 0:  # pylint: disable=g-explicit-length-test
         return 0
     else:
-        return torch.mean(inputs)
+        return np.mean(inputs)
 
 
 def get_adaptive_bins(predictions, num_bins):
     """Returns upper edges for binning an equal number of datapoints per bin."""
-    if torch.size(predictions) == 0:
-        return torch.linspace(0, 1, num_bins+1)[:-1]
+    if np.size(predictions) == 0:
+        return np.linspace(0, 1, num_bins+1)[:-1]
 
-    edge_indices = torch.linspace(0, len(predictions), num_bins, endpoint=False)
+    edge_indices = np.linspace(0, len(predictions), num_bins, endpoint=False)
 
     # Round into integers for indexing. If num_bins does not evenly divide
     # len(predictions), this means that bin sizes will alternate between SIZE and
     # SIZE+1.
-    edge_indices = torch.round(edge_indices).astype(int)
+    edge_indices = np.round(edge_indices).astype(int)
 
     # If there are many more bins than data points, some indices will be
     # out-of-bounds by one. Set them to be within bounds:
-    edge_indices = torch.minimum(edge_indices, len(predictions) - 1)
+    edge_indices = np.minimum(edge_indices, len(predictions) - 1)
 
     # Obtain the edge values:
-    edges = torch.sort(predictions)[edge_indices]
+    edges = np.sort(predictions)[edge_indices]
 
     # Following the convention of numpy.digitize, we do not include the leftmost
     # edge (i.e. return the upper bin edges):
@@ -543,15 +543,15 @@ class GeneralCalibrationError():
         self.calibration_error = None
 
 
-def gce(labels,
-        probs,
-        binning_scheme,
-        max_prob,
-        class_conditional,
-        norm,
-        num_bins=30,
-        threshold=0.0,
-        datapoints_per_bin=None):
+def general_calibration_error(labels,
+                              probs,
+                              binning_scheme,
+                              max_prob,
+                              class_conditional,
+                              norm,
+                              num_bins=30,
+                              threshold=0.0,
+                              datapoints_per_bin=None):
     """Implements the space of calibration errors, General Calibration Error.
 
     This implementation of General Calibration Error can be class-conditional,
@@ -632,72 +632,61 @@ def gce(labels,
     return metric.result()
 
 
-general_calibration_error = gce
-
-
-def ece(labels, probs, num_bins=30):
+def expected_calibration_error(labels, probs, num_bins=30):
     """Implements Expected Calibration Error."""
-    return gce(labels,
-               probs,
-               binning_scheme='even',
-               max_prob=True,
-               class_conditional=False,
-               norm='l1',
-               num_bins=num_bins)
+    return general_calibration_error(labels,
+                                     probs,
+                                     binning_scheme='even',
+                                     max_prob=True,
+                                     class_conditional=False,
+                                     norm='l1',
+                                     num_bins=num_bins)
 
 
-def rmsce(labels, probs, num_bins=30, datapoints_per_bin=None):
+def root_mean_squared_calibration_error(labels, probs, num_bins=30, datapoints_per_bin=None):
     """Implements Root Mean Squared Calibration Error."""
-    return gce(labels,
-               probs,
-               binning_scheme='adaptive',
-               max_prob=True,
-               class_conditional=False,
-               norm='l2',
-               num_bins=num_bins,
-               datapoints_per_bin=datapoints_per_bin)
-
-root_mean_squared_calibration_error = rmsce
+    return general_calibration_error(labels,
+                                     probs,
+                                     binning_scheme='adaptive',
+                                     max_prob=True,
+                                     class_conditional=False,
+                                     norm='l2',
+                                     num_bins=num_bins,
+                                     datapoints_per_bin=datapoints_per_bin)
 
 
-def sce(labels, probs, num_bins=30):
+def static_calibration_error(labels, probs, num_bins=30):
     """Implements Static Calibration Error."""
-    return gce(labels,
-               probs,
-               binning_scheme='even',
-               max_prob=False,
-               class_conditional=True,
-               norm='l1',
-               num_bins=num_bins)
-
-static_calibration_error = sce
+    return general_calibration_error(labels,
+                                     probs,
+                                     binning_scheme='even',
+                                     max_prob=False,
+                                     class_conditional=True,
+                                     norm='l1',
+                                     num_bins=num_bins)
 
 
-def ace(labels, probs, num_bins=30):
+def adaptive_calibration_error(labels, probs, num_bins=30):
     """Implements Adaptive Calibration Error."""
-    return gce(labels,
-               probs,
-               binning_scheme='adaptive',
-               max_prob=False,
-               class_conditional=True,
-               norm='l1',
-               num_bins=num_bins)
-
-adaptive_calibration_error = ace
+    return general_calibration_error(labels,
+                                     probs,
+                                     binning_scheme='adaptive',
+                                     max_prob=False,
+                                     class_conditional=True,
+                                     norm='l1',
+                                     num_bins=num_bins)
 
 
-def tace(labels, probs, num_bins=30, threshold=0.01):
+def thresholded_adaptive_calibration_error(labels, probs, num_bins=30, threshold=0.01):
     """Implements Thresholded Adaptive Calibration Error."""
-    return gce(labels,
-               probs,
-               binning_scheme='adaptive',
-               max_prob=False,
-               class_conditional=True,
-               norm='l1',
-               num_bins=num_bins,
-               threshold=threshold)
-
-thresholded_adaptive_calibration_error = tace
+    return general_calibration_error(labels,
+                                     probs,
+                                     binning_scheme='adaptive',
+                                     max_prob=False,
+                                     class_conditional=True,
+                                     norm='l1',
+                                     num_bins=num_bins,
+                                     threshold=threshold)
 
 
 def compute_all_metrics(labels, probs):
@@ -709,13 +698,13 @@ def compute_all_metrics(labels, probs):
     for p in params:
         def metric(labels, probs, num_bins=30, p=p):
             """Implements Expected Calibration Error."""
-            return gce(labels,
-                       probs,
-                       binning_scheme=p[0],
-                       max_prob=p[1],
-                       class_conditional=p[2],
-                       threshold=p[3],
-                       norm=p[4],
-                       num_bins=num_bins)
+            return general_calibration_error(labels,
+                                             probs,
+                                             binning_scheme=p[0],
+                                             max_prob=p[1],
+                                             class_conditional=p[2],
+                                             threshold=p[3],
+                                             norm=p[4],
+                                             num_bins=num_bins)
         measures.append(metric(labels, probs))
     return np.array(measures)

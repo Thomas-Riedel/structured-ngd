@@ -46,8 +46,8 @@ def parse_args() -> dict:
                         help='Number of epochs to train models on data (default: 1)')
     parser.add_argument('-d', '--dataset', type=str, default="CIFAR10",
                         help='Dataset for training, one of CIFAR10, CIFAR100, MNIST, FashionMNIST (default: CIFAR10)')
-    parser.add_argument('-m', '--model', type=str, default="ResNet20",
-                        help='ResNet model (default: ResNet20)')
+    parser.add_argument('-m', '--model', type=str, default="ResNet32",
+                        help='ResNet model (default: ResNet32)')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size for data loaders (default: 128)')
     parser.add_argument('--lr', type=str, default='1e-3',
@@ -180,18 +180,18 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
     img_size = (32, 32)
     if dataset.lower() == 'imagenet':
         img_size = (64, 64)
+    elif dataset.lower() == 'stl10':
+        img_size = (96, 96)
     if dataset.lower().startswith('cifar'):
         transform_augmented = CIFAR_TRANSFORM_AUGMENTED
         transform = CIFAR_TRANSFORM
     else:
         transform = transforms.Compose([transforms.ToTensor(),
-                                        transforms.Resize(img_size),
                                         transforms.Normalize((0.5, 0.5, 0.5),
                                                              (0.5, 0.5, 0.5))]
         )
         transform_augmented = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Resize(img_size),
             transforms.RandomCrop(img_size, padding=pad_size),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.Normalize((0.5, 0.5, 0.5),
@@ -239,7 +239,7 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
     return train_loader, val_loader, test_loader
 
 
-def get_params(args: dict, baseline='SGD', add_weight_decay=True, n=1) -> dict:
+def get_params(args: dict, optimizer=SGD, add_weight_decay=True, n=1) -> dict:
     ngd = [
         dict(
             lr=lr, k=k, mc_samples=mc_samples, structure=structure,
@@ -253,9 +253,9 @@ def get_params(args: dict, baseline='SGD', add_weight_decay=True, n=1) -> dict:
             args['prior_precision'], args['damping'], args['gamma']
         )
     ]
-    if baseline == 'Adam':
+    if isinstance(optimizer, Adam):
         momentum = dict(betas=(0.9, 0.999))
-    elif baseline == 'SGD':
+    elif isinstance(optimizer, SGD):
         momentum = dict(momentum=0.9, nesterov=True)
     baseline = [dict(lr=lr, weight_decay=add_weight_decay * prior_precision / n, **momentum)
                 for lr, prior_precision in zip(set(args['lr']), set(args['prior_precision']))]
@@ -314,8 +314,11 @@ def load_all_runs(directory: str = 'runs', method_unique: bool = False) -> List[
         if file.endswith(".pkl"):
             with open(os.path.join(directory, file), 'rb') as f:
                 run = pickle.load(f)
-            if method_unique and (run['method'] in methods):
-                continue
+            if method_unique:
+                if run['method'].startswith('NGD') and (run['params']['gamma'] != 1.0 or run['params']['mc_samples'] != 1):
+                    continue
+                if run['method'] in methods:
+                    continue
             run['total_time'] = run['epoch_times'][-1]
             if not 'num_epochs' in run:
                 run['num_epochs'] = len(run['epoch_times']) - 1
@@ -354,10 +357,10 @@ def collect_results(runs, directory='runs', baseline='SGD'):
         test_error = 1 - run['test_metrics']['accuracy']
         top_k_error = 1 - run['test_metrics']['top_5_accuracy']
         brier_score = run['test_metrics']['brier']
-        ece = run['bin_data']['expected_calibration_error']
-        mce = run['bin_data']['max_calibration_error']
-        uce = run['bin_data']['expected_uncertainty_error']
-        muce = run['bin_data']['max_uncertainty_error']
+        ece = run['test_metrics']['ece']
+        mce = run['test_metrics']['mce']
+        uce = run['test_metrics']['uce']
+        muce = run['test_metrics']['muce']
         ace = run['test_metrics']['ace']
         sce = run['test_metrics']['sce']
         mi = run['test_metrics']['model_uncertainty']
@@ -365,7 +368,7 @@ def collect_results(runs, directory='runs', baseline='SGD'):
         # total_time = run['total_time']
         # avg_time_per_epoch = run['avg_time_per_epoch']
         num_epochs = run['num_epochs']
-        if run['optimizer_name'] == baseline and method == 'Vanilla':
+        if method == 'Vanilla':
             train_loss = compare(train_loss)
             val_loss = compare(val_loss)
             test_loss = compare(test_loss)
@@ -373,15 +376,15 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             top_k_accuracy = compare(100 * top_k_accuracy)
             test_error = compare(100 * test_error)
             top_k_error = compare(100 * top_k_error)
-            brier_score = compare(100 * brier_score)
+            brier_score = compare(brier_score)
             ece = compare(100 * ece)
             mce = compare(100 * mce)
             uce = compare(100 * uce)
             muce = compare(100 * muce)
             ace = compare(100 * ace)
             sce = compare(100 * sce)
-            mi = compare(100 * mi)
-            pu = compare(100 * pu)
+            mi = compare(mi)
+            pu = compare(pu)
             # total_time = compare(total_time / 3600)
             # avg_time_per_epoch = compare(avg_time_per_epoch)
         else:
@@ -392,20 +395,17 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             top_k_accuracy = compare(100 * top_k_accuracy, 100 * baseline_run['test_metrics']['top_5_accuracy'])
             test_error = compare(100 * test_error, 100 * (1 - baseline_run['test_metrics']['accuracy']))
             top_k_error = compare(100 * top_k_error, 100 * (1 - baseline_run['test_metrics']['top_5_accuracy']))
-            brier_score = compare(100 * brier_score, baseline_run['test_metrics']['brier'])
-            ece = compare(100 * ece, 100 * baseline_run['bin_data']['expected_calibration_error'])
-            mce = compare(100 * mce, 100 * baseline_run['bin_data']['max_calibration_error'])
-            uce = compare(100 * uce, 100 * baseline_run['bin_data']['expected_uncertainty_error'])
-            muce = compare(100 * muce, 100 * baseline_run['bin_data']['max_uncertainty_error'])
-            ace = compare(100 * ace)
-            sce = compare(100 * sce)
-            mi = compare(100 * mi)
-            pu = compare(100 * pu, 100 * baseline_run['test_metrics']['predictive_uncertainty'])
-            model_uncert = compare(100 * model_uncert, 100 * baseline_run['test_metrics']['model_uncertainty'])
-            predictive_uncert = compare(100 * predictive_uncert, 100 * baseline_run['test_metrics']['predictive_uncertainty'])
+            brier_score = compare(brier_score, baseline_run['test_metrics']['brier'])
+            ece = compare(100 * ece, 100 * baseline_run['test_metrics']['ece'])
+            mce = compare(100 * mce, 100 * baseline_run['test_metrics']['mce'])
+            uce = compare(100 * uce, 100 * baseline_run['test_metrics']['uce'])
+            muce = compare(100 * muce, 100 * baseline_run['test_metrics']['muce'])
+            ace = compare(100 * ace, 100 * baseline_run['test_metrics']['ace'])
+            sce = compare(100 * sce, 100 * baseline_run['test_metrics']['sce'])
+            mi = compare(mi, baseline_run['test_metrics']['predictive_uncertainty'])
+            pu = compare(pu, baseline_run['test_metrics']['predictive_uncertainty'])
             # total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
             # avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
-
         if run['optimizer_name'].startswith('StructuredNGD'):
             structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
             k = run['params']['k']
@@ -432,8 +432,7 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             'Test Accuracy': test_accuracy, 'Test Error': test_error, 'BS': brier_score,
             'ECE': ece, 'MCE': mce, 'UCE': uce, 'MUCE': muce,
             'Top-k Accuracy': top_k_accuracy, 'Top-k Error': top_k_error,
-            'ace': ace, 'sce': sce,
-            'MI': mi, 'PU': pu,
+            'ACE': ace, 'SCE': sce, 'MI': mi, 'PU': pu,
             # 'Total Time (h)': total_time,
             # 'Avg. Time per Epoch (s)': avg_time_per_epoch,
             'Num Epochs': num_epochs
@@ -740,8 +739,7 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
     optimizer = optimizer.__name__
     if model == 'DeepEnsemble':
         runs = load_all_runs()
-        runs = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
-                and run['dataset'].lower() == dataset.lower()]
+        runs = [run for run in runs if run['method'] == 'Vanilla' and run['dataset'].lower() == dataset.lower()]
         assert(len(runs) > 0)
         models = []
         for run in runs:
@@ -751,6 +749,39 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             models.append(model)
         model = DeepEnsemble(models=models, **model_params)
         methods = ['Deep Ensemble']
+    elif model == 'NGDEnsemble':
+        # model of the form 'NGDDeepEnsemble|structure=<structure>;k=<value>'
+        structure = model.split('|')[1].split(';')[0].split('=')[1]
+        k = model.split('|')[1].split(';')[1].split('=')[1]
+        runs = load_all_runs()
+        # Load all NGD runs with same hyperparameters
+        runs = [
+            run for run in runs if run['method'].startswith('NGD')
+                                   and run['params']['k'] == k
+                                   and run['params']['structure'] in ['diagonal', structure]
+                                   and run['params']['mc_samples'] == 1
+                                   and run['params']['gamma'] == 1.0
+                                   and run['dataset'].lower() == dataset.lower()
+        ]
+        assert(len(runs) > 0)
+        structure = structure.replace('_', ' ').title().replace(' ', '')
+        if k == 0:
+            structure = 'Diagonal'
+        method = rf"NGD Ensemble (structure = {structure}, $k = {k}$)"
+        models = []
+        optimizers = []
+        for run in runs:
+            state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt", map_location=device)
+
+            model = Model(run['model_name'], **model_params)
+            model.load_state_dict(state_dict=state_dict['model_state_dict'])
+            models.append(model)
+
+            optimizer = StructuredNGD(model.parameters(), state_dict['train_size'])
+            optimizer.load_state_dict(state_dict=state_dict['optimizer_state_dict'])
+            optimizers.append(optimizer)
+        model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
+        methods = [method]
     elif model.startswith('HyperDeepEnsemble'):
         # model of the form 'HyperDeepEnsemble|structure=<structure>;<parameter>=<value>'
         method = 'Hyper-Deep Ensemble'
@@ -791,28 +822,24 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
         model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
         methods = [method]
     elif model == 'BBB':
-        assert(optimizer == baseline)
         runs = load_all_runs()
         run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         model = Model(model_type=run['model_name'], bnn=True, **model_params)
         methods = ['BBB']
     elif model == 'Dropout':
-        assert(optimizer == baseline)
         runs = load_all_runs()
         run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         model = Model(model_type=run['model_name'], dropout_layers='all', p=0.2, **model_params)
         methods = ['Dropout']
     elif model == 'LLDropout':
-        assert(optimizer == baseline)
         runs = load_all_runs()
         run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         model = Model(model_type=run['model_name'], dropout_layers='last', p=0.2, **model_params)
         methods = ['LL Dropout']
     elif model == 'TempScaling':
-        assert(optimizer == baseline)
         runs = load_all_runs()
         run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]

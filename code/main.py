@@ -27,7 +27,7 @@ def main() -> None:
 
 	metrics = [accuracy, ece, uce, mce, muce, top_k_accuracy, sce, ace, brier, model_uncert, pred_uncert]
 
-	params = get_params(args, baseline=args['baseline'], n=n)
+	params = get_params(args, optimizer=args['optimizer'], n=n)
 	model_params = dict(num_classes=num_classes, input_shape=input_shape, device=device)
 	methods, model = get_methods_and_model(
 		args['dataset'], args['model'],  model_params, args['optimizer'], params['ngd'], args['baseline'], args['use_cuda']

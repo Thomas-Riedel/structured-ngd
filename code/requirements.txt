@@ -10,3 +10,4 @@ bayesian-torch
 accimage
 Wand
 opencv-python
+scikit-image

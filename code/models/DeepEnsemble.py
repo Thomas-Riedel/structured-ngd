@@ -14,13 +14,14 @@ from util import *
 
 
 class DeepEnsemble:
-    def __init__(self, models, num_classes=10, device: str = None, *args, **kwargs):
+    def __init__(self, models, num_classes=10, device: str = None, optimizers=[], *args, **kwargs):
         self.__name__ = 'DeepEnsemble'
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = device
         self.num_classes = num_classes
         self.models = models
+        self.optimizers = optimizers
         self.num_params = np.sum([model.num_params for model in self.models])
         self.__name__ = self.models[0].__name__
         self.summary = None
@@ -129,8 +130,6 @@ def get_bin_data(logits, labels, num_classes=-1, n_bins=10):
     ece = np.sum(gaps * r_bin_counts) / np.sum(r_bin_counts)
     mce = np.max(gaps)
 
-    bin_errors /= np.where(u_bin_counts > 0, u_bin_counts, 1)
-    bin_uncertainties /= np.where(u_bin_counts > 0, u_bin_counts, 1)
     avg_err = np.sum(bin_errors * u_bin_counts) / np.sum(u_bin_counts)
     avg_uncert = np.sum(bin_uncertainties * u_bin_counts) / np.sum(u_bin_counts)
     gaps = np.abs(bin_errors - bin_uncertainties)

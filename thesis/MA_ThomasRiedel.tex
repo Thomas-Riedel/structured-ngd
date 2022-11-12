@@ -46,19 +46,61 @@
 \usepackage{float}
 \usepackage{changepage}
 \usepackage{stackengine}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{rotating}
+\usepackage{array}% http://ctan.org/pkg/array
+\makeatletter
+\g@addto@macro{\endtabular}{\rowfont{}}% Clear row font
+\makeatother
+\newcommand{\rowfonttype}{}% Current row font
+\newcommand{\rowfont}[1]{% Set current row font
+   \gdef\rowfonttype{#1}#1%
+}
+\newcolumntype{L}{>{\rowfonttype}l}
 
 \usepackage[svgnames]{xcolor}
 \usepackage{caption}
 \usepackage{subcaption}
+\usepackage{grffile}
 \DeclareCaptionFont{myblue}{\color{RoyalBlue}}
 \captionsetup{labelfont={myblue,bf}}
 
-\usepackage[bottom=3cm,left=2.8cm,right=2.5cm, top=2.5cm]{geometry}
-
-\usepackage{fancyhdr}
-\pagestyle{fancy}
-\lhead{Thomas Riedel}
-\rhead{Structured Natural Gradient Descent for Bayesian Deep Learning}
+\usepackage{tikz}
+\usetikzlibrary{calc}
+\definecolor{block}{RGB}{0,162,232}
+\newenvironment{blockmatrix}{%
+	%\left(%-
+	\vcenter\bgroup\hbox\bgroup
+	\tikzpicture[
+		x=1.5\baselineskip,
+		y=1.5\baselineskip,
+	]%
+	}{%
+	\endtikzpicture
+	\egroup
+	\egroup
+	%\right)%
+}
+% \block[#1](#2,#3)#4(#5,#6)
+% #1:      fill color
+% (#2,#3): lower left corner
+% #4:      text in the middle
+% (#5,#6): size of the block
+\newcommand*{\block}[1][block]{%
+	\blockaux{#1}%
+}
+\def\blockaux#1(#2,#3)#4(#5,#6){%
+	\draw[fill={#1}, fill opacity=0.5, draw=black]
+	let \p1=(#2,#3),
+	\p2=(#5,#6),
+	\p3=(#2+#5,#3+#6),
+	\p4=(#2+#5/2,#3+#6/2)
+	in
+	(\p1) rectangle (\p3)
+	(\p4) node [opacity=1.0] {$#4$}
+	;%
+}
 
 \usepackage[ruled, vlined]{algorithm2e}
 \SetKwInput{KwInput}{Input}
@@ -71,11 +113,16 @@
 	\hspace*{\mylen}#1\\
 }
 
-\usepackage{biblatex}
+\usepackage[bottom=3cm,left=2.8cm,right=2.5cm, top=2.5cm]{geometry}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\lhead{Thomas Riedel}
+\rhead{Structured Natural Gradient Descent for Bayesian Deep Learning}
+
+\usepackage[style=apa]{biblatex}
 \addbibresource{Literature/literature.bib}
 \numberwithin{equation}{section}
-
-\usepackage{float}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % % For printing: 						 %
@@ -184,7 +231,7 @@
 				\matr{\hat{w}}_{MAP} := \argmax_{\matr{w} \in \Real^d} p(\matr{w} | \set{D})
 				\label{eqn:MAP}
 			\end{equation}
-			However, this distribution is much more difficult to sample and optimize over than in the case of MLE due to the difficulty of sampling from the posterior and the nonconjugacy of the product $p(\set{D} | \matr{w}) p(\matr{w})$ \cite{KNT+18}.
+			However, this distribution is much more difficult to sample and optimize over than in the case of MLE due to the difficulty of sampling from the posterior and the nonconjugacy of the product $p(\set{D} | \matr{w}) p(\matr{w})$ \parencite{KNT+18}.
 			Thus, one can simplify the problem in Eqn. (\ref{eqn:MAP}) by introducing a simpler posterior called the variational posterior $q(\matr{w})$ such that $q(\matr{w}) \approx p(\matr{w} | \set{D})$ which is done by minimizing the KL divergence between the two distributions 
 			$$\min_{q \in \set{Q}} \KL(q(\matr{w}) || p(\matr{w} | \set{D})),$$
 			where $\set{Q}$ the set of all possible distributions.
@@ -193,7 +240,7 @@
 				\max_{\lambda \in \Real^{\tilde{d}}} -\Expect_{q_{\lambda}(\matr{w})}[\ell(\matr{w})] + \gamma \KL(q_{\lambda}(\matr{w}) || p(\matr)) := \ELBO(\lambda),
 				\label{eqn:ELBO}
 			\end{equation}
-			where $\gamma \ge 0$ \cite{ZSD+17, LSK20, LNK+21}.
+			where $\gamma \ge 0$ \parencite{ZSD+17, LSK20, LNK+21}.
 			However, in keeping with the traditional optimization setting, we will minimize over the negative ELBO instead,
 			\begin{equation*}
 				\min_{\lambda \in \Real^n} -\ELBO(\lambda).
@@ -204,19 +251,81 @@
 				p(\matr{w}) := \Normal(\matr{0}, \eta^{-1} \matr{I}), \quad q_{\lambda}(\matr{w}) := \Normal(\matr{w} | \matr{\mu}, \matr{\Sigma}),
 				\label{eqn:VI_Normal}
 			\end{equation}
-			where $\eta > 0$ a precision parameter, $\matr{\lambda} := \{\matr{\mu}, \matr{\Sigma}\}$ the parameterization for the variational posterior, and $\matr{\mu} \in \Real^d, \matr{\Sigma} \in \Real^{d \times d}$ leading to quadratic storage cost $d + d^2 = \BigO(d^2)$ for VI \cite{ZSD+17, KNT+18, LSK20}.
+			where $\eta > 0$ a precision parameter, $\matr{\lambda} := \{\matr{\mu}, \matr{\Sigma}\}$ the parameterization for the variational posterior, and $\matr{\mu} \in \Real^d, \matr{\Sigma} \in \Real^{d \times d}$ leading to quadratic storage cost $d + d^2 = \BigO(d^2)$ for VI \parencite{ZSD+17, KNT+18, LSK20}.
 			To reduce complexity, one can take the covariance matrix $\matr{\Sigma}$ to be a diagonal matrix or a vector, respectively, as $\matr{\Sigma} := \diag(\matr{\sigma^2})$ reducing the storage cost from quadratic to linear, $d + d = \BigO(d)$. 
 			However, this approach assumes zero correlation between the weights and only models the variances of each individual weight in the diagonal of the covariance $\matr{\Sigma}$. 
-			Thus, finding a way of parametrizing the covariance matrix to be more informative than a diagonal matrix but less costly than a full square matrix is a desirable direction which will be presented in this thesis. 
+			Thus, finding a way of parametrizing the covariance matrix to be more informative than a diagonal matrix but less costly than a full square matrix is a desirable direction which will be presented in this thesis.
 			Furthermore, special structures on the covariance matrix will also be investigated. 
 
-		\subsection{Optimization Methods}
+		\subsection{Optimization} % First Order, Second Order, Newton Method, Newton-like Methods
+			An optimization problem 
+			\begin{equation}
+				\min_{x \in \set{X}} f(x)
+				\label{eqn:OptimizationProblem}
+			\end{equation}
+			is a minimization problem involving a target function $f: \set{X} \to \Real$ in an admissible region $\set{X} \subset \Real^d$ where Problem (\ref{eqn:OptimizationProblem}) is called an unconstrained optimization problem if $\set{X} = \Real^d$ and a constrained optimization problem if $\set{X} \subsetneq \Real^d$.
+			The goal is then finding a minimizer $x^{*} \in \set{X}$ such that $f(x^*) \le f(x) \quad \forall x \in \set{X}$.
+			In rare cases such as linear or quadratic problems, this solution can be found analytically but in general, the minimizer is found through iteratively improving an initial starting solution $x_0$ until a stopping criterion is reached. 
+			Furthermore, when $f$ is not strongly convex, such a minimizer may not be unique and many local regions exist where these methods can get stuck in local minima. 
+			Generally speaking, there are two types of optimization methods, first-order methods and second-order methods. 
+			First-order methods improve the initial solution using local information of the gradient and stepping along this direction with some step length $\alpha$. 
+			Probably the most famous of such algorithms is Gradient Descent (GD) which steps along the direction of maximum local descent, the negative gradient, with some step length $\alpha_k > 0$ which can be determined by some step size rule such as the Armijo rule or the Powell-Wolfe rule. 
+			In modern, high-dimensional scenarios such as Deep Learning, a constant step size or so-called learning rate $\alpha_k = \alpha > 0$ is used with potentially a heuristic, decreasing schedule.
+			\begin{equation}
+				x_{k+1} \leftarrow x_k - \alpha_k \grad f(x_k)
+				\label{eqn:GradientDescent}
+			\end{equation}
+			However, in DL scenarios, the loss function landscape contains many local minima or saddle points which GD algorithm are prone to get stuck in. 
+			Thus, considerable amount has been done to improve the convergence abilities of these algorithms such as SGD, Momentum, RMSprop, Adam. 
+
+			Second-order methods incorporate curvature information in their updates through the Hessian.
+			The most basic variant of this is Newton's Method
+			\begin{equation}
+				x_{k+1} \leftarrow x_k - \left(\Hessian f(x_k) \right)^{-1} \grad f(x_k)
+				\label{eqn:NewtonMethod}
+			\end{equation}
+			Newton-like methods approximate the true Hessian through an estimate $H_k$ 
+			\begin{equation}
+				x_{k+1} \leftarrow x_k - \left(H_k \right)^{-1} \grad f(x_k)
+				\label{eqn:Newton-likeMethod}
+			\end{equation}
+
 
 		\subsection{Natural Gradient Descent}
 
+
+		\subsection{Calibration}
+			More sophisticated models have been able to achieve increasingly better results in classification accuracy over the years.
+			These models output a vector from the $m$-dimensional probability simplex $\set{S} = \{x \in \Real^m\ | \sum_{i=1}^m x_i = 1, \quad x_i \ge 0 \forall i \in [m]\}$ where $m$ is the number of classes.
+			The final prediction is then taken as the argmax of this vector, $\hat{y} = \argmax f(\matr{x})$.
+			This formulation suggests that the model's prediction is its confidence, i.e. a probability of being of this label.
+			However, as models have improved in terms of accuracy, they have suffered in calibration.
+			Formally, one would like a model to be well-calibrated such that its prediction probability agrees with the likelihood of the prediction,
+			\begin{equation}
+				\Prob (\hat{y} = y | \hat{p}) = p, \quad \forall p \in [0, 1].
+				\label{eqn:calibration}
+			\end{equation}
+			This is a continuous notion of calibration and one chooses to approximate this over discrete bins through reliability diagrams and summary statistics for calibration such as Expected Calbration Error (ECE) and Maximum Calibration Error (MCE).
+			\begin{equation}
+				ECE = \sum_{i=1}^{|\set{B}|} \frac{|B_i|}{N} \left| \text{acc}(B_i) - \text{conf}(B_i) \right|
+				\label{eqn:ECE}
+			\end{equation}
+
+			\begin{equation}
+				MCE = \max_{i \in \set{B}} \left| \text{acc}(B_i) - \text{conf}(B_i) \right|
+				\label{eqn:MCE}
+			\end{equation}
+
+			There exist many techniques to improve calibration such as histogram binning, Platt scaling, matrix/vector scaling, temperature scaling, and isotonic regression.
+			However, results by \parencite{ZSD+17} show the improvement noisy optimizers can have for calibration.
+			In the experiments, we will investigate the calibration improvements of Structured NGD methods.
+		\subsection{Robustness}
+			There has been extensive research in the field of robustness of Neural Networks which refers to the ability to be robust against perturbations in their inputs.
+			The research focusses mainly on artificial worst-case adversarial examples and certification radii, and less so on common corruptions which can occur due to different lighting and weather situations or sensor uncertainty.
+			The trained networks will be evaluated on this corrupted data as well to see how they fare with differing inputs.
+
 	\section{Related Work}
 
-	% Better headlines; lot of "Structure"!
 	\section{Structured Natural Gradient Descent}
 		\subsection{Implicitly Defined Structure}
 
@@ -224,8 +333,8 @@
 				In this section, we will investigate a low-rank structure on the covariance $\matr{\Sigma}$ for the variational posterior $q(\matr{z} | \matr{\mu}, \matr{\Sigma}) = \Normal(\matr{\mu}, \matr{\Sigma})$, i.e., 
 					$$\matr{\Sigma} = \matr{U}_k \matr{U}_k^T + \diag(\matr{s}^2),$$ 
 				where $\matr{U}_k \in \Real^{d \times k}, k \in \{0, \dots, d\}$ a matrix of rank $k$ and $\matr{s} \in \Real^d.$
-				However, when we optimize the ELBO with parametrization $\matr{\lambda} = \{\matr{\mu}, \matr{\alpha}\}$ with $\matr{\alpha} = \{\matr{U}_k, \matr{s}\}$, this can lead to a non-invertible Fisher matrix \cite[Sec. J.1.6]{LNK+21}. 
-				Thus, we will instead follow the work of \cite{LNK+21} who proposed a parametrization $\matr{\lambda} = \{\matr{\mu}, \matr{B}\}$ such that $\matr{S} = \matr{B} \matr{B}^T$, where $\matr{B}$ is from the set of block upper triangular matrices
+				However, when we optimize the ELBO with parametrization $\matr{\lambda} = \{\matr{\mu}, \matr{\alpha}\}$ with $\matr{\alpha} = \{\matr{U}_k, \matr{s}\}$, this can lead to a non-invertible Fisher matrix \parencite[Sec. J.1.6]{LNK+21}. 
+				Thus, we will instead follow the work of \parencite{LNK+21} who proposed a parametrization $\matr{\lambda} = \{\matr{\mu}, \matr{B}\}$ such that $\matr{S} = \matr{B} \matr{B}^T$, where $\matr{B}$ is from the set of block upper triangular matrices
 					$$\set{B}_{up}(k) = \left\{\begin{pmatrix} \matr{B}_A & \matr{B}_B \\
 														        \matr{0}  & \matr{B}_D
 										  \end{pmatrix} \mid \matr{B}_A \in \text{GL}^{k \times k}, \matr{B}_D \in \set{D}_+^{d-k}\right\}.$$
@@ -233,7 +342,7 @@
 				$$\matr{\Sigma} = \matr{S}^{-1} = (\matr{B} \matr{B}^T)^{-1} = \matr{U}_k \matr{U}_k^T + \begin{pmatrix} \matr{0}_k & \matr{0} \\ \matr{0} & \matr{B}_D^{-2}\end{pmatrix},$$
 				where 
 				$$\matr{U}_k = \begin{pmatrix} -\matr{B}_A^{-T} \\ \matr{B}_D^{-1} \matr{B}_B^T \matr{B}_A^{-T}\end{pmatrix} \in \mathbb{R}^{d \times k}$$
-				a matrix of rank $k$ and a block arrowhead structure on $\matr{S}$ \cite{OS90}:
+				a matrix of rank $k$ and a block arrowhead structure on $\matr{S}$ \parencite{OS90}:
 				$$\matr{S} = \matr{B} \matr{B}^T = \begin{pmatrix} \matr{B}_A \matr{B}_A^T + \matr{B}_B \matr{B}_B^T & \matr{B}_B \matr{B}_D \\ \matr{B}_D \matr{B}_B^T & \matr{B}_D^2 \end{pmatrix}.$$
 				Note that the dimensionality of $\set{B}_{up}(k)$ is
 				\begin{align*}
@@ -250,8 +359,8 @@
 				$$\matr{\lambda}_{t+1} = \matr{\phi}_{\matr{\lambda}_t}(-\alpha \matr{\hat{g}}_{\matr{\eta}_0}^{(t)}), \quad \matr{\tau}_{t+1} = \matr{\psi} (\matr{\lambda}_{t+1}),$$
 				where $\matr{\eta}_0 = \matr{0}$.
 
-				\cite{LSK20} propose adding an additional term to the Bayesian Learning Rule (BLR) to ensure positive definite constraints which involves the Christoffel symbol. 
-				In doing so, they adapt their new ``improved Bayesian Learning Rule'' (iBLR) which ensures the updates remain in the constraint set without performing a costly line search at each step. 
+				\parencite{LSK20} propose adding an additional term to the Bayesian Learning Rule (BLR) to ensure positive definite constraints which involves the Christoffel symbol. 
+				In doing so, they adapt their new ``improved Bayesian Learning Rule'' (iBLR) which ensures the updates remain in the constraint set without performing a costly line search at each step.
 				\begin{align*}
 					\lambda^{c_i} \leftarrow \lambda^{c_i} - \alpha \hat{g}^{c_i} \color{red} - \frac{\alpha^2}{2} \sum_{a_i, b_i} \Gamma_{a_i, b_i}^{c_i} \hat{g}^{a_i} \hat{g}^{b_i} \color{black}
 				\end{align*}
@@ -262,7 +371,7 @@
 				\end{align*}
 				where $\matr{G} := \matr{S} - \Expect_q[\grad_z^2 \bar{l}(\matr{z})]$.
 
-				Using a multivariate Gaussian with diagonal precision, i.e., $\matr{\lambda} = \{\matr{\mu}, \matr{s}\}$, with $\matr{\Sigma} = \diag (\matr{s}^{-1})$, \cite{LSK20} added a natural momentum term to the mean parameter $\matr{\mu}$ which gives an Adam-like optimizer as follows
+				Using a multivariate Gaussian with diagonal precision, i.e., $\matr{\lambda} = \{\matr{\mu}, \matr{s}\}$, with $\matr{\Sigma} = \diag (\matr{s}^{-1})$, \parencite{LSK20} added a natural momentum term to the mean parameter $\matr{\mu}$ which gives an Adam-like optimizer as follows
 				\begin{align*}
 					\matr{\mu} &\leftarrow \matr{\mu} - \alpha \frac{1 - \beta_2^t}{1 - \beta_1^t} \matr{m} / \matr{s} \\
 					\matr{s} &\leftarrow \matr{s} + (1 - \beta_2) \matr{g_s} \color{red} + \frac{1}{2} (1 - \beta_2)^2 \matr{g_s} \odot \matr{s}^{-1} \odot \matr{g_s} \color{black}
@@ -301,17 +410,17 @@
 
 						$\matr{s}_{t+1} = \matr{s}_t + (1 - \beta_2) \matr{g_s} \color{red} + \frac{1}{2} (1 - \beta_2)^2 \matr{g_s} \odot \matr{s}_t^{-1} \odot \matr{g_s} \color{black}$
 						}
-					\caption{Adam-like Optimizer using the iBayesLRule \cite[Fig.~1]{LSK20}}
+					\caption{Adam-like Optimizer using the iBayesLRule \parencite[Fig.~1]{LSK20}}
 					\label{alg:iBayesLRule}
 				\end{algorithm}
 
 				However, their method cannot impose special structures on beyond a diagonal covariance matrix as easily since this can make the FIM non-invertible and thus computing a Natural Gradient step impossible. 
-				We will thus attempt to combine both works and provide an Adam-like optimizer by adding a momentum term in the auxiliary space to the work of \cite{LNK+21}:
+				We will thus attempt to combine both works and provide an Adam-like optimizer by adding a momentum term in the auxiliary space to the work of \parencite{LNK+21}:
 				$$\matr{\lambda}_{t+1} \leftarrow \matr{\phi}_{\matr{\lambda}_t}(-\alpha \matr{\hat{g}}_{\matr{\eta}_0}^{(t)}), \quad \matr{m}_{t+1} \leftarrow (1-\beta) \matr{m}_t + \beta \matr{\lambda}_{t+1}, \quad \matr{\tau}_{t+1} \leftarrow \matr{\psi} (\matr{m}_{t+1}).$$
 				One could also consider adding a momentum term in the global space:
 				$$\matr{\lambda}_{t+1} \leftarrow \matr{\phi}_{\matr{\lambda}_t}(-\alpha \matr{\hat{g}}_{\matr{\eta}_0}^{(t)}), \quad \matr{\tau}_{t+1} \leftarrow (1-\beta) \matr{\tau}_t + \beta \matr{\psi}(\matr{\lambda}_{t+1}).$$
 
-				For completeness, we present the derivation for the Adam-like optimizer using momentum in the auxiliary or global space, respectively, on the mean parameter $\matr{\mu}$ \cite[Sec. E.3]{LSK20}. 
+				For completeness, we present the derivation for the Adam-like optimizer using momentum in the auxiliary or global space, respectively, on the mean parameter $\matr{\mu}$ \parencite[Sec. E.3]{LSK20}. 
 				Remember that we would like to minimize the function given in Eqn. \ref{eqn:ELBO}:
 				\begin{equation}
 					\min_{\matr{\mu}, \matr{B}} \ELBO(\matr{\mu}, \matr{B}) = \Expect_{q(\matr{z} | \matr{\mu}, \matr{B})} \left[ \left( \sum_{i=1}^N \ell_i(z) \right) - \gamma \log \Normal(\matr{z} | \matr{0}, \eta^{-1} \matr{I}) + \gamma \log q(\matr{z} | \matr{\mu}, \matr{B})\right],
@@ -332,17 +441,17 @@
 					\matr{K}(\matr{z}_m) &:= \frac{1}{N} \sum_{i=1}^N \matr{K}_i(\matr{z}_m) = \matr{S} (\matr{z}_m - \matr{\mu}) (\grad_{\matr{z}} \bar{\ell} (\matr{z}_m) )^T,
 				\end{align*}
 				and $\matr{z}_m \sim q(\matr{z} | \matr{\mu}, \matr{B}) = \Normal(\matr{z} | \matr{\mu}, (\matr{B} \matr{B}^T)^{-1})$ for $M$ MC samples, $m \in \{1, \dots, M\}$.
-				\cite{KNT+18, LSK20} propose adding a natural momentum term to the mean parameter
+				\parencite{KNT+18, LSK20} propose adding a natural momentum term to the mean parameter
 				\begin{align*}
 					\matr{\mu}_{t+1} &= \matr{\mu}_t - \alpha_1 \matr{S}_t^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_t) + \alpha_2 \matr{S}_t^{-1} \matr{S}_{t-1} (\matr{\mu}_t - \matr{\mu}_{t-1}) \\
 					&= \matr{\mu}_t - \alpha_1 \matr{B}_t^{-T} \matr{B}_t^{-1} \grad_{\matr{\mu}} \ELBO (\matr{\lambda}_t) + \alpha_2 \matr{B}_t^{-T} \matr{B}_t^{-1} \matr{B}_{t-1} \matr{B}_{t-1}^T (\matr{\mu}_t - \matr{\mu}_{t-1}).
 				\end{align*}
 				% Full derivation better here!
-				Now, setting $\matr{B}_{t+1} = \sqrt{N} \matr{\hat{B}}_{t+1}, \matr{\hat{S}}_{t+1} = \matr{\hat{B}}_{t+1} \matr{\hat{B}}_{t+1}^T$, one can directly follow the derivation of \cite[Sec. E.3]{LSK20} to arrive at the method described in Algorithm \ref{alg:RankCov} for low-rank structure on the covariance.
+				Now, setting $\matr{B}_{t+1} = \sqrt{N} \matr{\hat{B}}_{t+1}, \matr{\hat{S}}_{t+1} = \matr{\hat{B}}_{t+1} \matr{\hat{B}}_{t+1}^T$, one can directly follow the derivation of \parencite[Sec. E.3]{LSK20} to arrive at the method described in Algorithm \ref{alg:RankCov} for low-rank structure on the covariance.
 				While taking the inverse of the block triangular matrix $\matr{B} \in \set{B}_{up}(k)$ can be computed easily, when updating the mean parameter with the inverse precision matrix $\matr{S}^{-1} = (\matr{B} \matr{B}^T)^{-1}$, this can lead to numerical instabilities when $\matr{S}$ is ill-conditioned and nearly singular. 
-				Thus, in the literature, one often adds a damping term $\xi \matr{I}$ to the matrix where $\xi > 0$ and then performs inversion similar to a Levenberg-Marquardt update \cite{L44, M63}.
+				Thus, in the literature, one often adds a damping term $\xi \matr{I}$ to the matrix where $\xi > 0$ and then performs inversion similar to a Levenberg-Marquardt update \parencite{L44, M63}.
 				However, $\matr{S}$ is a dense matrix so computing its inverse is not feasible in practice computationally.
-				Thus, we can follow the approach in \cite[Sec. 6.3]{MG15} and approximate it as 
+				Thus, we can follow the approach in \parencite[Sec. 6.3]{MG15} and approximate it as 
 				\begin{align*}
 					\matr{S} + \xi \matr{I} &= \matr{B} \matr{B}^T + \xi \matr{I} \\
 					&\approx (\matr{B} + \pi \sqrt{\xi} \matr{I}) (\matr{B} + \frac{1}{\pi} \sqrt{\xi} \matr{I})^T \\
@@ -409,7 +518,7 @@
 					\label{alg:RankCov}
 				\end{algorithm}
 
-				Note that this algorithm is an extension to the Adam-like optimizer of \cite{LSK20} in the diagonal case, $k = 0$, we can set $\matr{b} = \diag(\matr{B}) \in \Real^d$ and note that $\matr{c_{up}} = \frac{1}{2} \matr{\mathbbm{1}} \in \Real^d, \kappa_{up}(2\matr{b}^{-1} \odot \matr{g_s} \odot \matr{b}^{-1})) = 2 \matr{b}^{-1} \odot \matr{g_s} \odot \matr{b}^{-1}$.
+				Note that this algorithm is an extension to the Adam-like optimizer of \parencite{LSK20} in the diagonal case, $k = 0$, we can set $\matr{b} = \diag(\matr{B}) \in \Real^d$ and note that $\matr{c_{up}} = \frac{1}{2} \matr{\mathbbm{1}} \in \Real^d, \kappa_{up}(2\matr{b}^{-1} \odot \matr{g_s} \odot \matr{b}^{-1})) = 2 \matr{b}^{-1} \odot \matr{g_s} \odot \matr{b}^{-1}$.
 				\begin{align*}
 					\matr{s}_{t+1} & = (\matr{b}_{t+1})^2 = (\matr{b}_t \odot \matr{h}(\beta \matr{c_{up}} \odot \kappa_{up} (2 \matr{b}_t^{-1} \odot \matr{g_s} \odot \matr{b}_t^{-1})))^2 \\
 					&= (\matr{b}_t \odot \matr{h}(\beta \matr{b}_t^{-2} \odot \matr{g_s}))^2 \\
@@ -589,10 +698,434 @@
 				
 			\subsubsection{Kronecker Structure}
 			\subsubsection{Block-Diagonal Structure}
+				\begin{figure}
+					\begin{tikzpicture}
+						\block[white](0,0) (2,5)
+						\block[white](2,0) (5,5)
+
+						\block[red](0,6) (1,1)
+						\block[red](0,5) (1,1)
+						\block[red](1,6) (1,1)
+						\block[red](1,5) (1,1)
+
+						\block[blue](2,6) (1,1)
+						\block[blue](2,5) (1,1)
+						\block[blue](3,6) (1,1)
+						\block[blue](3,5) (1,1)
+						\block[blue](4,6) (1,1)
+						\block[blue](4,5) (1,1)
+						\block[blue](5,6) (1,1)
+						\block[blue](5,5) (1,1)
+						\block[blue](6,6) (1,1)
+						\block[blue](6,5) (1,1)
+
+						\block[gray](2,4) (1,1)
+						\block[gray](3,3) (1,1)
+						\block[gray](4,2) (1,1)
+						\block[gray](5,1) (1,1)
+						\block[gray](6,0) (1,1)
+					\end{tikzpicture}
+				\end{figure}
+
+				\begin{figure}
+					\begin{tikzpicture}
+						\block[white](0,0) (7,7)
+						\block[white](2,0) (5,5)
+
+						\block[red](0,6) (1,1)
+						\block[red](0,5) (1,1)
+						\block[red](1,6) (1,1)
+						\block[red](1,5) (1,1)
+
+						\block[blue](0,4) (1,1)
+						\block[blue](1,4) (1,1)
+						\block[blue](0,3) (1,1)
+						\block[blue](1,3) (1,1)
+						\block[blue](0,2) (1,1)
+						\block[blue](1,2) (1,1)
+						\block[blue](0,1) (1,1)
+						\block[blue](1,1) (1,1)
+						\block[blue](0,0) (1,1)
+						\block[blue](1,0) (1,1)
+
+						\block[gray](2,4) (1,1)
+						\block[gray](3,3) (1,1)
+						\block[gray](4,2) (1,1)
+						\block[gray](5,1) (1,1)
+						\block[gray](6,0) (1,1)
+					\end{tikzpicture}
+				\end{figure}
+
+				\begin{figure}
+					\begin{tikzpicture}
+						\block[red](0,6) B^{(1, 1)} (1,1)
+						\block[red](1,5) B^{(2, 2)} (1,1)
+						\block[red](2,4) B^{(l-1, l-1)} (1,1)
+						\block[red](3,3) B^{(l, l)} (1,1)
+						\block[red](4,2) B^{(l+1, l+1)} (1,1)
+						\block[red](5,1) B^{(L-1, L-1)} (1,1)
+						\block[red](6,0) B^{(L, L)} (1,1)
+
+						\block[red](1,6) B^{(1, 2)} (1,1)
+						\block[red](2,5) B^{(2, 3)} (1,1)
+						\block[red](3,4) B^{(l-1, l)} (1,1)
+						\block[red](4,3) B^{(l, l+1)} (1,1)
+						\block[red](5,2) B^{(L-2, L-1)} (1,1)
+						\block[red](6,1) B^{(L-1, L)} (1,1)
+
+						\block[white](0,0) (7,7)
+					\end{tikzpicture}
+				\end{figure}
 			\subsubsection{Block-Tridiagonal Structure}
 		\subsection{Explicitly Defined Structure}
 
 	\section{Experiments}
+			\begin{figure}
+				\centering
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					Clean
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/CIFAR10-C/impulse_noise_0_horse}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 1
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/CIFAR10-C/impulse_noise_1_horse}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 2
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/CIFAR10-C/impulse_noise_2_horse}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 3
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/CIFAR10-C/impulse_noise_3_horse}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 4
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/CIFAR10-C/impulse_noise_4_horse}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 5
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/CIFAR10-C/impulse_noise_5_horse}}
+				\end{subfigure}%
+				\caption{CIFAR10-C example with \emph{``Impulse Noise''} for different severities \parencite{HD19}}
+			\end{figure}
+
+			\begin{figure}
+				\centering
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					Clean
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/Tiny-ImageNet-C/impulse_noise_0_val_1551}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 1
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/Tiny-ImageNet-C/impulse_noise_1_val_1551}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 2
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/Tiny-ImageNet-C/impulse_noise_2_val_1551}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 3
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/Tiny-ImageNet-C/impulse_noise_3_val_1551}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 4
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/Tiny-ImageNet-C/impulse_noise_4_val_1551}}
+				\end{subfigure}%
+				\hfill
+				\begin{subfigure}{.16\textwidth}
+					\centering
+					severity = 5
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/Tiny-ImageNet-C/impulse_noise_5_val_1551}}
+				\end{subfigure}%
+				\caption{Tiny ImageNet-C example with \emph{``Impulse Noise''} for different severities \parencite{HD19}}
+			\end{figure}
+
+			\begin{figure}[H]
+				\begin{subfigure}[!h]{.33\textwidth}
+					\centering
+					\vfill
+					Clean
+					\vfill
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/ImageNet-C/impulse_noise_0_ILSVRC2012_val_00000008}}
+				\end{subfigure}\hfill
+				\begin{subfigure}[!h]{.33\textwidth}
+					\centering
+					severity = 1
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/ImageNet-C/impulse_noise_1_ILSVRC2012_val_00000008}}
+				\end{subfigure}\hfill
+				\begin{subfigure}[!h]{.33\textwidth}
+					\centering
+					severity = 2
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/ImageNet-C/impulse_noise_2_ILSVRC2012_val_00000008}}
+				\end{subfigure}\hfill
+				\vspace{5mm}
+				\begin{subfigure}[!h]{.33\textwidth}
+					\centering
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/ImageNet-C/impulse_noise_3_ILSVRC2012_val_00000008}}
+					severity = 3
+				\end{subfigure}\hfill
+				\begin{subfigure}[!h]{.33\textwidth}
+					\centering
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/ImageNet-C/impulse_noise_4_ILSVRC2012_val_00000008}}
+					severity = 4
+				\end{subfigure}\hfill
+				\begin{subfigure}[!h]{.33\textwidth}
+					\centering
+					\frame{\includegraphics[width=0.99\linewidth]{../code/plots/ImageNet-C/impulse_noise_5_ILSVRC2012_val_00000008}}
+					severity = 5
+				\end{subfigure}%
+				\caption{ImageNet-C example with \emph{``Impulse Noise''} for different severities \parencite{HD19}}
+			\end{figure}
+
+		\subsection{Ablation Study}
+		\subsection{Calibration}
+			% Here: Reliability (and Uncertainty) Diagrams for all methods
+
+			\begin{table}[htbp]
+				\centering
+				\begin{tabular}{LLLLLLLL}
+					\toprule
+					\multicolumn{3}{c}{Optimizer} & \multicolumn{5}{c}{Metrics}\\
+					\cmidrule(rl){1-3}\cmidrule(ll){4-8}
+					\rowfont{\tiny}%
+					Name & $M$ & $k$ & Loss ($\downarrow$) & Accuracy ($\uparrow$) & ECE ($\downarrow$) & MCE ($\downarrow$) & Time (h) ($\downarrow$) \rowfont{\scriptsize}\\
+					\midrule\midrule
+					SGD & -- & -- & 1.253 & 0.571 & 0.098 & 0.136 & 0.107 \\
+					\midrule
+					\multirow{12}{*}{NGD} & \multirow{4}{*}{1} & 0 & 1.131 ($-$10\%) & 0.596 (+5\%) & 0.045 ($-$54\%) & 0.084 ($-$38\%) & 0.200 (+87\%) \\
+					& & 25 & 1.151 ($-$8\%) & 0.590 (+3\%) & \textbf{0.019 ($-$81\%)} & 0.063 ($-$54\%) & 0.303 (+182\%) \\
+					& & 50 & 1.117 ($-$11\%) & 0.602 (+6\%) & 0.026 ($-$73\%) & \textbf{0.061 ($-$55\%)} & 0.341 (+217\%) \\
+					& & 100 & 1.099 ($-$12\%) & 0.610 (+7\%) & 0.022 ($-$77\%) & 0.189 (+40\%) & 0.724 (+575\%) \\
+					\cmidrule{2-8}
+					& \multirow{4}{*}{3} & 0 & 1.041 ($-$17\%) & 0.639 (+12\%) & 0.037 ($-$62\%) & 0.177 (+31\%) & 0.414 (+286\%) \\
+					& & 25 & 1.036 ($-$17\%) & 0.634 (+11\%) & 0.030 ($-$69\%) & 0.193 (+42\%) & 0.529 (+393\%) \\
+					& & 50 & 1.061 ($-$15\%) & 0.624 (+9\%) & 0.029 ($-$70\%) & 0.189 (+40\%) & 0.578 (+439\%) \\
+					& & 100 & 1.082 ($-$14\%) & 0.618 (+8\%) & 0.031 ($-$68\%) & 0.089 ($-$34\%) & 0.689 (+542\%) \\
+					\cmidrule{2-8}
+					& \multirow{4}{*}{5} & 0 & 1.074 ($-$14\%) & 0.622 (+9\%) & 0.041 ($-$58\%) & 0.086 ($-$36\%) & 0.633 (+489\%) \\
+					& & 25 & 1.133 ($-$10\%) & 0.592 (+4\%) & 0.033 ($-$66\%) & 0.077 ($-$43\%) & 1.005 (+836\%) \\
+					& & 50 & \textbf{1.013 ($-$19\%)} & 0.639 (+12\%) & 0.022 ($-$77\%) & 0.192 (+42\%) & 0.889 (+728\%) \\
+					& & 100 & 1.029 ($-$18\%) & \textbf{0.642 (+12\%)} & 0.032 ($-$68\%) & 0.146 (+8\%) & 0.954 (+789\%) \\
+					\bottomrule
+				\end{tabular}
+				\caption{Results on STL--10 using ResNet20 for different optimizers}
+				\label{table:STL-10-M}
+			\end{table}
+
+			\begin{table}[htbp]
+				\centering
+				\begin{tabular}{LLLLLLLLL}
+					\toprule
+					\multicolumn{3}{c}{Optimizer} & \multicolumn{5}{c}{Metrics}\\
+					\cmidrule(rl){1-3}\cmidrule(ll){4-8}
+					\rowfont{\tiny}%
+					Name & $\gamma$ & $k$ & Loss ($\downarrow$) & Accuracy ($\uparrow$) & ECE ($\downarrow$) & MCE ($\downarrow$) & Time (h) ($\downarrow$) \rowfont{\scriptsize}\\
+					\midrule\midrule
+					SGD & -- & -- & 1.253 & 0.571 & 0.098 & 0.136 & 0.107 \\
+					\midrule
+					\multirow{12}{*}{NGD} & \multirow{4}{*}{0.0} & 0 & 1.118 ($-$11\%) & 0.617 (+8\%) & 0.072 ($-$27\%) & 0.186 (+38\%) & 0.203 (+89\%) \\
+					& & 25 & 1.206 ($-$4\%) & 0.581 (+2\%) & 0.062 ($-$36\%) & 0.182 (+35\%) & 0.311 (+190\%) \\
+					& & 50 & 1.250 ($\pm$0\%) & 0.557 ($-$2\%) & 0.088 ($-$10\%) & 0.194 (+43\%) & 0.352 (+228\%) \\
+					& & 100 & 1.267 (+1\%) & 0.563 ($-$1\%) & 0.083 ($-$15\%) & 0.139 (+2\%) & 0.434 (+305\%) \\
+					\cmidrule{2-8}
+					& \multirow{4}{*}{0.5} & 0 & 1.186 ($-$5\%) & 0.582 (+2\%) & 0.051 ($-$48\%) & 0.097 ($-$29\%) & 0.202 (+89\%) \\
+					& & 25 & 1.082 ($-$14\%) & 0.627 (+10\%) & 0.049 ($-$50\%) & 0.313 (+131\%) & 0.309 (+188\%) \\
+					& & 50 & \textbf{1.046 ($-$17\%)} & \textbf{0.631 (+11\%)} & 0.042 ($-$57\%) & 0.190 (+40\%) & 0.343 (+220\%) \\
+					& & 100 &  1.248 ($\pm$0\%) & 0.551 ($-$3\%) & 0.067 ($-$32\%) & 0.191 (+41\%) & 0.433 (+303\%) \\
+					\cmidrule{2-8}
+					& \multirow{4}{*}{1.0} & 0 & 1.131 ($-$10\%) & 0.596 (+5\%) & 0.045 ($-$54\%) & 0.084 ($-$38\%) & 0.200 (+87\%) \\
+					& & 25 & 1.151 ($-$8\%) & 0.590 (+3\%) & \textbf{0.019 ($-$81\%)} & 0.063 ($-$54\%) & 0.303 (+182\%) \\
+					& & 50 & 1.117 ($-$11\%) & 0.602 (+6\%) & 0.026 ($-$73\%) & \textbf{0.061 ($-$55\%)} & 0.341 (+217\%) \\
+					& & 100 & 1.099 ($-$12\%) & 0.610 (+7\%) & 0.022 ($-$77\%) & 0.189 (+40\%) & 0.724 (+575\%) \\
+					\bottomrule
+				\end{tabular}
+				\caption{Results on STL--10 for ResNet20 using Different Optimizers with $M = 1$ and in terms of the regularization parameter $\gamma$}
+				\label{table:STL-10-gamma}
+			\end{table}
+
+			\begin{table}[!ht]
+				\centering
+				\begin{tabular}{LLLLLLLLLLLLLL}
+					\toprule
+					\multicolumn{5}{c}{\textbf{Optimizer}} & \\
+					\cmidrule{1-5}
+					\rowfont{\tiny}%
+					\textbf{Name} & \textbf{Structure} & $\boldsymbol{k}$ & $\boldsymbol{M}$ & $\boldsymbol{\gamma}$ & \textbf{Accuracy ($\uparrow$)} & \textbf{ECE ($\downarrow$)} & \textbf{MCE ($\downarrow$)} \rowfont{\scriptsize} \\
+					\midrule\midrule
+					SGD                   &                   -- &  -- &-- &  -- &  53.9          &  8.1            & 12.5            \\
+					\midrule
+					\multirow{34}{*}{NGD} & \multirow{5}{*}{Diag.} &   \multirow{5}{*}{0} & 1 & 0.0 &  54.6 (+1.2\%) & 18.3 (+125.1\%) & 28.7 (+128.6\%) \\
+					                      &                      &                      & 1 & 0.5 &  51.7 (-4.1\%) & 16.8 (+107.3\%) & 25.3 (+101.7\%) \\
+					                      &                      &                      & 1 & 1.0 &  53.7 (-0.5\%) &  13.3 (+63.7\%) & 22.3 (+78.0\%)  \\
+					                      &                      &                      & 3 & 1.0 &  56.9 (+5.5\%) &  15.2 (+86.8\%) & 25.4 (+102.7\%) \\
+					                      &                      &                      & 5 & 1.0 &  58.5 (+8.5\%) &  16.1 (+98.7\%) & 28.5 (+127.0\%) \\
+					                      \cmidrule{2-8}
+					                      & \multirow{20}{*}{RC} &  \multirow{5}{*}{25} & 1 & 0.0 &  57.7 (+7.0\%) &  15.4 (+90.1\%) & 26.0 (+107.2\%) \\
+					                      &                      &                      & 1 & 0.5 &  53.1 (-1.5\%) &  11.5 (+41.1\%) & 17.4 (+38.7\%)  \\
+					                      &                      &                      & 1 & 1.0 &  55.7 (+3.2\%) &  13.7 (+68.8\%) & 90.0 (+618.1\%) \\
+					                      &                      &                      & 3 & 1.0 &  58.2 (+7.9\%) &  13.9 (+71.4\%) & 23.2 (+84.8\%)  \\
+					                      &                      &                      & 5 & 1.0 & 59.5 (+10.4\%) &  14.3 (+76.4\%) & 25.1 (+99.8\%)  \\
+																\cmidrule{3-8}
+					                      &                      &  \multirow{5}{*}{50} & 1 & 0.0 &  57.8 (+7.2\%) &  16.0 (+97.4\%) & 26.8 (+113.4\%) \\
+					                      &                      &                      & 1 & 0.5 &  57.0 (+5.7\%) & 16.8 (+106.8\%) & 27.6 (+119.9\%) \\
+					                      &                      &                      & 1 & 1.0 &  56.7 (+5.1\%) & 18.7 (+130.7\%) & 31.2 (+148.5\%) \\
+					                      &                      &                      & 3 & 1.0 &  57.2 (+6.1\%) &  16.0 (+96.5\%) & 25.9 (+106.8\%) \\
+					                      &                      &                      & 5 & 1.0 &  59.3 (+9.9\%) &  15.7 (+93.3\%) & 25.7 (+104.7\%) \\
+																\cmidrule{3-8}
+					                      &                      & \multirow{5}{*}{100} & 1 & 0.0 &  56.5 (+4.7\%) &  12.7 (+56.4\%) & 21.5 (+71.5\%)  \\
+					                      &                      &                      & 1 & 0.5 &  53.9 (-0.1\%) &  16.0 (+96.3\%) & 23.7 (+89.1\%)  \\
+					                      &                      &                      & 1 & 1.0 &  57.7 (+6.9\%) &  15.5 (+91.1\%) & 25.1 (+100.3\%) \\
+					                      &                      &                      & 3 & 1.0 & 59.7 (+10.6\%) &  15.5 (+90.7\%) & 26.9 (+114.2\%) \\
+					                      &                      &                      & 5 & 1.0 &  58.4 (+8.3\%) &  15.8 (+95.0\%) & 25.6 (+103.9\%) \\
+										  \cmidrule{2-8}
+					                      & \multirow{15}{*}{AH} &  \multirow{5}{*}{25} & 1 & 0.0 &  57.1 (+5.8\%) &  16.1 (+98.6\%) & 27.4 (+118.2\%) \\
+					                      &                      &                      & 1 & 0.5 &  56.9 (+5.5\%) &  14.1 (+73.4\%) & 23.2 (+84.7\%)  \\
+					                      &                      &                      & 1 & 1.0 &  55.8 (+3.5\%) &  16.2 (+98.9\%) & 25.2 (+101.1\%) \\
+					                      &                      &                      & 3 & 1.0 &  59.0 (+9.4\%) &  15.5 (+90.2\%) & 24.6 (+95.9\%)  \\
+					                      &                      &                      & 5 & 1.0 &  57.9 (+7.3\%) &  15.4 (+90.2\%) & 25.7 (+105.2\%) \\
+																\cmidrule{3-8}
+					                      &                      &  \multirow{5}{*}{50} & 1 & 0.0 &  54.7 (+1.4\%) & 18.5 (+127.8\%) & 28.6 (+128.2\%) \\
+					                      &                      &                      & 1 & 0.5 &  55.2 (+2.3\%) &  15.3 (+88.6\%) & 23.5 (+87.8\%)  \\
+					                      &                      &                      & 1 & 1.0 &  57.5 (+6.7\%) & 18.5 (+127.3\%) & 32.2 (+156.9\%) \\
+					                      &                      &                      & 3 & 1.0 & 59.5 (+10.3\%) &  14.8 (+82.1\%) & 23.4 (+86.5\%)  \\
+					                      &                      &                      & 5 & 1.0 & 59.7 (+10.6\%) &  14.9 (+83.7\%) & 25.3 (+101.9\%) \\
+																\cmidrule{3-8}
+					                      &                      & \multirow{5}{*}{100} & 1 & 0.0 &  55.1 (+2.2\%) &  15.8 (+93.9\%) & 26.1 (+107.8\%) \\
+					                      &                      &                      & 1 & 0.5 &  57.6 (+6.7\%) &  15.8 (+94.1\%) & 24.4 (+95.0\%)  \\
+					                      &                      &                      & 1 & 1.0 &  57.3 (+6.1\%) &  16.0 (+96.8\%) & 25.6 (+104.3\%) \\
+					                      &                      &                      & 3 & 1.0 & 60.3 (+11.7\%) &  15.8 (+94.5\%) & 26.7 (+112.7\%) \\
+					                      &                      &                      & 5 & 1.0 &  58.7 (+8.8\%) &  12.4 (+52.9\%) & 18.5 (+47.4\%)  \\
+					\bottomrule
+				\end{tabular}
+			\end{table}
+
+%			\begin{figure}
+%				\centering
+%				\begin{subfigure}{.3\textwidth}
+%					\centering
+%					\includegraphics[width=0.9\linewidth]{../code/plots/reliability_diagrams/20221026-034857_reliability_diagram_stl10_ResNet20_SGD.pdf}
+%					\caption{SGD}
+%					\label{fig:M_reliability_diagram_sgd}
+%				\end{subfigure}%
+%				\begin{subfigure}{.3\textwidth}
+%					\centering
+%					\includegraphics[width=0.9\linewidth]{../code/plots/reliability_diagrams/20221025-171311_reliability_diagram_STL10_ResNet20_NGD (RankCov, k = 25, M = 1, gamma = 1.0)}
+%					\caption{}%NGD (RankCov, $k = 25, M = 1, \gamma = 1.0$)}
+%					\label{fig:NGD_M_max_accuracy}
+%				\end{subfigure}%
+%				\begin{subfigure}{.3\textwidth}
+%					\centering
+%					\includegraphics[width=0.9\linewidth]{../code/plots/reliability_diagrams/20221026-002428_reliability_diagram_STL10_ResNet20_NGD (RankCov, k = 100, M = 5, gamma = 1.0)}
+%					\caption{}%NGD (RankCov, $k = 100, M = 5, \gamma = 1.0$)}
+%					\label{fig:NGD_M_min_ece}
+%				\end{subfigure}
+%				\caption{A figure with two subfigures}
+%%				\label{fig:test}
+%			\end{figure}
+%
+%			\begin{figure}
+%				\centering
+%				\begin{subfigure}{.3\textwidth}
+%					\centering
+%					\includegraphics[width=0.9\linewidth]{../code/plots/reliability_diagrams/20221026-034857_reliability_diagram_stl10_ResNet20_SGD}
+%					\caption{SGD}
+%					\label{fig:gamma_reliability_diagram_sgd}
+%				\end{subfigure}%
+%				\begin{subfigure}{.3\textwidth}
+%					\centering
+%					\includegraphics[width=0.9\linewidth]{../code/plots/reliability_diagrams/20221026-030858_reliability_diagram_STL10_ResNet20_NGD (RankCov, k = 50, M = 1, gamma = 0.5)}
+%					\caption{}%NGD (RankCov, $k = 50, M = 1, \gamma = 0.5$)}
+%					\label{fig:NGD_gamma_max_accuracy}
+%				\end{subfigure}%
+%				\begin{subfigure}{.3\textwidth}
+%					\centering
+%					\includegraphics[width=0.9\linewidth]{../code/plots/reliability_diagrams/20221025-171311_reliability_diagram_STL10_ResNet20_NGD (RankCov, k = 25, M = 1, gamma = 1.0)}
+%					\caption{}%NGD (RankCov, $k = 25, M = 1, \gamma = 1.0$)}
+%					\label{fig:NGD_gamma_min_ece}
+%				\end{subfigure}
+%				\caption{A figure with two subfigures}
+%%				\label{fig:test}
+%			\end{figure}
+
+		\subsection{Uncertainty Quantification}
+			% Predictive or Model Uncertainty under severity shift
+			% Uncertainty Diagrams
+
+		\subsection{Robustness}
+			% Intensity Shift Diagrams for all methods
+
+			% (Relative) mean Corruption Error (mCE) Diagrams for all methods (as a function of accuracy/ECE?)
+
+	\begin{table}[!ht]
+		\centering
+		\begin{tabular}{LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL}
+			\toprule
+			\multicolumn{5}{c}{\textbf{Optimizer}} & \multicolumn{5}{c}{\textbf{All}} & \multicolumn{5}{c}{\textbf{Noise}} & \multicolumn{5}{c}{\textbf{Blur}} & \multicolumn{5}{c}{\textbf{Weather}} & \multicolumn{5}{c}{\textbf{Digital}} \\
+			\cmidrule(rl){1-5}\cmidrule(ll){6-10}
+			\rowfont{\tiny}%
+			\textbf{Name} & \textbf{Structure} & $\boldsymbol{k}$ & $\boldsymbol{M}$ & $\boldsymbol{\gamma}$ & \textbf{mCE ($\downarrow$)} & \textbf{Rel. mCE ($\downarrow$)} & \textbf{Accuracy ($\uparrow$)} & \textbf{ECE ($\downarrow$)} & \textbf{MCE ($\downarrow$)} & \textbf{mCE ($\downarrow$)} & \textbf{Rel. mCE ($\downarrow$)} & \textbf{Accuracy ($\uparrow$)} & \textbf{ECE ($\downarrow$)} & \textbf{MCE ($\downarrow$)} & \textbf{mCE ($\downarrow$)} & \textbf{Rel. mCE ($\downarrow$)} & \textbf{Accuracy ($\uparrow$)} & \textbf{ECE ($\downarrow$)} & \textbf{MCE ($\downarrow$)} & \textbf{mCE ($\downarrow$)} & \textbf{Rel. mCE ($\downarrow$)} & \textbf{Accuracy ($\uparrow$)} & \textbf{ECE ($\downarrow$)} & \textbf{MCE ($\downarrow$)} & \textbf{mCE ($\downarrow$)} & \textbf{Rel. mCE ($\downarrow$)} & \textbf{Accuracy ($\uparrow$)} & \textbf{ECE ($\downarrow$)} & \textbf{MCE ($\downarrow$)} \rowfont{\scriptsize} \\ \midrule\midrule
+			SGD & -- & -- & -- & -- & 100.0 & 100.0 & 31.8 ($\pm$ 12.9) & 22.4 ($\pm$ 8.5) & 48.1 ($\pm$ 15.0) & 100.0 & 100.0 & 18.8 ($\pm$ 10.7) & 29.8 ($\pm$ 7.2) & 63.4 ($\pm$ 15.2) & 100.0 & 100.0 & 32.3 ($\pm$ 11.5) & 22.7 ($\pm$ 7.3) & 47.7 ($\pm$ 12.0) & 100.0 & 100.0 & 38.3 ($\pm$ 10.5) & 17.8 ($\pm$ 5.8) & 40.4 ($\pm$ 10.8) & 100.0 & 100.0 & 35.3 ($\pm$ 11.2) & 20.6 ($\pm$ 9.1) & 44.0 ($\pm$ 13.0) \\
+			\midrule
+			\multirow{30}{*}{NGD} & \multirow{15}{*}{RC} &  \multirow{5}{*}{25} & 1 & 0.0 & 93.1 ($\pm$ 3.1) & 97.2 ($\pm$ 12.7) & 36.5 ($\pm$ 13.1) & 28.6 ($\pm$ 9.1) & 53.3 ($\pm$ 10.5) & 95.2 ($\pm$ 0.9) & 99.7 ($\pm$ 2.1) & 22.6 ($\pm$ 11.9) & 37.9 ($\pm$ 8.9) & 64.0 ($\pm$ 11.4) & 92.9 ($\pm$ 0.7) & 95.6 ($\pm$ 2.4) & 37.1 ($\pm$ 11.0) & 28.4 ($\pm$ 8.0) & 52.8 ($\pm$ 8.6) & 93.1 ($\pm$ 2.0) & 102.0 ($\pm$ 18.9) & 42.6 ($\pm$ 9.8) & 24.4 ($\pm$ 5.8) & 48.8 ($\pm$ 5.9) & 91.4 ($\pm$ 5.5) & 91.9 ($\pm$ 16.8) & 41.0 ($\pm$ 11.0) & 25.6 ($\pm$ 8.0) & 49.8 ($\pm$ 9.3) \\
+			                      &                      &                      & 1 & 0.5 & 98.7 ($\pm$ 2.5) & 91.0 ($\pm$ 9.5) & 32.6 ($\pm$ 12.9) & 24.4 ($\pm$ 9.9) & 49.6 ($\pm$ 13.8) & 98.3 ($\pm$ 0.9) & 93.8 ($\pm$ 2.0) & 20.1 ($\pm$ 9.8) & 32.6 ($\pm$ 7.4) & 62.2 ($\pm$ 11.8) & 97.1 ($\pm$ 3.1) & 84.3 ($\pm$ 11.6) & 34.1 ($\pm$ 12.8) & 23.8 ($\pm$ 11.5) & 48.6 ($\pm$ 14.3) & 101.4 ($\pm$ 0.7) & 98.8 ($\pm$ 6.2) & 37.3 ($\pm$ 10.4) & 21.1 ($\pm$ 6.4) & 44.7 ($\pm$ 9.2) & 98.1 ($\pm$ 2.0) & 87.7 ($\pm$ 8.5) & 36.5 ($\pm$ 11.5) & 21.7 ($\pm$ 9.7) & 45.5 ($\pm$ 13.0) \\
+			                      &                      &                      & 1 & 1.0 & 91.6 ($\pm$ 2.7) & 80.8 ($\pm$ 8.6) & 37.7 ($\pm$ 11.4) & 22.9 ($\pm$ 6.4) & 47.8 ($\pm$ 9.4) & 88.6 ($\pm$ 1.0) & 78.5 ($\pm$ 3.0) & 28.0 ($\pm$ 11.2) & 25.6 ($\pm$ 6.0) & 54.1 ($\pm$ 10.9) & 90.8 ($\pm$ 1.8) & 78.8 ($\pm$ 3.2) & 38.6 ($\pm$ 9.9) & 23.5 ($\pm$ 6.0) & 47.8 ($\pm$ 7.5) & 91.9 ($\pm$ 2.0) & 76.6 ($\pm$ 10.6) & 43.4 ($\pm$ 8.6) & 19.6 ($\pm$ 3.7) & 42.9 ($\pm$ 5.4) & 94.4 ($\pm$ 2.2) & 88.8 ($\pm$ 9.6) & 38.9 ($\pm$ 11.0) & 23.6 ($\pm$ 7.9) & 47.7 ($\pm$ 10.3) \\
+			                      &                      &                      & 3 & 1.0 & 90.8 ($\pm$ 1.7) & 91.5 ($\pm$ 6.5) & 38.1 ($\pm$ 12.5) & 25.1 ($\pm$ 7.4) & 49.6 ($\pm$ 9.8) & 90.3 ($\pm$ 1.2) & 89.8 ($\pm$ 2.6) & 26.6 ($\pm$ 11.8) & 30.0 ($\pm$ 7.0) & 58.0 ($\pm$ 11.3) & 91.0 ($\pm$ 1.7) & 91.7 ($\pm$ 5.6) & 38.4 ($\pm$ 11.4) & 25.9 ($\pm$ 7.2) & 49.7 ($\pm$ 8.2) & 90.4 ($\pm$ 0.9) & 89.9 ($\pm$ 3.5) & 44.2 ($\pm$ 9.7) & 21.1 ($\pm$ 4.7) & 44.5 ($\pm$ 5.7) & 91.4 ($\pm$ 2.7) & 94.1 ($\pm$ 11.3) & 40.9 ($\pm$ 11.1) & 24.2 ($\pm$ 8.0) & 47.8 ($\pm$ 9.5) \\
+			                      &                      &                      & 5 & 1.0 & 90.2 ($\pm$ 2.3) & 94.9 ($\pm$ 8.3) & 38.4 ($\pm$ 13.1) & 27.8 ($\pm$ 9.5) & 52.2 ($\pm$ 10.3) & 92.1 ($\pm$ 1.7) & 97.5 ($\pm$ 3.6) & 25.2 ($\pm$ 12.1) & 37.8 ($\pm$ 10.2) & 63.2 ($\pm$ 11.9) & 90.2 ($\pm$ 1.1) & 95.4 ($\pm$ 3.0) & 38.9 ($\pm$ 11.3) & 27.5 ($\pm$ 7.8) & 51.8 ($\pm$ 7.6) & 88.5 ($\pm$ 1.0) & 89.8 ($\pm$ 4.0) & 45.4 ($\pm$ 9.7) & 22.6 ($\pm$ 5.4) & 46.6 ($\pm$ 5.6) & 90.2 ($\pm$ 3.6) & 97.5 ($\pm$ 15.1) & 41.7 ($\pm$ 11.1) & 25.2 ($\pm$ 7.7) & 49.3 ($\pm$ 8.3) \\
+			\cmidrule{3-30}
+			                      &                      &  \multirow{5}{*}{50} & 1 & 0.0 & 89.8 ($\pm$ 3.8) & 85.8 ($\pm$ 14.2) & 38.8 ($\pm$ 13.0) & 28.5 ($\pm$ 10.1) & 52.5 ($\pm$ 10.8) & 92.4 ($\pm$ 2.1) & 93.4 ($\pm$ 4.9) & 24.9 ($\pm$ 13.1) & 39.4 ($\pm$ 11.5) & 64.0 ($\pm$ 12.3) & 85.5 ($\pm$ 1.1) & 70.9 ($\pm$ 6.6) & 42.0 ($\pm$ 10.4) & 26.2 ($\pm$ 8.0) & 49.8 ($\pm$ 7.9) & 92.5 ($\pm$ 1.2) & 98.0 ($\pm$ 9.4) & 43.0 ($\pm$ 9.5) & 25.6 ($\pm$ 6.5) & 49.2 ($\pm$ 6.8) & 89.1 ($\pm$ 4.3) & 82.3 ($\pm$ 14.8) & 42.3 ($\pm$ 11.1) & 24.9 ($\pm$ 7.7) & 49.2 ($\pm$ 9.5) \\
+			                      &                      &                      & 1 & 0.5 & 92.8 ($\pm$ 2.8) & 91.6 ($\pm$ 10.2) & 36.8 ($\pm$ 12.4) & 30.6 ($\pm$ 9.4) & 54.7 ($\pm$ 9.8) & 91.1 ($\pm$ 1.0) & 88.2 ($\pm$ 2.3) & 26.0 ($\pm$ 11.6) & 36.7 ($\pm$ 8.9) & 61.9 ($\pm$ 10.9) & 93.1 ($\pm$ 1.6) & 92.3 ($\pm$ 5.4) & 37.0 ($\pm$ 11.3) & 31.8 ($\pm$ 9.4) & 55.2 ($\pm$ 8.6) & 94.2 ($\pm$ 2.5) & 93.7 ($\pm$ 14.7) & 41.8 ($\pm$ 10.7) & 27.3 ($\pm$ 7.7) & 51.0 ($\pm$ 7.5) & 92.5 ($\pm$ 4.5) & 91.5 ($\pm$ 14.3) & 40.3 ($\pm$ 10.7) & 27.8 ($\pm$ 9.2) & 52.2 ($\pm$ 9.4) \\
+			                      &                      &                      & 1 & 1.0 & 90.5 ($\pm$ 3.2) & 83.3 ($\pm$ 9.2) & 38.5 ($\pm$ 10.9) & 29.6 ($\pm$ 6.7) & 53.7 ($\pm$ 7.4) & 86.6 ($\pm$ 0.5) & 76.7 ($\pm$ 1.9) & 29.7 ($\pm$ 10.8) & 32.7 ($\pm$ 6.8) & 58.1 ($\pm$ 8.6) & 90.7 ($\pm$ 2.5) & 84.4 ($\pm$ 4.7) & 38.8 ($\pm$ 9.3) & 31.1 ($\pm$ 6.4) & 54.8 ($\pm$ 5.8) & 90.6 ($\pm$ 1.9) & 79.2 ($\pm$ 8.4) & 44.1 ($\pm$ 8.7) & 25.7 ($\pm$ 4.6) & 49.6 ($\pm$ 4.6) & 93.1 ($\pm$ 3.3) & 91.7 ($\pm$ 11.4) & 39.8 ($\pm$ 10.5) & 29.4 ($\pm$ 7.1) & 53.3 ($\pm$ 8.0) \\
+			                      &                      &                      & 3 & 1.0 & 91.1 ($\pm$ 3.7) & 87.6 ($\pm$ 11.5) & 38.0 ($\pm$ 12.0) & 28.1 ($\pm$ 8.3) & 52.1 ($\pm$ 9.3) & 89.4 ($\pm$ 1.6) & 84.7 ($\pm$ 4.1) & 27.4 ($\pm$ 12.6) & 34.9 ($\pm$ 8.9) & 60.1 ($\pm$ 11.2) & 92.6 ($\pm$ 3.1) & 93.6 ($\pm$ 7.7) & 37.5 ($\pm$ 9.5) & 28.7 ($\pm$ 7.3) & 52.6 ($\pm$ 7.1) & 91.2 ($\pm$ 3.0) & 84.5 ($\pm$ 12.6) & 43.7 ($\pm$ 9.9) & 24.4 ($\pm$ 6.1) & 47.9 ($\pm$ 6.2) & 90.8 ($\pm$ 5.8) & 87.0 ($\pm$ 17.2) & 41.4 ($\pm$ 10.5) & 25.8 ($\pm$ 7.5) & 49.4 ($\pm$ 8.6) \\
+			                      &                      &                      & 5 & 1.0 & 90.9 ($\pm$ 2.3) & 96.5 ($\pm$ 7.3) & 38.0 ($\pm$ 13.3) & 29.2 ($\pm$ 9.4) & 53.4 ($\pm$ 10.1) & 92.6 ($\pm$ 1.3) & 98.1 ($\pm$ 2.8) & 24.8 ($\pm$ 12.3) & 36.8 ($\pm$ 8.9) & 62.5 ($\pm$ 11.0) & 91.0 ($\pm$ 1.6) & 97.4 ($\pm$ 5.8) & 38.4 ($\pm$ 11.6) & 30.2 ($\pm$ 9.0) & 53.8 ($\pm$ 8.2) & 90.3 ($\pm$ 1.5) & 95.5 ($\pm$ 5.9) & 44.2 ($\pm$ 10.2) & 24.7 ($\pm$ 6.3) & 48.7 ($\pm$ 6.5) & 90.1 ($\pm$ 3.7) & 95.3 ($\pm$ 12.7) & 41.8 ($\pm$ 11.4) & 26.7 ($\pm$ 9.1) & 50.3 ($\pm$ 9.8) \\
+			\cmidrule{3-30}
+			                      &                      & \multirow{5}{*}{100} & 1 & 0.0 & 93.3 ($\pm$ 4.8) & 92.1 ($\pm$ 15.2) & 36.6 ($\pm$ 12.0) & 25.4 ($\pm$ 8.4) & 49.3 ($\pm$ 10.5) & 90.1 ($\pm$ 1.0) & 84.2 ($\pm$ 2.7) & 26.8 ($\pm$ 12.2) & 31.3 ($\pm$ 9.3) & 57.2 ($\pm$ 12.0) & 97.7 ($\pm$ 2.9) & 106.8 ($\pm$ 10.2) & 34.0 ($\pm$ 10.6) & 28.2 ($\pm$ 8.3) & 51.9 ($\pm$ 9.5) & 92.3 ($\pm$ 2.4) & 85.9 ($\pm$ 7.9) & 43.1 ($\pm$ 9.2) & 20.9 ($\pm$ 5.1) & 43.7 ($\pm$ 6.3) & 92.5 ($\pm$ 7.1) & 89.9 ($\pm$ 22.0) & 40.4 ($\pm$ 10.2) & 22.3 ($\pm$ 6.6) & 46.1 ($\pm$ 9.3) \\
+			                      &                      &                      & 1 & 0.5 & 94.6 ($\pm$ 5.8) & 81.2 ($\pm$ 21.1) & 35.5 ($\pm$ 12.7) & 27.5 ($\pm$ 9.2) & 52.0 ($\pm$ 11.2) & 96.3 ($\pm$ 0.8) & 91.3 ($\pm$ 2.2) & 21.7 ($\pm$ 10.7) & 37.0 ($\pm$ 8.9) & 63.7 ($\pm$ 11.9) & 88.1 ($\pm$ 3.0) & 58.5 ($\pm$ 15.7) & 40.1 ($\pm$ 11.2) & 23.5 ($\pm$ 7.7) & 47.0 ($\pm$ 8.7) & 100.4 ($\pm$ 1.6) & 99.4 ($\pm$ 10.7) & 38.0 ($\pm$ 10.2) & 26.3 ($\pm$ 7.0) & 50.5 ($\pm$ 7.7) & 94.0 ($\pm$ 6.6) & 77.8 ($\pm$ 21.3) & 39.2 ($\pm$ 10.7) & 25.0 ($\pm$ 7.5) & 48.9 ($\pm$ 9.5) \\
+			                      &                      &                      & 1 & 1.0 & 92.1 ($\pm$ 2.9) & 93.5 ($\pm$ 10.5) & 37.3 ($\pm$ 12.0) & 27.5 ($\pm$ 7.8) & 52.0 ($\pm$ 9.1) & 89.9 ($\pm$ 1.2) & 87.1 ($\pm$ 2.8) & 27.0 ($\pm$ 11.9) & 33.1 ($\pm$ 7.9) & 59.2 ($\pm$ 10.7) & 94.5 ($\pm$ 2.5) & 101.7 ($\pm$ 7.9) & 36.2 ($\pm$ 10.2) & 29.4 ($\pm$ 7.4) & 53.6 ($\pm$ 7.3) & 91.4 ($\pm$ 1.7) & 88.8 ($\pm$ 7.0) & 43.5 ($\pm$ 10.1) & 23.3 ($\pm$ 6.0) & 47.1 ($\pm$ 6.4) & 92.3 ($\pm$ 4.0) & 95.1 ($\pm$ 14.8) & 40.4 ($\pm$ 10.4) & 25.5 ($\pm$ 6.8) & 49.6 ($\pm$ 8.1) \\
+			                      &                      &                      & 3 & 1.0 & 93.6 ($\pm$ 4.7) & 105.8 ($\pm$ 14.2) & 35.9 ($\pm$ 14.4) & 30.0 ($\pm$ 10.2) & 54.6 ($\pm$ 11.7) & 98.2 ($\pm$ 3.7) & 112.2 ($\pm$ 8.8) & 20.3 ($\pm$ 10.8) & 40.5 ($\pm$ 7.5) & 67.5 ($\pm$ 10.4) & 92.6 ($\pm$ 4.0) & 102.3 ($\pm$ 7.3) & 37.0 ($\pm$ 13.2) & 29.8 ($\pm$ 10.5) & 53.9 ($\pm$ 10.5) & 92.7 ($\pm$ 4.8) & 105.3 ($\pm$ 16.6) & 42.6 ($\pm$ 11.8) & 26.0 ($\pm$ 8.0) & 49.6 ($\pm$ 8.4) & 91.8 ($\pm$ 4.9) & 104.5 ($\pm$ 21.4) & 40.7 ($\pm$ 11.5) & 26.0 ($\pm$ 7.8) & 50.1 ($\pm$ 9.0) \\
+			                      &                      &                      & 5 & 1.0 & 90.4 ($\pm$ 2.4) & 90.0 ($\pm$ 8.1) & 38.3 ($\pm$ 12.9) & 27.1 ($\pm$ 8.1) & 52.1 ($\pm$ 9.5) & 91.3 ($\pm$ 1.5) & 92.5 ($\pm$ 3.3) & 25.8 ($\pm$ 12.9) & 33.4 ($\pm$ 8.4) & 60.7 ($\pm$ 11.3) & 91.7 ($\pm$ 1.1) & 95.3 ($\pm$ 3.7) & 38.0 ($\pm$ 11.0) & 28.2 ($\pm$ 7.9) & 52.9 ($\pm$ 7.6) & 88.7 ($\pm$ 1.0) & 82.6 ($\pm$ 5.7) & 45.3 ($\pm$ 9.0) & 22.9 ($\pm$ 4.9) & 47.0 ($\pm$ 4.7) & 90.1 ($\pm$ 3.9) & 90.0 ($\pm$ 11.4) & 41.7 ($\pm$ 11.3) & 25.2 ($\pm$ 7.9) & 49.6 ($\pm$ 8.8) \\
+			\cmidrule{2-30}
+			                      & \multirow{15}{*}{AH} &  \multirow{5}{*}{25} & 1 & 0.0 & 92.0 ($\pm$ 2.9) & 90.0 ($\pm$ 9.7) & 37.4 ($\pm$ 11.8) & 27.2 ($\pm$ 7.0) & 52.3 ($\pm$ 8.4) & 88.9 ($\pm$ 1.1) & 83.2 ($\pm$ 2.8) & 27.8 ($\pm$ 11.6) & 30.5 ($\pm$ 6.4) & 57.9 ($\pm$ 10.2) & 91.5 ($\pm$ 2.0) & 88.1 ($\pm$ 6.8) & 38.1 ($\pm$ 10.4) & 28.5 ($\pm$ 7.1) & 53.0 ($\pm$ 7.1) & 92.6 ($\pm$ 1.5) & 89.8 ($\pm$ 6.0) & 42.9 ($\pm$ 9.5) & 23.2 ($\pm$ 4.5) & 47.7 ($\pm$ 5.3) & 94.3 ($\pm$ 3.7) & 97.6 ($\pm$ 14.6) & 39.0 ($\pm$ 11.0) & 27.1 ($\pm$ 7.7) & 51.6 ($\pm$ 8.3) \\
+			                      &                      &                      & 1 & 0.5 & 91.8 ($\pm$ 2.6) & 88.2 ($\pm$ 9.7) & 37.4 ($\pm$ 12.2) & 25.8 ($\pm$ 8.2) & 50.1 ($\pm$ 10.2) & 92.3 ($\pm$ 1.2) & 90.4 ($\pm$ 2.9) & 25.0 ($\pm$ 11.7) & 33.8 ($\pm$ 8.5) & 60.5 ($\pm$ 11.4) & 91.1 ($\pm$ 1.9) & 85.6 ($\pm$ 6.1) & 38.4 ($\pm$ 10.2) & 25.9 ($\pm$ 7.3) & 49.7 ($\pm$ 8.6) & 91.2 ($\pm$ 3.0) & 84.5 ($\pm$ 11.7) & 43.8 ($\pm$ 9.0) & 21.1 ($\pm$ 4.8) & 44.6 ($\pm$ 5.6) & 92.9 ($\pm$ 3.7) & 92.6 ($\pm$ 13.8) & 40.0 ($\pm$ 10.5) & 23.8 ($\pm$ 7.2) & 47.7 ($\pm$ 8.7) \\
+			                      &                      &                      & 1 & 1.0 & 91.7 ($\pm$ 3.3) & 81.8 ($\pm$ 12.2) & 37.5 ($\pm$ 12.3) & 26.1 ($\pm$ 8.3) & 50.4 ($\pm$ 10.4) & 92.1 ($\pm$ 2.9) & 87.0 ($\pm$ 7.0) & 25.1 ($\pm$ 11.7) & 33.6 ($\pm$ 8.0) & 60.6 ($\pm$ 11.6) & 88.4 ($\pm$ 1.3) & 70.9 ($\pm$ 6.1) & 40.2 ($\pm$ 10.4) & 23.8 ($\pm$ 6.7) & 47.3 ($\pm$ 7.6) & 92.8 ($\pm$ 3.3) & 83.1 ($\pm$ 13.8) & 42.8 ($\pm$ 8.6) & 22.9 ($\pm$ 4.3) & 46.6 ($\pm$ 5.4) & 93.7 ($\pm$ 3.2) & 87.3 ($\pm$ 13.9) & 39.4 ($\pm$ 11.6) & 25.6 ($\pm$ 9.7) & 49.0 ($\pm$ 11.0) \\
+			                      &                      &                      & 3 & 1.0 & 92.1 ($\pm$ 3.0) & 99.0 ($\pm$ 10.0) & 37.1 ($\pm$ 13.4) & 28.5 ($\pm$ 8.5) & 53.2 ($\pm$ 10.0) & 94.4 ($\pm$ 2.5) & 101.4 ($\pm$ 5.6) & 23.3 ($\pm$ 12.2) & 35.8 ($\pm$ 8.0) & 63.0 ($\pm$ 11.5) & 92.2 ($\pm$ 1.2) & 99.1 ($\pm$ 2.3) & 37.5 ($\pm$ 11.7) & 28.9 ($\pm$ 8.0) & 53.2 ($\pm$ 8.1) & 91.6 ($\pm$ 2.0) & 98.9 ($\pm$ 5.6) & 43.4 ($\pm$ 10.7) & 24.5 ($\pm$ 6.4) & 48.5 ($\pm$ 6.6) & 90.7 ($\pm$ 4.8) & 96.9 ($\pm$ 19.4) & 41.5 ($\pm$ 10.8) & 26.3 ($\pm$ 7.9) & 50.1 ($\pm$ 8.1) \\
+			                      &                      &                      & 5 & 1.0 & 90.1 ($\pm$ 3.2) & 88.3 ($\pm$ 9.7) & 38.7 ($\pm$ 12.3) & 26.7 ($\pm$ 7.8) & 51.2 ($\pm$ 9.3) & 89.7 ($\pm$ 2.2) & 87.3 ($\pm$ 5.2) & 27.1 ($\pm$ 13.0) & 31.1 ($\pm$ 8.5) & 57.5 ($\pm$ 12.2) & 91.2 ($\pm$ 3.0) & 92.2 ($\pm$ 8.5) & 38.4 ($\pm$ 10.0) & 29.7 ($\pm$ 7.5) & 53.4 ($\pm$ 7.3) & 89.2 ($\pm$ 2.6) & 84.9 ($\pm$ 8.9) & 45.1 ($\pm$ 8.9) & 22.0 ($\pm$ 4.7) & 45.8 ($\pm$ 5.2) & 90.1 ($\pm$ 4.8) & 88.5 ($\pm$ 14.8) & 41.8 ($\pm$ 10.5) & 24.8 ($\pm$ 7.1) & 49.2 ($\pm$ 8.4) \\
+			\cmidrule{3-30}
+			                      &                      &  \multirow{5}{*}{50} & 1 & 0.0 & 94.3 ($\pm$ 4.1) & 85.7 ($\pm$ 15.9) & 35.9 ($\pm$ 11.2) & 29.4 ($\pm$ 7.0) & 53.6 ($\pm$ 8.2) & 89.3 ($\pm$ 0.4) & 77.3 ($\pm$ 1.7) & 27.5 ($\pm$ 10.8) & 32.4 ($\pm$ 5.7) & 58.3 ($\pm$ 8.8) & 96.2 ($\pm$ 2.6) & 92.4 ($\pm$ 5.3) & 35.1 ($\pm$ 9.6) & 30.6 ($\pm$ 6.8) & 54.7 ($\pm$ 6.9) & 95.0 ($\pm$ 2.7) & 79.9 ($\pm$ 23.1) & 41.4 ($\pm$ 9.7) & 26.3 ($\pm$ 5.6) & 49.9 ($\pm$ 5.9) & 95.9 ($\pm$ 5.4) & 91.5 ($\pm$ 19.1) & 38.1 ($\pm$ 10.7) & 28.9 ($\pm$ 8.4) & 52.4 ($\pm$ 9.2) \\
+			                      &                      &                      & 1 & 0.5 & 94.8 ($\pm$ 3.7) & 90.8 ($\pm$ 10.9) & 35.6 ($\pm$ 11.3) & 26.3 ($\pm$ 6.8) & 51.4 ($\pm$ 9.3) & 90.1 ($\pm$ 1.6) & 80.6 ($\pm$ 3.8) & 26.8 ($\pm$ 11.6) & 28.4 ($\pm$ 7.0) & 56.8 ($\pm$ 11.8) & 95.7 ($\pm$ 3.3) & 93.5 ($\pm$ 7.6) & 35.4 ($\pm$ 9.3) & 28.3 ($\pm$ 5.7) & 53.3 ($\pm$ 6.1) & 95.3 ($\pm$ 1.9) & 89.1 ($\pm$ 7.7) & 41.2 ($\pm$ 9.8) & 22.8 ($\pm$ 5.6) & 46.1 ($\pm$ 7.3) & 97.1 ($\pm$ 3.8) & 98.0 ($\pm$ 15.1) & 37.3 ($\pm$ 10.5) & 26.1 ($\pm$ 7.5) & 50.3 ($\pm$ 8.8) \\
+			                      &                      &                      & 1 & 1.0 & 94.1 ($\pm$ 3.5) & 96.3 ($\pm$ 16.2) & 35.7 ($\pm$ 13.7) & 31.5 ($\pm$ 9.2) & 56.1 ($\pm$ 10.1) & 96.7 ($\pm$ 3.0) & 102.8 ($\pm$ 6.9) & 21.4 ($\pm$ 11.1) & 40.1 ($\pm$ 7.7) & 66.5 ($\pm$ 9.9) & 93.6 ($\pm$ 1.8) & 96.0 ($\pm$ 4.0) & 36.5 ($\pm$ 12.0) & 31.8 ($\pm$ 8.7) & 55.6 ($\pm$ 8.6) & 92.9 ($\pm$ 3.6) & 88.6 ($\pm$ 24.1) & 42.5 ($\pm$ 11.3) & 27.1 ($\pm$ 7.0) & 51.6 ($\pm$ 7.2) & 93.7 ($\pm$ 4.9) & 99.2 ($\pm$ 20.4) & 39.5 ($\pm$ 11.3) & 28.9 ($\pm$ 8.3) & 52.9 ($\pm$ 8.7) \\
+			                      &                      &                      & 3 & 1.0 & 93.7 ($\pm$ 4.3) & 106.3 ($\pm$ 13.0) & 35.9 ($\pm$ 14.0) & 29.1 ($\pm$ 8.7) & 54.4 ($\pm$ 10.4) & 95.9 ($\pm$ 2.2) & 106.3 ($\pm$ 5.2) & 22.1 ($\pm$ 11.2) & 34.7 ($\pm$ 6.2) & 63.4 ($\pm$ 9.6) & 93.2 ($\pm$ 3.8) & 103.5 ($\pm$ 6.8) & 36.7 ($\pm$ 13.3) & 29.8 ($\pm$ 9.5) & 54.4 ($\pm$ 10.1) & 94.5 ($\pm$ 5.9) & 111.2 ($\pm$ 15.6) & 41.4 ($\pm$ 12.7) & 26.4 ($\pm$ 8.9) & 50.5 ($\pm$ 9.3) & 91.8 ($\pm$ 4.6) & 104.0 ($\pm$ 20.0) & 40.8 ($\pm$ 10.8) & 26.7 ($\pm$ 7.6) & 51.1 ($\pm$ 8.1) \\
+			                      &                      &                      & 5 & 1.0 & 90.9 ($\pm$ 3.4) & 97.7 ($\pm$ 11.7) & 37.9 ($\pm$ 13.5) & 28.3 ($\pm$ 9.1) & 52.9 ($\pm$ 10.6) & 93.0 ($\pm$ 1.9) & 100.1 ($\pm$ 4.4) & 24.4 ($\pm$ 12.5) & 36.2 ($\pm$ 9.2) & 63.2 ($\pm$ 12.2) & 92.0 ($\pm$ 1.9) & 101.5 ($\pm$ 3.9) & 37.6 ($\pm$ 12.0) & 29.8 ($\pm$ 8.6) & 54.0 ($\pm$ 8.9) & 89.0 ($\pm$ 2.7) & 91.5 ($\pm$ 9.6) & 45.0 ($\pm$ 10.6) & 23.6 ($\pm$ 6.7) & 47.5 ($\pm$ 6.7) & 89.8 ($\pm$ 5.0) & 98.3 ($\pm$ 20.6) & 42.1 ($\pm$ 10.8) & 25.0 ($\pm$ 6.9) & 49.1 ($\pm$ 8.0) \\
+			\cmidrule{3-30}
+			                      &                      & \multirow{5}{*}{100} & 1 & 0.0 & 91.4 ($\pm$ 8.5) & 81.4 ($\pm$ 23.9) & 38.2 ($\pm$ 10.7) & 25.6 ($\pm$ 6.7) & 49.9 ($\pm$ 8.4) & 84.7 ($\pm$ 2.5) & 67.9 ($\pm$ 6.6) & 31.2 ($\pm$ 12.1) & 27.1 ($\pm$ 6.6) & 53.1 ($\pm$ 10.6) & 96.7 ($\pm$ 9.7) & 100.0 ($\pm$ 24.6) & 35.2 ($\pm$ 8.5) & 29.8 ($\pm$ 6.7) & 53.7 ($\pm$ 6.4) & 90.5 ($\pm$ 5.5) & 72.5 ($\pm$ 14.6) & 44.4 ($\pm$ 7.9) & 21.3 ($\pm$ 4.0) & 44.7 ($\pm$ 4.9) & 92.1 ($\pm$ 10.6) & 82.4 ($\pm$ 31.8) & 40.7 ($\pm$ 9.9) & 24.7 ($\pm$ 6.5) & 48.5 ($\pm$ 8.4) \\
+			                      &                      &                      & 1 & 0.5 & 88.9 ($\pm$ 3.2) & 83.0 ($\pm$ 8.5) & 39.6 ($\pm$ 11.6) & 26.8 ($\pm$ 7.8) & 50.9 ($\pm$ 8.9) & 87.5 ($\pm$ 1.5) & 81.3 ($\pm$ 3.8) & 28.9 ($\pm$ 12.6) & 33.7 ($\pm$ 9.4) & 58.9 ($\pm$ 11.2) & 88.6 ($\pm$ 3.7) & 82.1 ($\pm$ 7.3) & 40.3 ($\pm$ 9.1) & 26.6 ($\pm$ 5.9) & 50.4 ($\pm$ 5.9) & 90.0 ($\pm$ 2.7) & 85.7 ($\pm$ 9.3) & 44.6 ($\pm$ 8.5) & 23.5 ($\pm$ 4.9) & 47.1 ($\pm$ 5.2) & 89.3 ($\pm$ 4.5) & 82.5 ($\pm$ 12.8) & 42.3 ($\pm$ 10.7) & 24.9 ($\pm$ 7.5) & 48.8 ($\pm$ 8.7) \\
+			                      &                      &                      & 1 & 1.0 & 92.5 ($\pm$ 2.2) & 92.5 ($\pm$ 7.1) & 37.0 ($\pm$ 12.1) & 27.8 ($\pm$ 7.7) & 52.3 ($\pm$ 9.0) & 90.4 ($\pm$ 0.7) & 87.3 ($\pm$ 1.8) & 26.5 ($\pm$ 11.3) & 33.1 ($\pm$ 6.8) & 59.1 ($\pm$ 9.5) & 93.6 ($\pm$ 2.2) & 96.3 ($\pm$ 6.9) & 36.7 ($\pm$ 10.7) & 29.0 ($\pm$ 7.5) & 53.1 ($\pm$ 8.1) & 91.5 ($\pm$ 1.7) & 88.4 ($\pm$ 4.8) & 43.6 ($\pm$ 9.3) & 23.4 ($\pm$ 5.0) & 47.5 ($\pm$ 5.2) & 94.0 ($\pm$ 2.0) & 97.2 ($\pm$ 7.6) & 39.2 ($\pm$ 11.3) & 26.9 ($\pm$ 8.2) & 51.0 ($\pm$ 9.5) \\
+			                      &                      &                      & 3 & 1.0 & 91.9 ($\pm$ 4.8) & 102.5 ($\pm$ 17.5) & 37.1 ($\pm$ 14.4) & 30.4 ($\pm$ 10.9) & 54.9 ($\pm$ 11.4) & 94.8 ($\pm$ 3.1) & 106.1 ($\pm$ 7.4) & 23.0 ($\pm$ 11.4) & 41.2 ($\pm$ 9.6) & 66.5 ($\pm$ 11.3) & 93.4 ($\pm$ 4.2) & 108.2 ($\pm$ 8.7) & 36.5 ($\pm$ 13.7) & 31.0 ($\pm$ 11.5) & 55.6 ($\pm$ 11.2) & 90.3 ($\pm$ 5.2) & 96.4 ($\pm$ 24.5) & 44.0 ($\pm$ 12.1) & 25.5 ($\pm$ 7.7) & 49.4 ($\pm$ 7.4) & 89.6 ($\pm$ 5.6) & 100.1 ($\pm$ 23.7) & 42.2 ($\pm$ 11.4) & 26.0 ($\pm$ 7.7) & 50.5 ($\pm$ 7.8) \\
+			                      &                      &                      & 5 & 1.0 & 93.2 ($\pm$ 4.0) & 101.5 ($\pm$ 14.8) & 36.4 ($\pm$ 13.4) & 26.1 ($\pm$ 8.9) & 50.8 ($\pm$ 11.4) & 93.7 ($\pm$ 2.3) & 98.9 ($\pm$ 5.3) & 23.9 ($\pm$ 12.3) & 33.3 ($\pm$ 8.9) & 60.9 ($\pm$ 12.4) & 97.0 ($\pm$ 2.0) & 114.7 ($\pm$ 10.1) & 34.4 ($\pm$ 11.8) & 28.3 ($\pm$ 8.1) & 52.6 ($\pm$ 9.6) & 89.8 ($\pm$ 2.2) & 89.4 ($\pm$ 7.2) & 44.5 ($\pm$ 10.3) & 20.6 ($\pm$ 6.0) & 43.9 ($\pm$ 7.2) & 92.6 ($\pm$ 5.1) & 102.5 ($\pm$ 19.9) & 40.3 ($\pm$ 10.8) & 23.6 ($\pm$ 7.8) & 48.0 ($\pm$ 9.7) \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
 
 	\section{Outlook}
 
@@ -600,7 +1133,13 @@
 
 	\newpage
 	\printbibliography
+	\newpage
+	\appendix
+	\section{More Results}
+		\subsection{Results}
+
+		\subsection{Reliability Diagrams}
+
+		\subsection{Robustness}
 
 \end{document}
-
-
