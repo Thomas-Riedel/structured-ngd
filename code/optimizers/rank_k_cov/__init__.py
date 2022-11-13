@@ -35,7 +35,7 @@ class StructuredNGD(NoisyOptimizer):
         assert lr > 0.0
         assert mc_samples >= 1
 
-        if structure not in ['rank_cov', 'arrowhead']:
+        if structure not in ['diagonal', 'rank_cov', 'arrowhead']:
             raise NotImplementedError()
         if momentum_grad is None:
             momentum_grad = 0.6

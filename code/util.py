@@ -253,9 +253,9 @@ def get_params(args: dict, optimizer=SGD, add_weight_decay=True, n=1) -> dict:
             args['prior_precision'], args['damping'], args['gamma']
         )
     ]
-    if isinstance(optimizer, Adam):
+    if optimizer.__name__ == 'Adam':
         momentum = dict(betas=(0.9, 0.999))
-    elif isinstance(optimizer, SGD):
+    elif optimizer.__name__ == 'SGD':
         momentum = dict(momentum=0.9, nesterov=True)
     baseline = [dict(lr=lr, weight_decay=add_weight_decay * prior_precision / n, **momentum)
                 for lr, prior_precision in zip(set(args['lr']), set(args['prior_precision']))]
@@ -816,7 +816,7 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             model.load_state_dict(state_dict=state_dict['model_state_dict'])
             models.append(model)
 
-            optimizer = StructuredNGD(model.parameters(), state_dict['train_size'])
+            optimizer = StructuredNGD(model.parameters(), state_dict['train_size'], **run['params'])
             optimizer.load_state_dict(state_dict=state_dict['optimizer_state_dict'])
             optimizers.append(optimizer)
         model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)

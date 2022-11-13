@@ -326,8 +326,9 @@ def defocus_blur(x, severity=1):
 def motion_blur(x, severity=1):
     c = [(10, 1), (10, 1.5), (10, 2), (10, 2.5), (12, 3)][severity - 1]
 
+    img_size = np.array(x).shape[:2]
     output = BytesIO()
-    x.save(output, format='PNG')
+    PILImage.fromarray(np.array(x)).save(output, format='PNG')
     x = MotionImage(blob=output.getvalue())
 
     x.motion_blur(radius=c[0], sigma=c[1], angle=np.random.uniform(-45, 45))
@@ -335,7 +336,7 @@ def motion_blur(x, severity=1):
     x = cv2.imdecode(np.fromstring(x.make_blob(), np.uint8),
                      cv2.IMREAD_UNCHANGED)
 
-    if x.shape != (64, 64):
+    if x.shape != img_size:
         return np.clip(x[..., [2, 1, 0]], 0, 255)  # BGR to RGB
     else:  # greyscale to RGB
         return np.clip(np.array([x, x, x]).transpose((1, 2, 0)), 0, 255)
@@ -367,7 +368,7 @@ def frost(x, severity=1):
     c = [(1, 0.3), (0.9, 0.4), (0.8, 0.45), (0.75, 0.5), (0.7, 0.55)][severity - 1]
     idx = np.random.randint(5)
     filename = ['./frost1.png', './frost2.png', './frost3.png', './frost4.jpg', './frost5.jpg', './frost6.jpg'][idx]
-    frost = cv2.imread(filename)
+    frost = cv2.imread('/usr/stud/riedelt/riedelt/structured-ngd/code/create_c/' + filename)
     frost = cv2.resize(frost, (0, 0), fx=0.3, fy=0.3)
     # randomly crop and convert to rgb
     x_start, y_start = np.random.randint(0, frost.shape[0] - 64), np.random.randint(0, frost.shape[1] - 64)
@@ -493,8 +494,8 @@ def jpeg_compression(x, severity=1):
     c = [65, 58, 50, 40, 25][severity - 1]
 
     output = BytesIO()
-    x.save(output, 'JPEG', quality=c)
-    x = PILImage.open(output)
+    PILImage.fromarray(np.array(x)).save(output, 'JPEG', quality=c)
+    x = np.array(PILImage.open(output))
 
     return x
 
@@ -503,14 +504,14 @@ def pixelate(x, severity=1):
     c = [0.9, 0.8, 0.7, 0.6, 0.5][severity - 1]
 
     x = x.resize((int(64 * c), int(64 * c)), PILImage.BOX)
-    x = x.resize((64, 64), PILImage.BOX)
+    x = np.array(x.resize((64, 64), PILImage.BOX))
 
     return x
 
 
 # mod of https://gist.github.com/erniejunior/601cdf56d2b424757de5
 def elastic_transform(image, severity=1):
-    IMSIZE = 64
+    IMSIZE = image.shape[0]
     c = [(IMSIZE * 0, IMSIZE * 0, IMSIZE * 0.08),
          (IMSIZE * 0.05, IMSIZE * 0.3, IMSIZE * 0.06),
          (IMSIZE * 0.1, IMSIZE * 0.08, IMSIZE * 0.06),
