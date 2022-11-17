@@ -62,7 +62,7 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
         data = TinyImageNetCorrupted(severity=severity, corruption=corruption,
                                      root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
                                      transform=transform)
-    # Define dataloader (no shuffling )
+    # Define dataloader (no shuffling)
     data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2, shuffle=False)
     return data_loader
 

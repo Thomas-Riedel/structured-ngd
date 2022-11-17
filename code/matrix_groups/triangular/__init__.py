@@ -287,7 +287,7 @@ class MUp:
         string += str(self.m_d)
         return string
 
-    def __matmul__(self, x: Union[int, float, np.array]) -> np.array:
+    def __matmul__(self, x: Union[int, float, torch.Tensor, np.ndarray]) -> np.array:
         """Matrix multiplication M @ X
 
         :param x: Union[int, float, np.array], scalar, vector, or matrix for matrix multiplication
@@ -317,13 +317,11 @@ class MUp:
             (  0     m_d1 )   ( m_c2   m_d2 )   (      m_d1 @ m_c2          m_d1 @ m_d2 )
             """
             assert((self.shape[1] == x.shape[0]) and (self.k == x.k))
-            result = torch.zeros((self.shape[0], x.shape[1]), device=self.device)
-            result[:self.k, :self.k] = self.m_a @ x.m_a + self.m_b @ x.m_c
-            result[:self.k, self.k:] = self.m_b * x.m_d
-            result[self.k:, :self.k] = self.m_d * x.m_c
-            result[self.k:, self.k:] = torch.diag((self.m_d * x.m_d).reshape(-1))
-            return result
-        else:
+            m_a = self.m_a @ x.m_a + self.m_b @ x.m_c
+            m_b = self.m_b * x.m_d.reshape(-1)
+            m_d = self.m_d.reshape(-1) * x.m_d.reshape(-1)
+            return MUp(m_a, m_b, m_d, self.k, self.device, self.damping)
+        elif isinstance(x, (torch.Tensor, np.ndarray)):
             # x is np.array
             # If x a vector, add one more axis
             if len(x.shape) == 1:
@@ -332,39 +330,41 @@ class MUp:
             result[:self.k] = self.m_a @ x[:self.k] + self.m_b @ x[self.k:]
             result[self.k:] = self.m_d * x[self.k:]
             return result
+        elif isinstance(x, RankMatrix):
+            return x.__rmatmul__(self)
 
-    def __rmatmul__(self, x: Union[int, float, np.array]) -> np.array:
-        """Matrix multiplication X @ M
-
-        :param x: Union[int, float, np.array], scalar, vector, or matrix for matrix multiplication
-        :return: result, result of matrix multiplication with B
-        """
-        assert(x.shape[1] == self.shape[0])
-        x = x.to(self.device)
-        if isinstance(x, MLow):
-            """
-            ( m_a1    0   )   ( m_a2   m_b2 )   ( m_a1 @ m_a2   m_a1 @ m_b2               )
-            (             ) @ (             ) = (                                         )
-            ( m_c1   m_d1 )   (  0     m_d2 )   ( m_c1 @ m_a2   m_c1 @ m_b2 + m_d1 @ m_d2 )
-            """
-            assert(self.k == x.k)
-            result = torch.zeros((x.shape[0], self.shape[1]), device=self.device)
-            result[:self.k, :self.k] = x.m_a @ self.m_a
-            result[:self.k, self.k:] = x.m_a @ self.m_b
-            result[self.k:, :self.k] = x.m_c @ self.m_a
-            result[self.k:, self.k:] = x.m_c @ self.m_b + torch.diag((self.m_d * x.m_d).reshape(-1))
-            return result
-        else:
-            # x an np.array
-            result = torch.zeros((x.shape[0], self.shape[1])).to(self.device)
-            result[:self.k, :self.k] = x[:self.k] @ self.m_a
-            result[:self.k, self.k:] = x[:self.k] @ self.m_b + x[:self.k] * self.m_d.T
-            result[self.k:, :self.k] = x[self.k:] @ self.m_a
-
-            # This will blow up for large values of d!
-            result[self.k:, self.k:] = x[self.k:] * self.m_d.T + x[self.k:] * self.m_d.T
-
-            return result
+    # def __rmatmul__(self, x: Union[int, float, np.array]) -> np.array:
+    #     """Matrix multiplication X @ M
+    #
+    #     :param x: Union[int, float, np.array], scalar, vector, or matrix for matrix multiplication
+    #     :return: result, result of matrix multiplication with B
+    #     """
+    #     assert(x.shape[1] == self.shape[0])
+    #     x = x.to(self.device)
+    #     if isinstance(x, MLow):
+    #         """
+    #         ( m_a1    0   )   ( m_a2   m_b2 )   ( m_a1 @ m_a2   m_a1 @ m_b2               )
+    #         (             ) @ (             ) = (                                         )
+    #         ( m_c1   m_d1 )   (  0     m_d2 )   ( m_c1 @ m_a2   m_c1 @ m_b2 + m_d1 @ m_d2 )
+    #         """
+    #         assert(self.k == x.k)
+    #         result = torch.zeros((x.shape[0], self.shape[1]), device=self.device)
+    #         result[:self.k, :self.k] = x.m_a @ self.m_a
+    #         result[:self.k, self.k:] = x.m_a @ self.m_b
+    #         result[self.k:, :self.k] = x.m_c @ self.m_a
+    #         result[self.k:, self.k:] = x.m_c @ self.m_b + torch.diag((self.m_d * x.m_d).reshape(-1))
+    #         return result
+    #     else:
+    #         # x an np.array
+    #         result = torch.zeros((x.shape[0], self.shape[1])).to(self.device)
+    #         result[:self.k, :self.k] = x[:self.k] @ self.m_a
+    #         result[:self.k, self.k:] = x[:self.k] @ self.m_b + x[:self.k] * self.m_d.T
+    #         result[self.k:, :self.k] = x[self.k:] @ self.m_a
+    #
+    #         # This will blow up for large values of d!
+    #         result[self.k:, self.k:] = x[self.k:] * self.m_d.T + x[self.k:] * self.m_d.T
+    #
+    #         return result
 
     def __mul__(self, x: Union[int, float, np.array]) -> np.array:
         """(Elementwise) Multiplication X * M
@@ -826,7 +826,7 @@ class MLow:
         """
         return self * x
 
-    def __matmul__(self, x: Union[int, float, np.array]) -> np.array:
+    def __matmul__(self, x: Union[int, float, np.ndarray]) -> np.array:
         """Matrix multiplication M @ X
 
         :param x: Union[int, float, np.array], scalar, vector, or matrix for matrix multiplication
@@ -863,15 +863,19 @@ class MLow:
             return result
         elif isinstance(x, (int, float)):
             return self * x
-        else:
-            # Write as block matrix!
+        elif isinstance(x, (torch.Tensor, np.ndarray)):
             if len(x.shape) == 1:
                 result = torch.zeros((self.d, 1), device=self.device)
+                x = x.reshape((-1, 1))
             else:
                 result = torch.zeros((self.d, x.shape[1]), device=self.device)
-            result[:self.k] = self.m_a @ x[:self.k]
-            result[self.k:] = self.m_c @ x[:self.k] + self.m_d * x[self.k:]
+            if self.k > 0:
+                result[:self.k] = self.m_a @ x[:self.k]
+            if self.k < self.d:
+                result[self.k:] = self.m_c @ x[:self.k] + self.m_d * x[self.k:]
             return result
+        elif isinstance(x, RankMatrix):
+            return x.__rmatmul__(self)
 
     def solve(self, b: np.array) -> np.array:
         """Solve (B + damping * I) x = b
@@ -1040,46 +1044,110 @@ class MLow:
 
 
 class RankMatrix:
-    def __init__(self, x: np.array = 0, y: np.array = 0, device: str = None) -> None:
+    def __init__(
+            self, x: Union[torch.Tensor, np.array] = 0, y: Union[torch.Tensor, np.array] = 0, device: str = None
+    ) -> None:
         '''
         Representation of x @ y^T
         '''
-        assert(x.shape[1] == y.shape[1])
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        self.x = x
-        self.y = y
-        self.k = x.shape[1]
+        self.x = x.reshape(-1).to(device)
+        self.y = y.reshape(-1).to(device)
+        self.k = 1
         self.device = device
         self.shape = (x.shape[0], y.shape[0])
+
+    @staticmethod
+    def zeros(x, y, device='cuda' if torch.cuda.is_available() else 'cpu'):
+        return RankMatrix(torch.zeros((x,), device=device),
+                          torch.zeros((y,), device=device))
 
     def full(self) -> np.array:
         return self.x @ self.y.T
 
     def t(self):
-        '''
+        """
         (x @ y^T)^T = y @ x^T = RankMatrix(y, x)
-        '''
+        """
         return RankMatrix(self.y, self.x, device=self.device)
 
+    def to(self, device: str):
+        self.x = self.x.to(device)
+        self.y = self.y.to(device)
+        return self
+
+    def __repr__(self):
+        string = "x: \n\t"
+        string += str(self.x)
+        string += "\ny: \n\t"
+        string += str(self.y)
+        return string
+
+    def __add__(self, other):
+        """
+        self + other
+        :param other:
+        :return:
+        """
+        if isinstance(other, RankMatrix):
+            assert(self.shape == other.shape)
+            eps = 1e-8
+            gamma = torch.sqrt((self.x.norm() * other.y.norm()) / (other.x.norm() * self.x.norm() + eps))
+            if gamma == 0:
+                return self
+            else:
+                return RankMatrix(self.x + gamma * other.x, self.y + 1/gamma * other.y, device=self.device)
+        elif isinstance(other, (int, float)):
+            return self + other * torch.ones_like(self.y)
+        else:
+            raise NotImplementedError()
+
+    def __radd__(self, other):
+        """
+        self + other
+        :param other:
+        :return:
+        """
+        if isinstance(other, RankMatrix):
+            assert(self.shape == other.shape)
+            gamma = torch.sqrt((self.x.norm() * other.y.norm()) / (other.x.norm() * self.x.norm()))
+            return RankMatrix(self.x + gamma * other.x, self.y + 1/gamma * other.y, device=self.device)
+        elif isinstance(other, (int, float)):
+            return other * torch.ones_like(self.x) + self
+        else:
+            raise NotImplementedError()
+
+    def __mul__(self, other):
+        if isinstance(other, (int, float)):
+            return RankMatrix(other * self.x, self.y, device=self.device)
+
+    def __rmul__(self, other):
+        if isinstance(other, (int, float)):
+            return RankMatrix(other * self.x, self.y, device=self.device)
+
+    def __truediv__(self, x):
+        return 1/x * self
+
     def __matmul__(self, other: np.array) -> np.array:
-        '''
+        """
         self @ other = x @ y.T @ other
-        '''
+        """
         if isinstance(other, (MUp, MLow)):
             return RankMatrix(self.x, other.t() @ self.y, device=self.device)
         elif isinstance(other, RankMatrix):
             # self @ other = x_1 @ y_1^T @ x_2 @ y_2^T = dot(y_1, x_2) * x_1 @ y_2^T
             return torch.dot(self.y, other.x) * RankMatrix(self.x, other.y, device=self.device)
-        elif (len(other.shape) == 1) or (other.shape[1] == 1):
-            # other a vector
-            # x @ y^T @ other = dot(y, other) * x
-            return torch.dot(self.y, other) * self.x
-        else:
-            # other a matrix
-            # x @ y^T @ other = x @ (other^T @ y)^T
-            return RankMatrix(self.x, other.T @ self.y, device=self.device)
+        elif isinstance(other, (torch.Tensor, np.ndarray)):
+            if (len(other.shape) == 1) or (other.shape[1] == 1):
+                # other a vector
+                # x @ y^T @ other = dot(y, other) * x
+                return torch.dot(self.y, other) * self.x
+            else:
+                # other a matrix
+                # x @ y^T @ other = x @ (other^T @ y)^T
+                return RankMatrix(self.x, other.T @ self.y, device=self.device)
 
     def __rmatmul__(self, other: np.array) -> np.array:
         '''
@@ -1090,44 +1158,132 @@ class RankMatrix:
         elif isinstance(other, RankMatrix):
             # other @ self = x_2 @ y_2^T @ x_1 @ y_1^T = dot(y_2, x_1) * x_2 @ y_1^T
             return torch.dot(other.y, self.x) * RankMatrix(other.x, self.y, device=self.device)
-        elif (len(other.shape) == 1) or (other.shape[1] == 1):
-            # other a vector
-            return (other @ self.x) @ self.y.T
-        else:
-            # other a matrix
-            # x @ y^T @ other = x @ (other^T @ y)^T
-            return RankMatrix(other @ self.x, self.y, device=self.device)
+        elif isinstance(other, (torch.Tensor, np.ndarray)):
+            if (len(other.shape) == 1) or (other.shape[1] == 1):
+                # other a vector
+                return (other @ self.x) @ self.y.T
+            else:
+                # other a matrix
+                # x @ y^T @ other = x @ (other^T @ y)^T
+                return RankMatrix(other @ self.x, self.y, device=self.device)
 
 
 class BlockTriangular:
-    def __init__(self, diag_blocks: List[Union[MUp, MLow]], bandwidth: int = 0,
-                 off_diag_blocks: List[List[RankMatrix]] = None) -> None:
-        self.diag_blocks = diag_blocks
-        self.off_diag_blocks = off_diag_blocks
-        self.bandwidth = bandwidth # width of off-diagonal block
+    def __init__(self, diag_blocks: List[Union[MUp, MLow]],
+                 off_diag_blocks: List[RankMatrix] = None,
+                 damping: float = 0.1, device: str = None) -> None:
+        self.diag_blocks = [diag.to(device) for diag in diag_blocks]
+        self.off_diag_blocks = [off_diag.to(device) for off_diag in off_diag_blocks]
         self.block_sizes = []
         for diag in self.diag_blocks:
-            self.block_sizes.append(diag.k)
-        assert(((bandwidth == 0) and (off_diag_blocks is None)) or (bandwidth == len(off_diag_blocks)))
+            self.block_sizes.append(diag.d)
+        self.d = np.sum(self.block_sizes)
+        self.shape = torch.Size([self.d, self.d])
+        self.device = device
+        self.damping = damping
+
+    @staticmethod
+    def eye(block_sizes: List[int], diag_rank: int = 0, damping: float = 0.01, device: str = None):
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        diag_blocks = [MUp.eye(block_size, np.minimum(diag_rank, block_size),
+                               damping=damping, device=device) for block_size in block_sizes]
+        off_diag_blocks = [RankMatrix(torch.zeros((block_sizes[i],), device=device),
+                                      torch.zeros((block_sizes[i+1]),), device=device)
+                           for i in range(len(block_sizes) - 1)]
+        return BlockTriangular(diag_blocks, off_diag_blocks, damping=damping, device=device)
+
+    def add_id(self, alpha: float = 1.0):
+        return BlockTriangular([diag_blocks.add_id(alpha) for diag_blocks in self.diag_blocks],
+                               self.off_diag_blocks,
+                               damping=self.damping,
+                               device=self.device)
+
+    def __add__(self, other):
+        if isinstance(other, BlockTriangular):
+            assert(len(self.diag_blocks) == len(other.diag_blocks))
+            diag_blocks = [self.diag_blocks[i] + other.diag_blocks[i] for i in range(len(self.diag_blocks))]
+            off_diag_blocks = [self.off_diag_blocks[i] + other.off_diag_blocks[i]
+                               for i in range(len(self.diag_blocks) - 1)]
+            return BlockTriangular(diag_blocks,
+                                   off_diag_blocks,
+                                   damping=self.damping,
+                                   device=self.device)
+
+    def t_matmul(self, other: Union[np.ndarray, torch.Tensor, MUp, MLow]) -> np.array:
+        '''
+        self.T @ other
+        '''
+        if isinstance(other, BlockTriangular):
+            diag_blocks = [self.diag_blocks[i].t() @ other.diag_blocks[i] for i in range(len(self.diag_blocks))]
+            off_diag_blocks = [self.diag_blocks[i].t() @ other.off_diag_blocks[i] +
+                               self.off_diag_blocks[i].t() @ other.diag_blocks[i+1]
+                               for i in range(len(self.diag_blocks) - 1)]
+            return BlockTriangular(diag_blocks, off_diag_blocks, damping=self.damping, device=self.device)
+        elif isinstance(other, (torch.Tensor, np.ndarray)):
+            # x an np.array
+            # Chunk other into blocks
+            other_blocked = []
+            for k in self.block_sizes:
+                other_blocked.append(other[:k])
+                other = other[k:]
+
+            # Perform matrix multiplication blockwise first over diagonals, then off-diagonals
+            result_blocked = []
+            for i in range(len(self.diag_blocks)):
+                if i == 0:
+                    result_blocked.append((self.diag_blocks[i].t() @ other_blocked[i]).reshape(-1))
+                else:
+                    result_blocked.append((self.diag_blocks[i].t() @ other_blocked[i]).reshape(-1) +
+                                          self.off_diag_blocks[i-1].t() @ other_blocked[i-1])
+            result = torch.cat(result_blocked)
+            return result
 
     def __matmul__(self, other: np.array) -> np.array:
         '''
         self @ other
         '''
-        # Chunk other into blocks
-        other_blocked = []
-        for k in self.block_sizes:
-            other_blocked.append(other[:k])
-            other = other[k:]
+        if isinstance(other, BlockTriangular):
+            diag_blocks = [self.diag_blocks[i] @ other.diag_blocks[i] for i in range(len(self.diag_blocks))]
+            off_diag_blocks = [self.diag_blocks[i] @ other.off_diag_blocks[i] +
+                               self.off_diag_blocks[i] @ other.diag_blocks[i+1]
+                               for i in range(len(self.diag_blocks) - 1)]
+            return BlockTriangular(diag_blocks, off_diag_blocks, damping=self.damping, device=self.device)
+        elif isinstance(other, (torch.Tensor, np.ndarray)):
+            # x an np.array
+            # Chunk other into blocks
+            other_blocked = []
+            for k in self.block_sizes:
+                other_blocked.append(other[:k])
+                other = other[k:]
 
-        # Perform matrix multiplication blockwise first over diagonals, then off-diagonals
-        result = 0
-        for i, diag in enumerate(self.diag_blocks):
-            result += diag @ other_blocked[i]
-        for band in range(self.bandwidth):
-            for i, off_diag in enumerate(self.off_diag_blocks[band]):
-                result += off_diag @ other_blocked[band + 1 + i]
-        return result
+            # Perform matrix multiplication blockwise first over diagonals, then off-diagonals
+            result_blocked = []
+            for i in range(len(self.diag_blocks)):
+                if i == len(self.diag_blocks) - 1:
+                    result_blocked.append((self.diag_blocks[i] @ other_blocked[i]).reshape(-1))
+                else:
+                    result_blocked.append((self.diag_blocks[i] @ other_blocked[i]).reshape(-1) +
+                                          self.off_diag_blocks[i] @ other_blocked[i+1])
+            result = torch.cat(result_blocked)
+            return result
+
+    def __mul__(self, x):
+        if isinstance(x, (int, float)):
+            return BlockTriangular([x * diag for diag in self.diag_blocks],
+                                   [x * off_diag for off_diag in self.off_diag_blocks],
+                                   damping=self.damping,
+                                   device=self.device)
+
+    def __rmul__(self, x):
+        if isinstance(x, (int, float)):
+            return BlockTriangular([x * diag for diag in self.diag_blocks],
+                                   [x * off_diag for off_diag in self.off_diag_blocks],
+                                   damping=self.damping,
+                                   device=self.device)
+
+    def __truediv__(self, x):
+        return 1/x * self
 
     def solve(self, other: np.array) -> np.array:
         # Chunk other into blocks
@@ -1137,12 +1293,31 @@ class BlockTriangular:
             other_blocked.append(other[:k])
             other = other[k:]
 
-        # Backwards substitution, Thomas algorithm (https://en.wikipedia.org/wiki/Tridiagonal_matrix_algorithm)
         n = len(self.diag_blocks)
-        solution_blocked.insert(0, self.diag_blocks[n].solve(other_blocked[n]))
-        for i, diag in reversed(enumerate(self.diag_blocks[:-1])):
-            solution_blocked.insert(0, diag.solve(other_blocked[i] - self.off_diag_blocks[i] @ solution_blocked[i+1]))
-        solution = torch.stack(solution_blocked, dim=0)
+        # Backwards substitution, Thomas algorithm (https://en.wikipedia.org/wiki/Tridiagonal_matrix_algorithm)
+        for i, diag in enumerate(reversed(self.diag_blocks)):
+            if i == 0:
+                solution_blocked.insert(0, diag.solve(other_blocked[-1]))
+            else:
+                solution_blocked.insert(
+                    0, diag.solve(other_blocked[(n-1) - i] -
+                                  self.off_diag_blocks[(n-1) - i] @ solution_blocked[0]))
+        solution = torch.cat(solution_blocked)
+        return solution
+
+    def transpose_solve(self, other: np.array) -> np.array:
+        # Chunk other into blocks
+        other_blocked = []
+        solution_blocked = []
+        for k in self.block_sizes:
+            other_blocked.append(other[:k])
+            other = other[k:]
+
+        # Forwards substitution, Thomas algorithm (https://en.wikipedia.org/wiki/Tridiagonal_matrix_algorithm)
+        solution_blocked.append(self.diag_blocks[0].solve(other_blocked[0]))
+        for i, diag in enumerate(self.diag_blocks[1:]):
+            solution_blocked.append(diag.solve(other_blocked[i+1] - self.off_diag_blocks[i].t() @ solution_blocked[i]))
+        solution = torch.cat(solution_blocked)
         return solution
 
     def det(self) -> float:
@@ -1151,8 +1326,95 @@ class BlockTriangular:
     def trace(self) -> float:
         return np.sum(list(map(lambda x: x.trace(), self.diag_blocks)))
 
+    def _update(self, beta: float, eta: float, n: int, g: np.array, v: np.array, gamma: float = 1):
+        assert(gamma >= 0)
+        v = v.squeeze(-1)
+        g = g.squeeze(-1)
+        factor = gamma * eta / n
+        mc_samples = v.shape[0]
+        g_blocked = []
+        v_blocked = []
+        for block_size in self.block_sizes:
+            g_blocked.append(g[:, :block_size])
+            v_blocked.append(v[:, :block_size])
+            g = g[:, block_size:]
+            v = v[:, block_size:]
 
-def h(x: Union[MUp, MLow]) -> Union[MUp, MLow]:
+        m_diag_blocks = []
+        m_off_diag_blocks = []
+        for i, (diag, g, v) in enumerate(zip(self.diag_blocks, g_blocked, v_blocked)):
+            if i < len(self.diag_blocks) - 1:
+                # (B^(i. i))^{-1} (I + B^(i, i+1) (B^(i. i+1))^T) (B^(i, i))^{-T}
+                diag_inv = diag.inv()
+                x = diag_inv @ self.off_diag_blocks[i].x
+                x_1 = x[:diag.k]
+                x_2 = x[diag.k:]
+                scalar = torch.sum(self.off_diag_blocks[i].y ** 2)
+                m_up = MUp(x_1 @ x_1.T, x_1 @ x_2.T, x_2 * x_2, diag.k, diag.device, diag.damping)
+                m_diag = factor * (diag_inv @ diag_inv.t() + scalar * m_up)
+                m_diag += -gamma * MUp.eye(diag.d, diag.k, diag.device, diag.damping)
+
+                diag_samples = MUp.zeros(diag.d, diag.k, diag.device, diag.damping)
+                off_diag_samples = RankMatrix.zeros(diag.d, self.diag_blocks[i+1].d, device=diag.device)
+                for m in range(mc_samples):
+                    x_i = diag.t() @ v[m]
+                    y_i = diag.solve(g[m] + self.off_diag_blocks[i] @ g_blocked[i+1][m]).reshape((-1, 1))
+                    if i > 0:
+                        x_i += (self.off_diag_blocks[i-1].t() @ v_blocked[i-1][m]).reshape(*x_i.shape)
+
+                    diag_samples += MUp(x_i[:diag.k] @ y_i[:diag.k].T + y_i[:diag.k] @ x_i[:diag.k].T,
+                                        x_i[:diag.k] @ y_i[diag.k:].T + y_i[:diag.k] @ x_i[diag.k:].T,
+                                        2 * x_i[diag.k:] * y_i[diag.k:],
+                                        diag.k, diag.device, diag.damping)
+                    # x_i @ y_j^T + y_i @ x_j^T
+                    j = i+1
+                    x_j = (self.diag_blocks[i+1].t() @ v_blocked[i+1][m]).reshape(-1)
+                    if i < len(self.diag_blocks) - 2:
+                        x_j += self.off_diag_blocks[i].t() @ v_blocked[i][m]
+                        y_j = self.diag_blocks[i+1].solve(
+                            g_blocked[i+1][m] + self.off_diag_blocks[i+1] @ g_blocked[i+2][m]
+                        )
+                    else:
+                        y_j = self.diag_blocks[i+1].solve(g_blocked[i+1][m])
+
+                    off_diag_samples += RankMatrix(x_i, y_j, device=diag.device) + \
+                                        RankMatrix(y_i, x_j, device=diag.device)
+                m_diag += n/2 * diag_samples/mc_samples
+
+                # C_up
+                m_diag.m_a *= 0.5
+                m_diag.m_d *= 0.5
+
+                m_off_diag = factor * self.off_diag_blocks[i].__rmatmul__(diag_inv) @ self.diag_blocks[i+1].inv().t()
+                m_off_diag += n/2 * off_diag_samples/mc_samples
+                m_diag_blocks.append(m_diag)
+                m_off_diag_blocks.append(m_off_diag)
+            else:
+                # (B^(i. i))^{-1} (B^(i, i))^{-T}
+                diag_inv = diag.inv()
+                m_diag = diag_inv @ diag_inv.t()
+                m_diag += -gamma * MUp.eye(diag.d, diag.k, diag.device, diag.damping)
+
+                diag_samples = MUp.zeros(diag.d, diag.k, diag.device, diag.damping)
+                for m in range(mc_samples):
+                    x = diag.t() @ v[m]
+                    y = diag.solve(g[m]).reshape((-1, 1))
+                    diag_samples += MUp(x[:diag.k] @ y[:diag.k].T + y[:diag.k] @ x[:diag.k].T,
+                                        x[:diag.k] @ y[diag.k:].T + y[:diag.k] @ x[diag.k:].T,
+                                        2 * x[diag.k:] * y[diag.k:],
+                                        diag.k, diag.device, diag.damping)
+                m_diag += n/2 * diag_samples/mc_samples
+                # C_up
+                m_diag.m_a *= 0.5
+                m_diag.m_d *= 0.5
+
+                m_diag_blocks.append(m_diag)
+
+        m = BlockTriangular(m_diag_blocks, m_off_diag_blocks, damping=self.damping, device=self.device)
+        return self @ h((1 - beta) * m)
+
+
+def h(x: Union[MUp, MLow, BlockTriangular]) -> Union[MUp, MLow, BlockTriangular]:
     """Return quadratic approximation to exponential function
         I + X + 1/2 * X @ X
 

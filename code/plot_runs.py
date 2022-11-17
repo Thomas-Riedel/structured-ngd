@@ -255,7 +255,8 @@ def plot_runs(runs: Union[dict, List[dict]]) -> None:
     if type(runs) == dict:
         runs = [runs]
     os.makedirs('plots', exist_ok=True)
-    # make_csv(runs)
+    make_csv(runs)
+    runs = [run for run in runs if run['dataset'].lower() == 'imagenet']
 
     # plot_results_wrt_parameters(runs)
     # plot_loss(runs)
@@ -368,7 +369,7 @@ def plot_metrics(runs: Union[dict, List[dict]]) -> None:
                 plt.plot(val_metric,
                          label=f"Validation Data ({key}; {optimizer})")
 
-            plt.title(f"Metrics w.r.t. Epochs ({dataset.upper()})")
+            plt.title(f"Metrics w.r.t. Epochs ({dataset})")
             plt.xlabel('epochs')
             # plt.ylim(0, 1)
             # plt.legend()
@@ -383,7 +384,7 @@ def plot_metrics(runs: Union[dict, List[dict]]) -> None:
                          label=f"Train Data ({key}; {optimizer})")
                 plt.plot(run['epoch_times'], val_metric,
                          label=f"Validation Data ({key}; {optimizer})")
-            plt.title(f"Metrics w.r.t. Time ({dataset.upper()})")
+            plt.title(f"Metrics w.r.t. Time ({dataset})")
             plt.xlabel('time (s)')
             # plt.ylim(0, 1)
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
@@ -460,7 +461,7 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
             optimizer_name = run['optimizer_name']
         model = run['model_name']
         method = run['method']
-        title = f"Reliability Diagram on {dataset.upper()} using {model}\n{optimizer}"
+        title = f"Reliability Diagram on {dataset} using {model}\n{optimizer}"
         plt.figure()
         bin_data = run['bin_data']
         reliability_diagram(bin_data, draw_ece=True, draw_mce=True, draw_bin_importance='alpha',
@@ -468,7 +469,7 @@ def plot_reliability_diagram(runs: Union[dict, List[dict]]) -> None:
         plt.savefig(f"plots/{dataset}/reliability_diagrams/{method}_{optimizer_name}.pdf")
         plt.show()
 
-        title = f"Uncertainty Diagram on {dataset.upper()} using {method}\n{optimizer}"
+        title = f"Uncertainty Diagram on {dataset} using {method}\n{optimizer}"
         plt.figure()
         uncertainty_diagram(bin_data, draw_uce=True, draw_muce=True, draw_bin_importance='alpha',
                             title=title, draw_averages=True, figsize=(6, 6), dpi=100)
@@ -491,7 +492,7 @@ def plot_ablation_study(runs, plot_values=('NLL', 'Accuracy', 'ECE',
             for metric in plot_values:
                 fig, ax = plt.subplots()
                 title = rf"{metric} w.r.t. {parameter}"
-                plot = sns.catplot(data=results[results.Dataset == dataset.upper()], x=parameter, y=metric,
+                plot = sns.catplot(data=results[results.Dataset == dataset], x=parameter, y=metric,
                             hue='Structure', errorbar='sd', kind='box', legend=False, ax=ax)
                 plot.ax.set_title(title)
                 plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
@@ -506,13 +507,11 @@ def plot_corrupted_data(runs, plot_values=('NLL', 'Accuracy', 'ECE',
     if type(runs) == dict:
         runs = [runs]
 
-    runs = [run for run in runs if run['dataset'].lower() in ['cifar10', 'cifar100']]
     if len(runs) == 0:
         return
 
-    show_corrupted_images(path='tiny_imagenet/val_1230.JPEG', corruption='gaussian_noise')
-    show_corrupted_images(path='tiny_imagenet/val_1230.JPEG', corruption='gaussian_noise')
-    show_corrupted_images(path='tiny_imagenet/val_1230.JPEG', corruption='gaussian_noise')
+    # show_corrupted_images(path='Tiny-ImageNet/val_1230.JPEG', corruption='gaussian_noise')
+    # show_corrupted_images(path='ImageNet/ILSVRC2012_val_00000023.JPEG', corruption='gaussian_noise')
 
     # Plot corrupted reliability diagrams for each dataset, model and optimizer
     # plot_corrupted_reliability_diagrams(runs)
@@ -523,16 +522,18 @@ def plot_corrupted_data(runs, plot_values=('NLL', 'Accuracy', 'ECE',
     plot_shift_intensity_diagram(runs, plot_values)
 
     # Plot robustness of all methods for each dataset, model and corruption type
-    # plot_robustness(runs)
+    plot_robustness(runs)
 
     # Plot predictive uncertainty under data shift
-    # plot_uncertainty(runs)
+    plot_uncertainty(runs)
 
 
 def show_corrupted_images(path='Tiny-ImageNet/val_1230.JPEG', corruption='gaussian_noise', show=False):
     dataset = os.path.dirname(path) + '-C'
     basename = os.path.splitext(os.path.basename(path))[0]
     img = Image.open(path)
+    if np.array(img).shape != (64, 64, 3):
+        img.thumbnail((224, 224))
     os.makedirs(f"plots/{dataset}", exist_ok=True)
     y = []
     for s in [0, 1, 2, 3, 4, 5]:
@@ -541,16 +542,15 @@ def show_corrupted_images(path='Tiny-ImageNet/val_1230.JPEG', corruption='gaussi
             f = lambda x: x
         else:
             f = lambda x: eval(corruption)(x, s).astype(np.uint8)
-        x = f(np.array(img))
+        x = np.array(f(img))
         y.append(x)
-        y.append(np.zeros((x.shape[0], 1, x.shape[2]), dtype=np.uint8))
-        img = Image.fromarray(x)
-        img.save(os.path.join('plots', dataset, f"{corruption}_{s}_{basename}.png"))
+        x_img = Image.fromarray(x)
+        x_img.save(os.path.join('plots', dataset, f"{corruption}_{s}_{basename}.jpg"))
         if show:
-            img.show()
+            x_img.show()
     y = np.concatenate(y, axis=1)
     img = Image.fromarray(y)
-    img.save(os.path.join('plots', dataset, f"{corruption}_{basename}.png"))
+    img.save(os.path.join('plots', dataset, f"{corruption}_{basename}.jpg"))
     if show:
         img.show()
 
@@ -560,8 +560,6 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
         runs = [runs]
     for run in runs:
         dataset = run['dataset']
-        if not dataset.lower() in ['cifar10', 'cifar100']:
-            continue
         os.makedirs(f"plots/{dataset}/corrupted/reliability_diagrams", exist_ok=True)
         os.makedirs(f"plots/{dataset}/corrupted/uncertainty_diagrams", exist_ok=True)
         method = run['method']
@@ -593,7 +591,7 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
         #
         #     # Draw reliability diagram for severity and corruption types
         #     plt.figure()
-        #     title = f"Reliability Diagram on {dataset.upper()}--C for Method {method}\n" \
+        #     title = f"Reliability Diagram on {dataset}--C for Method {method}\n" \
         #             f"(s = {severity}, c = {corruption_type.title()})\n" \
         #             f"{method}"
         #     reliability_diagram(corrupted_bin_data[(severity, corruption_type)], draw_ece=True, draw_mce=True,
@@ -604,7 +602,7 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
         #
         #     # Draw uncertainty diagram for severity and corruption types
         #     plt.figure()
-        #     title = f"Uncertainty Diagram on {dataset.upper()}--C for Method {method}\n" \
+        #     title = f"Uncertainty Diagram on {dataset}--C for Method {method}\n" \
         #             f"(s = {severity}, c = {corruption_type.title()})\n" \
         #             f"{method}"
         #     uncertainty_diagram(corrupted_bin_data[(severity, corruption_type)], draw_uce=True, draw_muce=True,
@@ -616,7 +614,7 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
         for corruption_type in CORRUPTION_TYPES.keys():
             # Plot reliability diagram for corruption type
             plt.figure()
-            title = f"Reliability Diagram on {dataset.upper()}--C\n" \
+            title = f"Reliability Diagram on {dataset}--C\n" \
                     f"(c = {corruption_type.title()})\n" \
                     f"{method}"
             reliability_diagram(
@@ -629,7 +627,7 @@ def plot_corrupted_reliability_diagrams(runs: Union[List[dict], dict]) -> None:
 
             # Draw uncertainty diagram for corruption type
             plt.figure()
-            title = f"Uncertainty Diagram on {dataset.upper()}--C\n" \
+            title = f"Uncertainty Diagram on {dataset}--C\n" \
                     f"(c = {corruption_type.title()})\n" \
                     f"{method}"
             uncertainty_diagram(
@@ -648,8 +646,6 @@ def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
     corrupted_results_df = collect_corrupted_results_df(runs)
 
     for dataset in corrupted_results_df['Dataset'].unique():
-        if not dataset.lower() in ['cifar10', 'cifar100']:
-            continue
         os.makedirs(f"plots/{dataset}/corrupted/shift_intensity", exist_ok=True)
         # plot corruption errors per dataset and optimizer grouped by model and error (ECE, accuracy, etc.)
         # 2 x len(plot_values) grid of plots
@@ -692,7 +688,7 @@ def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
                     labels[0] = 'Test'
                     ax.set_xticklabels(labels)
 
-                    title = f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{corruption_type.title()}'"
+                    title = f"Corruption Errors on {dataset} for {model} on Corruption Type '{corruption_type.title()}'"
                     ax.set_title(title)
                     plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
                     if value in ['ECE', 'MCE', 'UCE', 'MUCE', 'ACE', 'SCE', 'Accuracy', 'Top-5 Accuracy']:
@@ -710,7 +706,7 @@ def plot_shift_intensity_diagram(runs: Union[List[dict], dict],
                     #     else:
                     #         plot = sns.catplot(data=sub_df[sub_df['corruption_type'].isin(['clean', type])],
                     #                     x=parameter, y=value, hue='structure', errorbar='sd', kind='box', legend=False)
-                    #     title = f"Corruption Errors on {dataset.upper()} for {model} on Corruption Type '{type.title()}'"
+                    #     title = f"Corruption Errors on {dataset} for {model} on Corruption Type '{type.title()}'"
                     #     plot.ax.set_title(title)
                     #     plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
                     #     plot.fig.tight_layout()
@@ -748,7 +744,7 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
             ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(100 * x))
             ax.xaxis.set_major_formatter(ticks)
             ax.yaxis.set_major_formatter(ticks)
-            plt.title(f"mCE on {dataset.upper()} for Corruption Type '{corruption_type.title()}'")
+            plt.title(f"mCE on {dataset} for Corruption Type '{corruption_type.title()}'")
             plt.savefig(f"plots/{dataset}/corrupted/robustness/mCE_{corruption_type}.pdf")
             plt.show()
 
@@ -757,7 +753,7 @@ def plot_robustness(runs: Union[List[dict], dict]) -> None:
                 sns.scatterplot(sub_df, hue='Method', y='Rel. mCE', x='Accuracy')
             else:
                 sns.scatterplot(sub_df[sub_df.Type == corruption_type], hue='Method', y='Rel. mCE', x='Accuracy')
-            plt.title(f"mCE on {dataset.upper()} for Corruption Type '{corruption_type.title()}'")
+            plt.title(f"mCE on {dataset} for Corruption Type '{corruption_type.title()}'")
             plt.savefig(f"plots/{dataset}/corrupted/robustness/rmCE_{corruption_type}.pdf")
             plt.show()
 

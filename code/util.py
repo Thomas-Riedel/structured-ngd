@@ -257,6 +257,8 @@ def get_params(args: dict, optimizer=SGD, add_weight_decay=True, n=1) -> dict:
         momentum = dict(betas=(0.9, 0.999))
     elif optimizer.__name__ == 'SGD':
         momentum = dict(momentum=0.9, nesterov=True)
+    else:
+        momentum = dict()
     baseline = [dict(lr=lr, weight_decay=add_weight_decay * prior_precision / n, **momentum)
                 for lr, prior_precision in zip(set(args['lr']), set(args['prior_precision']))]
     params = dict(ngd=ngd, baseline=baseline)
@@ -315,9 +317,9 @@ def load_all_runs(directory: str = 'runs', method_unique: bool = False) -> List[
             with open(os.path.join(directory, file), 'rb') as f:
                 run = pickle.load(f)
             if method_unique:
-                if run['method'].startswith('NGD') and (run['params']['gamma'] != 1.0 or run['params']['mc_samples'] != 1):
+                if run['method'].startswith('NGD') and (run['params'].get('gamma') != 1.0 or run['params'].get('mc_samples') != 1):
                     continue
-                if run['method'] in methods:
+                if (run['method'], run['dataset']) in methods:
                     continue
             run['total_time'] = run['epoch_times'][-1]
             if not 'num_epochs' in run:
@@ -326,7 +328,7 @@ def load_all_runs(directory: str = 'runs', method_unique: bool = False) -> List[
             if run['params'].get('k') == 0:
                 run['params']['structure'] = 'diagonal'
             runs.append(run)
-            methods.append(run['method'])
+            methods.append((run['method'], run['dataset']))
     return runs
 
 
@@ -419,7 +421,7 @@ def collect_results(runs, directory='runs', baseline='SGD'):
 
         result = pd.DataFrame([{
             'Method': method,
-            'Dataset': dataset.upper(),
+            'Dataset': dataset,
             'Model': model,
             'Optimizer': optimizer,
             'Structure': structure,
@@ -447,8 +449,6 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
         runs = [runs]
     corrupted_results_df = pd.DataFrame()
     for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
         corrupted_results = run['corrupted_results']
         method = run['method']
         dataset = corrupted_results['dataset']
@@ -487,8 +487,6 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
         runs = [runs]
     corruption_errors = pd.DataFrame()
     for run in runs:
-        if not run['dataset'].lower() in ['cifar10', 'cifar100']:
-            continue
         corruption_error = run['corrupted_results']['corruption_errors']
         params = run['params']
         if not run['optimizer_name'].startswith('StructuredNGD'):
@@ -516,8 +514,6 @@ def collect_uncertainty(runs: Union[List[dict], dict]) -> pd.DataFrame:
     df_uncertainty = pd.DataFrame(columns=['Dataset', 'Model', 'Method', 'Predictive Uncertainty',
                                'Model Uncertainty', 'severity', 'corruption type'])
     for run in runs:
-        if run['dataset'].lower() not in ['cifar10', 'cifar100']:
-            continue
         uncertainty = run['corrupted_results']['uncertainty']
         for severity, corruption_type in uncertainty['predictive_uncertainty'].keys():
             df = pd.DataFrame()
@@ -749,10 +745,10 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             models.append(model)
         model = DeepEnsemble(models=models, **model_params)
         methods = ['Deep Ensemble']
-    elif model == 'NGDEnsemble':
+    elif model.startswith('NGDEnsemble'):
         # model of the form 'NGDDeepEnsemble|structure=<structure>;k=<value>'
         structure = model.split('|')[1].split(';')[0].split('=')[1]
-        k = model.split('|')[1].split(';')[1].split('=')[1]
+        k = int(model.split('|')[1].split(';')[1].split('=')[1])
         runs = load_all_runs()
         # Load all NGD runs with same hyperparameters
         runs = [
@@ -777,7 +773,7 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             model.load_state_dict(state_dict=state_dict['model_state_dict'])
             models.append(model)
 
-            optimizer = StructuredNGD(model.parameters(), state_dict['train_size'])
+            optimizer = StructuredNGD(model.parameters(), state_dict['train_size'], **run['params'])
             optimizer.load_state_dict(state_dict=state_dict['optimizer_state_dict'])
             optimizers.append(optimizer)
         model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
@@ -823,25 +819,25 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
         methods = [method]
     elif model == 'BBB':
         runs = load_all_runs()
-        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+        run = [run for run in runs if run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         model = Model(model_type=run['model_name'], bnn=True, **model_params)
         methods = ['BBB']
     elif model == 'Dropout':
         runs = load_all_runs()
-        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+        run = [run for run in runs if run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         model = Model(model_type=run['model_name'], dropout_layers='all', p=0.2, **model_params)
         methods = ['Dropout']
     elif model == 'LLDropout':
         runs = load_all_runs()
-        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+        run = [run for run in runs if run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         model = Model(model_type=run['model_name'], dropout_layers='last', p=0.2, **model_params)
         methods = ['LL Dropout']
     elif model == 'TempScaling':
         runs = load_all_runs()
-        run = [run for run in runs if run['optimizer_name'] == baseline and run['method'] == 'Vanilla'
+        run = [run for run in runs if run['method'] == 'Vanilla'
                and run['dataset'].lower() == dataset.lower()][0]
         state_dict = torch.load(f"checkpoints/{run['timestamp']}.pt", map_location=device)['model_state_dict']
         model = Model(run['model_name'], **model_params)
