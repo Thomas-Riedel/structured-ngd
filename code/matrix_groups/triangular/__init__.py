@@ -1100,7 +1100,7 @@ class RankMatrix:
             else:
                 return RankMatrix(self.x + gamma * other.x, self.y + 1/gamma * other.y, device=self.device)
         elif isinstance(other, (int, float)):
-            return self + other * torch.ones_like(self.y)
+            return self + RankMatrix(other * torch.ones_like(self.x), torch.ones_like(self.y), device=self.device)
         else:
             raise NotImplementedError()
 
@@ -1115,7 +1115,7 @@ class RankMatrix:
             gamma = torch.sqrt((self.x.norm() * other.y.norm()) / (other.x.norm() * self.x.norm()))
             return RankMatrix(self.x + gamma * other.x, self.y + 1/gamma * other.y, device=self.device)
         elif isinstance(other, (int, float)):
-            return other * torch.ones_like(self.x) + self
+            return self + other
         else:
             raise NotImplementedError()
 
@@ -1186,9 +1186,10 @@ class BlockTriangular:
     def eye(block_sizes: List[int], diag_rank: int = 0, damping: float = 0.01, device: str = None):
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        eps = 1e-8
         diag_blocks = [MUp.eye(block_size, np.minimum(diag_rank, block_size),
                                damping=damping, device=device) for block_size in block_sizes]
-        off_diag_blocks = [RankMatrix(torch.zeros((block_sizes[i],), device=device),
+        off_diag_blocks = [eps + RankMatrix(torch.zeros((block_sizes[i],), device=device),
                                       torch.zeros((block_sizes[i+1]),), device=device)
                            for i in range(len(block_sizes) - 1)]
         return BlockTriangular(diag_blocks, off_diag_blocks, damping=damping, device=device)

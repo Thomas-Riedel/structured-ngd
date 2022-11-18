@@ -27,41 +27,35 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
     elif dataset.lower() == 'cifar100':
         data_name = 'CIFAR-100-C'
     elif dataset.lower() == 'imagenet':
-        data_name = 'ImageNet-C'
+        path = '/riedelt/structured-ngd/code'
+        data_name = 'Tiny-ImageNet-C'
     else:
         raise ValueError()
-    if dataset.lower() in ['cifar10', 'cifar100']:
-        data_size = 10000
 
-        # load labels
-        directory = os.path.join(path, data_name, 'data')
-        path_to_file = os.path.join(directory, 'labels.npy')
-        labels = torch.from_numpy(np.load(path_to_file))[:data_size]
+    data_size = 10000
 
-        if type(corruption) == str:
-            corruption = [corruption]
+    # load labels
+    directory = os.path.join(path, data_name, 'data')
+    path_to_file = os.path.join(directory, 'labels.npy')
+    labels = torch.from_numpy(np.load(path_to_file, mmap_mode='r'))[:data_size]
 
-        data = []
-        for c in corruption:
-            path_to_file = os.path.join(directory, f"{c}.npy")
+    if type(corruption) == str:
+        corruption = [corruption]
 
-            # load corrupted inputs and preprocess
-            corrupted_input = torch.from_numpy(np.load(path_to_file)).permute(0, 3, 1, 2).float()
-            corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
-            mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
-            std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
-            corrupted_input = (corrupted_input - mean) / std
+    data = []
+    for c in corruption:
+        path_to_file = os.path.join(directory, f"{c}.npy")
 
-            data.append(TensorDataset(corrupted_input, labels))
-        data = ConcatDataset(data)
-    else:
-        transform = transforms.Compose([transforms.ToTensor(),
-                                        transforms.Normalize((0.5, 0.5, 0.5),
-                                                             (0.5, 0.5, 0.5))]
-                                       )
-        data = TinyImageNetCorrupted(severity=severity, corruption=corruption,
-                                     root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
-                                     transform=transform)
+        # load corrupted inputs and preprocess
+        corrupted_input = torch.from_numpy(np.load(path_to_file, mmap_mode='r')).permute(0, 3, 1, 2).float()
+        corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
+        mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
+        std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
+        corrupted_input = (corrupted_input - mean) / std
+
+        data.append(TensorDataset(corrupted_input, labels))
+    data = ConcatDataset(data)
+
     # Define dataloader (no shuffling)
     data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2, shuffle=False)
     return data_loader
@@ -191,30 +185,3 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
         sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption].copy()
         result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(baseline_clean_accuracy - sub_baseline_df.accuracy)]
     return result
-
-
-class TinyImageNetCorrupted(ImageFolder):
-    def __init__(self, severity, corruption,
-                 root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
-                 transform=transforms.Compose([transforms.ToTensor()])):
-        assert(corruption in CORRUPTIONS)
-        assert(0 <= severity <= 5)
-        self.severity = severity
-        if severity > 0:
-            transform.transforms.insert(0, lambda x: eval(corruption)(x, severity=severity).astype(np.uint8))
-        # test data does not contain labels so set val as test data (without training on it!!!)
-        super().__init__(os.path.join(root, 'val'), transform)
-        self.root = '/ImageNet'
-
-    def __getitem__(self, index):
-        # For reproducibility, corruptions are the same for each severity but different between images
-        np.random.seed(self.severity * len(self) + index)
-
-        path, target = self.samples[index]
-        sample = self.loader(path)
-        if self.transform is not None:
-            sample = self.transform(sample)
-        if self.target_transform is not None:
-            target = self.target_transform(target)
-
-        return sample, target

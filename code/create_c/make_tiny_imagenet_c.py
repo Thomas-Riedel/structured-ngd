@@ -1,3 +1,6 @@
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
+
 # This code and folder by: https://github.com/hendrycks/robustness
 
 '''
@@ -648,20 +651,60 @@ def elastic_transform(image, severity=1):
 
 # /////////////// End Distortions ///////////////
 
+SEVERITY_LEVELS = [1, 2, 3, 4, 5]
+CORRUPTIONS = [
+    'brightness', 'defocus_blur', 'fog', 'gaussian_blur', 'glass_blur', 'jpeg_compression', 'motion_blur', 'saturate',
+    'snow', 'speckle_noise', 'contrast', 'elastic_transform', 'frost', 'gaussian_noise', 'impulse_noise', 'pixelate',
+    'shot_noise', 'spatter', 'zoom_blur'
+]
 
-# /////////////// Further Setup ///////////////
+
+def save_distorted(corruption='gaussian_noise'):
+    assert(corruption in CORRUPTIONS)
+    data_size = 10000
+    img_size = (64, 64, 3)
+    corrupted_images = np.zeros((len(SEVERITY_LEVELS) * data_size, *img_size), dtype=np.uint8)
+    labels = np.zeros(data_size, dtype=np.uint8)
+    for severity in SEVERITY_LEVELS:
+        print(corruption, severity)
+        distorted_dataset = TinyImageNetCorrupted(severity, corruption)
+        for i, data in enumerate(distorted_dataset):
+            corrupted_images[i + (severity - 1) * data_size] = data[0].permute(1, 2, 0).numpy()
+            if severity == 1:
+                labels[i] = data[1].numpy()
+    os.makedirs('/riedelt/structured-ngg/code/data/Tiny-ImageNet-C', exist_ok=True)
+    np.save(f"/riedelt/structured-ngg/code/data/Tiny-ImageNet-C/{corruption}.npy", corrupted_images)
+    if not os.path.exists('data/Tiny-ImageNet-C/labels.npy'):
+        np.save('/riedelt/structured-ngg/code/data/Tiny-ImageNet-C/labels.npy', labels)
 
 
-def save_distorted(method=gaussian_noise):
-    for severity in range(1, 6):
-        print(method.__name__, severity)
-        distorted_dataset = DistortImageFolder(
-            root="./imagenet_val_bbox_crop/",
-            method=method, severity=severity,
-            transform=trn.Compose([trn.Resize((64, 64))]))
-        distorted_dataset_loader = torch.utils.data.DataLoader(
-            distorted_dataset, batch_size=100, shuffle=False, num_workers=6)
+class TinyImageNetCorrupted(ImageFolder):
+    def __init__(
+            self, severity, corruption,
+            root='/storage/group/dataset_mirrors/old_common_datasets/tiny-imagenet-200/',
+            transform=transforms.Compose([transforms.ToTensor(),
+                                          transforms.Normalize((0.5, 0.5, 0.5),
+                                                               (0.5, 0.5, 0.5))]
+                                         )
+                 ):
+        assert(corruption in CORRUPTIONS)
+        assert(0 <= severity <= 5)
+        self.severity = severity
+        if severity > 0:
+            transform.transforms.insert(0, lambda x: eval(corruption)(x, severity=severity).astype(np.uint8))
+        # test data does not contain labels so set val as test data (without training on it!!!)
+        super().__init__(os.path.join(root, 'val'), transform)
+        self.root = '/ImageNet'
 
-        for _ in distorted_dataset_loader: continue
+    def __getitem__(self, index):
+        # For reproducibility, corruptions are the same for each severity but different between images
+        np.random.seed(self.severity * len(self) + index)
 
-# /////////////// End Further Setup ///////////////
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target

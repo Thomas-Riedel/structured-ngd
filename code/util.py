@@ -325,8 +325,6 @@ def load_all_runs(directory: str = 'runs', method_unique: bool = False) -> List[
             if not 'num_epochs' in run:
                 run['num_epochs'] = len(run['epoch_times']) - 1
                 run['avg_time_per_epoch'] = run['total_time'] / run['num_epochs']
-            if run['params'].get('k') == 0:
-                run['params']['structure'] = 'diagonal'
             runs.append(run)
             methods.append((run['method'], run['dataset']))
     return runs
@@ -800,8 +798,8 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
         # (whose structure is called 'diagonal', differently from the specified structures)
         runs = load_all_runs(method_unique=False)
         runs = [run for run in runs if run['method'].startswith('NGD') and run['dataset'].lower() == dataset.lower()]
-        runs = [run for run in runs if run['params'][param] == value and run['params'][other_param] == 1
-                and (run['params']['structure'] in ['diagonal', structure])]
+        runs = [run for run in runs if run['params'].get(param) == value and run['params'].get(other_param) == 1
+                and (run['params'].get('structure') in ['diagonal', structure])]
         assert(len(runs) > 0)
         models = []
         optimizers = []
@@ -852,7 +850,7 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             methods = []
             for param in ngd_params:
                 structure = param['structure'].replace('_', ' ').title().replace(' ', '')
-                if param['k'] == 0:
+                if param['k'] == 0 and param['structure'] != 'pentadiagonal':
                     structure = 'Diagonal'
                 method = rf"NGD (structure = {structure}, $k = {param['k']})$"
                 methods.append(method)
