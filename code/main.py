@@ -36,7 +36,8 @@ def main() -> None:
 	runs = run_experiments(
 		args['epochs'], methods, model, args['optimizer'], train_loader, val_loader, test_loader, args['baseline'],
 		baseline_params=params['baseline'], ngd_params=params['ngd'], metrics=metrics, eval_every=args['eval_every'],
-		n_bins=args['n_bins'], mc_samples_val=args['mc_samples_val'], mc_samples_test=args['mc_samples_test']
+		n_bins=args['n_bins'], mc_samples_val=args['mc_samples_val'], mc_samples_test=args['mc_samples_test'],
+		batch_size=args['batch_size']
 	)
 	save_runs(runs)
 

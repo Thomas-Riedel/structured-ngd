@@ -28,7 +28,8 @@ def run_experiments(
         epochs: int, methods: List[str], model: nn.Module, optimizer: List[Union[Optimizer, StructuredNGD]],
         train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
         baseline_params: List[dict] = None, ngd_params: List[dict] = None,  metrics: List[Callable] = [],
-        eval_every: int = 100, n_bins: int = 10, mc_samples_test: int = 32, mc_samples_val: int = 1
+        eval_every: int = 100, n_bins: int = 10, mc_samples_test: int = 32, mc_samples_val: int = 1,
+        batch_size: int = 128
 ) -> List[dict]:
     """Run an optimizer on data for multiple epochs using multiple hyperparameters and evaluate.
 
@@ -47,19 +48,20 @@ def run_experiments(
     """
     if isinstance(model, (TempScaling, DeepEnsemble, HyperDeepEnsemble)):
         return evaluate(
-            methods[0], model, train_loader, val_loader, test_loader, baseline, metrics, n_bins, mc_samples_val, mc_samples_test
+            methods[0], model, train_loader, val_loader, test_loader,
+            baseline, metrics, n_bins, mc_samples_val, mc_samples_test, batch_size
         )
     else:
         return train_and_evaluate(
-            epochs, methods, model, optimizer, train_loader, val_loader, test_loader, baseline,
-            baseline_params, ngd_params, metrics, eval_every, n_bins, mc_samples_val, mc_samples_test
+            epochs, methods, model, optimizer, train_loader, val_loader, test_loader, baseline, baseline_params,
+            ngd_params, metrics, eval_every, n_bins, mc_samples_val, mc_samples_test, batch_size
         )
 
 
 def evaluate(
         method: str, model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader,
         baseline: str = 'SGD', metrics: List[Callable] = [], n_bins: int = 10,
-        mc_samples_val: int = 1, mc_samples_test: int = 32
+        mc_samples_val: int = 1, mc_samples_test: int = 32, batch_size: int = 128
 ):
     if isinstance(model, TempScaling):
         model.set_temperature(val_loader)
@@ -85,7 +87,7 @@ def evaluate(
         uncertainty=uncertainty
     )
     corrupted_results = get_corrupted_results(dataset, model, baseline, method, baseline, metrics,
-                                              clean_results, mc_samples_test, n_bins)
+                                              clean_results, mc_samples_test, n_bins, batch_size)
 
     param = dict()
     num_epochs = np.sum([run['num_epochs'] + 1 for run in runs])
@@ -130,7 +132,8 @@ def evaluate(
 def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim: Union[Optimizer, StructuredNGD],
                        train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader, baseline: str = 'SGD',
                        baseline_params: List[dict] = None, ngd_params: List[dict] = None, metrics: List[Callable] = [],
-                       eval_every: int = 100, n_bins: int = 10, mc_samples_val: int = 1, mc_samples_test: int = 32):
+                       eval_every: int = 100, n_bins: int = 10, mc_samples_val: int = 1, mc_samples_test: int = 32,
+                       batch_size: int = 128):
     loss_fn = nn.NLLLoss()
     runs = []
     dataset = train_loader.dataset.dataset.root.split('/')[1]
@@ -199,7 +202,7 @@ def train_and_evaluate(epochs: int, methods: List[str], model: nn.Module, optim:
             uncertainty=uncertainty
         )
         corrupted_results = get_corrupted_results(dataset, model, optimizer, methods[i], baseline, metrics,
-                                                  clean_results, mc_samples_test, n_bins)
+                                                  clean_results, mc_samples_test, n_bins, batch_size)
 
         num_epochs = epoch + 1
         epoch_times = np.cumsum(epoch_times)

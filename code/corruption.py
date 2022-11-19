@@ -3,6 +3,8 @@ from torchvision.datasets import ImageFolder
 from create_c import *
 from util import *
 from torchvision import transforms
+import shutil
+import tarfile
 
 
 SEVERITY_LEVELS = [1, 2, 3, 4, 5]
@@ -11,6 +13,7 @@ CORRUPTIONS = [
     'snow', 'speckle_noise', 'contrast', 'elastic_transform', 'frost', 'gaussian_noise', 'impulse_noise', 'pixelate',
     'shot_noise', 'spatter', 'zoom_blur'
 ]
+EXTRA_CORRUPTIONS = ['speckle_noise', 'gaussian_blur', 'spatter', 'saturate']
 CORRUPTION_TYPES = dict(
     all=CORRUPTIONS,
     noise=['gaussian_noise', 'shot_noise', 'impulse_noise', 'speckle_noise'],
@@ -27,8 +30,9 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
     elif dataset.lower() == 'cifar100':
         data_name = 'CIFAR-100-C'
     elif dataset.lower() == 'imagenet':
-        path = '/riedelt/structured-ngd/code'
-        data_name = 'Tiny-ImageNet-C'
+        data = TinyImageNetCorrupted(severity, corruption)
+        data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2, shuffle=False)
+        return data_loader
     else:
         raise ValueError()
 
@@ -39,29 +43,24 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
     path_to_file = os.path.join(directory, 'labels.npy')
     labels = torch.from_numpy(np.load(path_to_file, mmap_mode='r'))[:data_size]
 
-    if type(corruption) == str:
-        corruption = [corruption]
+    path_to_file = os.path.join(directory, f"{corruption}.npy")
 
-    data = []
-    for c in corruption:
-        path_to_file = os.path.join(directory, f"{c}.npy")
+    # load corrupted inputs and preprocess
+    corrupted_input = torch.from_numpy(np.load(path_to_file, mmap_mode='r')).permute(0, 3, 1, 2).float()
+    corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
+    mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
+    std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
+    corrupted_input = (corrupted_input - mean) / std
 
-        # load corrupted inputs and preprocess
-        corrupted_input = torch.from_numpy(np.load(path_to_file, mmap_mode='r')).permute(0, 3, 1, 2).float()
-        corrupted_input = corrupted_input[(severity - 1) * data_size:severity * data_size] / 255.0
-        mean = torch.tensor([0.485, 0.456, 0.406]).reshape((1, -1, 1, 1))
-        std = torch.tensor([0.229, 0.224, 0.225]).reshape((1, -1, 1, 1))
-        corrupted_input = (corrupted_input - mean) / std
-
-        data.append(TensorDataset(corrupted_input, labels))
-    data = ConcatDataset(data)
+    data = TensorDataset(corrupted_input, labels)
 
     # Define dataloader (no shuffling)
     data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2, shuffle=False)
     return data_loader
 
 
-def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, clean_results, mc_samples, n_bins):
+def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics,
+                          clean_results, mc_samples, n_bins, batch_size):
     if not dataset.lower() in ['cifar10', 'cifar100', 'imagenet']:
         return None
     optimizer_name = optimizer.__name__ if isinstance(optimizer, NoisyOptimizer) else type(optimizer).__name__
@@ -94,7 +93,7 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics, 
                 print('----------------------------------------------------------------')
                 print(f"[{i} / {len(SEVERITY_LEVELS) * len(CORRUPTIONS)}]; "
                       f"severity = {severity}, corruption = {corruption}, type = {corruption_type}\n")
-                data_loader = load_corrupted_data(dataset, corruption, severity)
+                data_loader = load_corrupted_data(dataset, corruption, severity, batch_size)
                 loss, metric, corrupted_bin_data, corrupted_uncertainty = model.evaluate(
                     data_loader, metrics=metrics, optimizer=optimizer, mc_samples=mc_samples, n_bins=n_bins
                 )
@@ -185,3 +184,42 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
         sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption].copy()
         result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(baseline_clean_accuracy - sub_baseline_df.accuracy)]
     return result
+
+
+class TinyImageNetCorrupted(ImageFolder):
+    def __init__(
+            self, severity, corruption,
+            root='data/TinyImageNet-C',
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    (0.5, 0.5, 0.5),
+                    (0.5, 0.5, 0.5))
+            ])
+    ):
+        assert(corruption in CORRUPTIONS)
+        assert(1 <= severity <= 5)
+        if corruption in EXTRA_CORRUPTIONS:
+            strip = 0
+            tar_folder = ''
+            tar_file = 'Tiny-ImageNet-C-extra.tar'
+        else:
+            strip = 1
+            tar_folder = 'Tiny-ImageNet-C'
+            tar_file = 'Tiny-ImageNet-C.tar'
+
+        def members(tar, strip):
+            for member in tar.getmembers():
+                if member.name.startswith(os.path.join(tar_folder, corruption, str(severity))):
+                    member.path = member.path.split('/', strip)[-1]
+                    yield member
+        with tarfile.open(os.path.join(root, tar_file)) as tar:
+            tar.extractall(root, members=members(tar, strip))
+        self.corruption = corruption
+        self.severity = severity
+        # test data does not contain labels so set val as test data (without training on it!!!)
+        super().__init__(os.path.join(root, corruption, str(severity)), transform)
+
+    def __del__(self):
+        # Delete file after use
+        shutil.rmtree(self.root)
