@@ -229,12 +229,12 @@ def load_data(dataset: str, batch_size: int, split: float = 0.8, pad_size: int =
                                                                    generator=torch.Generator().manual_seed(seed))
 
     train_loader = DataLoader(
-        training_data, batch_size=batch_size, num_workers=2, pin_memory=True
+        training_data, batch_size=batch_size, num_workers=8, pin_memory=True
     )
     val_loader = DataLoader(
-        validation_data, batch_size=batch_size, num_workers=2, pin_memory=True
+        validation_data, batch_size=batch_size, num_workers=8, pin_memory=True
     )
-    test_loader = DataLoader(test_data, batch_size=batch_size, num_workers=2, pin_memory=True)
+    test_loader = DataLoader(test_data, batch_size=batch_size, num_workers=8, pin_memory=True)
 
     return train_loader, val_loader, test_loader
 
@@ -316,15 +316,29 @@ def load_all_runs(directory: str = 'runs', method_unique: bool = False) -> List[
         if file.endswith(".pkl"):
             with open(os.path.join(directory, file), 'rb') as f:
                 run = pickle.load(f)
+            run['total_time'] = run['epoch_times'][-1]
+            if not 'num_epochs' in run:
+                run['num_epochs'] = len(run['epoch_times']) - 1
+                run['avg_time_per_epoch'] = run['total_time'] / run['num_epochs']
+            run['method'] = run['method'].replace(')$', '$)')
+            run['method'] = run['method'].replace('Hyper-Deep Ensemble', 'GMM').replace('structure = ', '').\
+                replace('Pentadiagonal', 'Tridiagonal')
+            if run['method'].startswith('GMM'):
+                M = 1 if 'M = ' not in run['method'] else int(run['method'].split('=')[-1].replace('$)', ''))
+                gamma = 1.0 if 'gamma' not in run['method'] else float(run['method'].split('=')[-1].replace('$)', ''))
+                if gamma == 0.5:
+                    continue
+                structure = run['method'].split('(')[1].split(',')[0]
+                run['params'] = dict(mc_samples=M, gamma=gamma, structure=structure, k='--')
+            if run['optimizer_name'].startswith('StructuredNGD') or run['method'].startswith('GMM'):
+                run['params']['structure'] = run['params']['structure'].replace('pentadiagonal', 'tridiagonal')
+            if run['params'].get('gamma') == 0.5:
+                continue
             if method_unique:
                 if run['method'].startswith('NGD') and (run['params'].get('gamma') != 1.0 or run['params'].get('mc_samples') != 1):
                     continue
                 if (run['method'], run['dataset']) in methods:
                     continue
-            run['total_time'] = run['epoch_times'][-1]
-            if not 'num_epochs' in run:
-                run['num_epochs'] = len(run['epoch_times']) - 1
-                run['avg_time_per_epoch'] = run['total_time'] / run['num_epochs']
             runs.append(run)
             methods.append((run['method'], run['dataset']))
     return runs
@@ -406,7 +420,7 @@ def collect_results(runs, directory='runs', baseline='SGD'):
             pu = compare(pu, baseline_run['test_metrics']['predictive_uncertainty'])
             # total_time = compare(total_time / 3600, baseline_run['total_time'] / 3600)
             # avg_time_per_epoch = compare(avg_time_per_epoch, baseline_run['avg_time_per_epoch'])
-        if run['optimizer_name'].startswith('StructuredNGD'):
+        if run['optimizer_name'].startswith('StructuredNGD') or run['method'].startswith('GMM'):
             structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
             k = run['params']['k']
             M = run['params']['mc_samples']
@@ -451,19 +465,23 @@ def collect_corrupted_results_df(runs: Union[List[dict], dict]) -> pd.DataFrame:
         method = run['method']
         dataset = corrupted_results['dataset']
         params = run['params']
-        if not run['optimizer_name'].startswith('StructuredNGD'):
+        if run['optimizer_name'].startswith('StructuredNGD') or method.startswith('GMM'):
+            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
+            optimizer_name = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
+            structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
+            k = run['params']['k']
+            M = run['params']['mc_samples']
+            gamma = run['params']['gamma']
+            if M != 1 or gamma != 1.0:
+                continue
+        else:
             optimizer_name = run['optimizer_name']
             structure = '--'
             k = '--'
             M = '--'
             gamma = '--'
-        else:
-            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
-            optimizer_name = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
-            structure = run['params']['structure'].replace('_', ' ').title().replace(' ', '')
-            k = run['params']['k']
-            M = run['params']['mc_samples']
-            gamma = run['params']['gamma']
+
+        corrupted_results['df']['Method'] = method
         corrupted_results['df']['Optimizer'] = optimizer_name
         corrupted_results['df']['Structure'] = structure
         corrupted_results['df']['k'] = k
@@ -487,19 +505,30 @@ def collect_corruption_errors(runs: Union[List[dict], dict]) -> pd.DataFrame:
     for run in runs:
         corruption_error = run['corrupted_results']['corruption_errors']
         params = run['params']
-        if not run['optimizer_name'].startswith('StructuredNGD'):
+        if run['optimizer_name'].startswith('StructuredNGD'):
+            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
+            corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
+            corruption_error['Structure'] = structure
+            corruption_error['k'] = params['k']
+            corruption_error['M'] = params['mc_samples']
+            corruption_error['gamma'] = params['gamma']
+            corruption_error['Method'] = run['method'].replace('structure = ', '')
+        elif run['method'].startswith('GMM'):
+            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
+            corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, \
+            M = {params['mc_samples']}, \gamma = {params['gamma']}$)"
+            corruption_error['Structure'] = structure
+            corruption_error['k'] = params['k']
+            corruption_error['M'] = params['mc_samples']
+            corruption_error['gamma'] = params['gamma']
+            corruption_error['Method'] = run['method'].replace('structure = ', '')
+        else:
             corruption_error['optimizer_name'] = run['optimizer_name']
             corruption_error['Structure'] = '--'
             corruption_error['k'] = '--'
             corruption_error['M'] = '--'
             corruption_error['gamma'] = '--'
-        else:
-            structure = params['structure'].replace('_', ' ').title().replace(' ', '')
-            corruption_error['optimizer_name'] = rf"NGD (structure = {structure}, $k = {params['k']}, M = {params['mc_samples']}, \gamma = {params['gamma']})$"
-            corruption_error['Structure'] = structure
-            corruption_error['k'] = params['k']
-            corruption_error['M'] = params['mc_samples']
-            corruption_error['gamma'] = params['gamma']
+
         for key, value in run['test_metrics'].items():
             corruption_error[key] = value
         corruption_errors = pd.concat([corruption_errors, corruption_error], ignore_index=True)
@@ -531,7 +560,7 @@ def compare(x, y=None, f='{:.1f}'):
         return f.format(x)
     sign = ['+', '±', ''][1 - np.sign(x - y).astype(int)]
     relative_diff = 100 * (x / y - 1)
-    return f"{f.format(x)} ({sign}{f.format(relative_diff)}%)"
+    return f"{x:.2f} ({sign}{f.format(relative_diff)}%)"
 
 
 def merge_bin_data(data: List[dict]):
@@ -679,51 +708,21 @@ def make_csv(runs):
     collect_results(runs).copy().to_csv('results/results.csv', index=False)
     collect_corrupted_results_df(runs).copy().to_csv('results/corrupted_results.csv', index=False)
     collect_corruption_errors(runs).copy().to_csv('results/corruption_errors.csv', index=False)
-    # results_table().copy().to_csv('results/table.csv', index=True)
+    results_table().copy().to_csv('results/table.csv', index=True)
 
 
-# def results_table():
-#     corrupted_results = pd.read_csv('results/corrupted_results.csv')
-#     corrupted_results_all = corrupted_results.copy()
-#     corrupted_results_all['corruption_type'] = 'all'
-#     corrupted_results = pd.concat([corrupted_results, corrupted_results_all])
-#     corrupted_results = corrupted_results.groupby(['Dataset', 'Method', 'corruption_type']).agg(['mean', 'std']).fillna(0)
-#
-#     corruption_errors = pd.read_csv('results/corruption_errors.csv')
-#     corruption_errors_all = corruption_errors.copy()
-#     corruption_errors_all['Type'] = 'all'
-#     corruption_errors = pd.concat([corruption_errors, corruption_errors_all])
-#     corruption_errors = corruption_errors.groupby(['Dataset', 'Method', 'Type']).agg(['mean', 'std'])
-#
-#     # f_interval = lambda x: rf"{100 * x.mean():.1f} ($\pm$ {100 * x.std():.1f})"
-#     # corrupted_results = corrupted_results[corrupted_results.corruption_type != 'clean']. \
-#     #     drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer', 'corruption_type']). \
-#     #     agg(f_interval).unstack('corruption_type').swaplevel(axis=1)
-#     # corrupted_results_all = pd.read_csv('results/corrupted_results.csv')
-#     #
-#     # corrupted_results_all = corrupted_results_all[corrupted_results_all.corruption_type != 'clean']. \
-#     #     drop(['severity', 'Loss', 'Top-5 Accuracy'], axis=1).groupby(['optimizer']).agg(f_interval)
-#     # corrupted_results = pd.concat([corrupted_results, pd.concat({'all': corrupted_results_all}, axis=1)], axis=1)
-#     #
-#     # for c in CORRUPTION_TYPES.keys():
-#     #     f_interval = lambda x: rf"{100 * x[c]:.1f} ($\pm$ {100 * x[f'{c}_std']:.1f})"
-#     #     corrupted_results[c, 'mCE'] = corruption_errors[[c, f"{c}_std"]].apply(
-#     #         f_interval, axis=1
-#     #     )
-#     #     corrupted_results[c, 'Rel. mCE'] = rel_corruption_errors[[c, f"{c}_std"]].apply(
-#     #         f_interval, axis=1
-#     #     )
-#     # corrupted_results.sort_index(inplace=True)
-#     # corrupted_results.rename(
-#     #     columns={'all': 'All', 'noise': 'Noise', 'blur': 'Blur', 'weather': 'Weather', 'digital': 'Digital'}, inplace=True
-#     # )
-#     # corrupted_results = corrupted_results.reindex(
-#     #     columns=corrupted_results.columns.reindex(['All', 'Noise', 'Blur', 'Weather', 'Digital'], level=0)[0]
-#     # )
-#     # corrupted_results = corrupted_results.reindex(
-#     #     columns=corrupted_results.columns.reindex(['mCE', 'Rel. mCE', 'Accuracy', 'ECE', 'MCE'], level=1)[0]
-#     # )
-#     return corruption_errors, corrupted_results
+def results_table():
+    columns = ['accuracy', 'ece', 'mce', 'uce', 'muce', 'ace', 'sce', 'top_5_accuracy', 'Rel. mCE', 'mCE']
+    corruption_errors = pd.read_csv('results/corruption_errors.csv')
+    corruption_errors_all = corruption_errors.copy()
+    corruption_errors_all['Type'] = 'all'
+    corruption_errors = pd.concat([corruption_errors, corruption_errors_all])
+    corruption_errors = corruption_errors.groupby(['Dataset', 'Method', 'Type']).mean().drop(['Accuracy', 'model_uncertainty', 'predictive_uncertainty'], axis=1)
+    corruption_errors[columns] = corruption_errors[columns].apply(lambda x: (100 * x).round(2))
+    corruption_errors[['brier']] = corruption_errors[['brier']].apply(lambda x: x.round(2))
+    corruption_errors = corruption_errors.unstack('Type').swaplevel(axis=1).sort_index(axis=1, level=0)
+
+    return corruption_errors
 
 
 
@@ -751,10 +750,10 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
         # Load all NGD runs with same hyperparameters
         runs = [
             run for run in runs if run['method'].startswith('NGD')
-                                   and run['params']['k'] == k
-                                   and run['params']['structure'] in ['diagonal', structure]
-                                   and run['params']['mc_samples'] == 1
-                                   and run['params']['gamma'] == 1.0
+                                   and run['params'].get('k') == k
+                                   and run['params'].get('structure') in ['diagonal', structure]
+                                   and run['params'].get('mc_samples') == 1
+                                   and run['params'].get('gamma') == 1.0
                                    and run['dataset'].lower() == dataset.lower()
         ]
         assert(len(runs) > 0)
@@ -776,9 +775,9 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
             optimizers.append(optimizer)
         model = HyperDeepEnsemble(models=models, optimizers=optimizers, **model_params)
         methods = [method]
-    elif model.startswith('HyperDeepEnsemble'):
-        # model of the form 'HyperDeepEnsemble|structure=<structure>;<parameter>=<value>'
-        method = 'Hyper-Deep Ensemble'
+    elif model.startswith('GMM'):
+        # model of the form 'GMM|structure=<structure>;<parameter>=<value>'
+        method = 'GMM'
         structure = model.split('|')[1].split(';')[0].split('=')[1]
         param, value = model.split('|')[1].split(';')[1].split('=')
         value = eval(value)
@@ -852,7 +851,7 @@ def get_methods_and_model(dataset, model, model_params, optimizer, ngd_params=No
                 structure = param['structure'].replace('_', ' ').title().replace(' ', '')
                 if param['k'] == 0 and param['structure'] != 'pentadiagonal':
                     structure = 'Diagonal'
-                method = rf"NGD (structure = {structure}, $k = {param['k']})$"
+                method = rf"NGD (structure = {structure}, $k = {param['k']}$)"
                 methods.append(method)
     return methods, model
 

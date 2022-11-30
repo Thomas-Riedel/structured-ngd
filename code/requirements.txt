@@ -11,3 +11,4 @@ accimage
 Wand
 opencv-python
 scikit-image
+colorcet

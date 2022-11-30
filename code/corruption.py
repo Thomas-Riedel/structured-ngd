@@ -1,6 +1,5 @@
 from torchvision.datasets import ImageFolder
 
-from create_c import *
 from util import *
 from torchvision import transforms
 import shutil
@@ -31,7 +30,7 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
         data_name = 'CIFAR-100-C'
     elif dataset.lower() == 'imagenet':
         data = TinyImageNetCorrupted(severity, corruption)
-        data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2, shuffle=False)
+        data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=8, shuffle=False)
         return data_loader
     else:
         raise ValueError()
@@ -55,7 +54,7 @@ def load_corrupted_data(dataset: str, corruption: Union[str, List[str]], severit
     data = TensorDataset(corrupted_input, labels)
 
     # Define dataloader (no shuffling)
-    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=2, shuffle=False)
+    data_loader = DataLoader(data, batch_size=batch_size, pin_memory=True, num_workers=8, shuffle=False)
     return data_loader
 
 
@@ -112,7 +111,8 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics,
             corrupted_bin_data = merge_bin_data(bin_data_list)
             bin_data[(severity, corruption_type)] = corrupted_bin_data
             uncertainty['model_uncertainty'][(severity, corruption_type)] = corrupted_uncertainty['model_uncertainty']
-            uncertainty['predictive_uncertainty'][(severity, corruption_type)] = corrupted_uncertainty['predictive_uncertainty']
+            uncertainty['predictive_uncertainty'][(severity, corruption_type)] = \
+                corrupted_uncertainty['predictive_uncertainty']
 
     sub_df = df[
         (df['severity'] > 0) & (df['corruption_type'] != 'all')
@@ -129,7 +129,9 @@ def get_corrupted_results(dataset, model, optimizer, method, baseline, metrics,
         baseline_clean_accuracy = clean_accuracy
         baseline_df = sub_df.copy()
     corruption_errors['mCE'] = ce(sub_df, baseline_df).reindex(columns=CORRUPTIONS).values.reshape(-1)
-    corruption_errors['Rel. mCE'] = rel_ce(sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy).reindex(columns=CORRUPTIONS).values.reshape(-1)
+    corruption_errors['Rel. mCE'] = rel_ce(
+        sub_df, baseline_df, clean_accuracy, baseline_clean_accuracy
+    ).reindex(columns=CORRUPTIONS).values.reshape(-1)
     corruption_errors['Method'] = method
     corruption_errors['Model'] = model_name
     corruption_errors['Dataset'] = dataset
@@ -182,7 +184,9 @@ def rel_ce(df, baseline_corrupted_df, clean_accuracy, baseline_clean_accuracy):
     for corruption in CORRUPTIONS:
         sub_df = df[df.corruption == corruption].copy()
         sub_baseline_df = baseline_corrupted_df[baseline_corrupted_df.corruption == corruption].copy()
-        result[corruption] = [np.sum(clean_accuracy - sub_df.accuracy) / np.sum(baseline_clean_accuracy - sub_baseline_df.accuracy)]
+        result[corruption] = [
+            np.sum(clean_accuracy - sub_df.accuracy) / np.sum(baseline_clean_accuracy - sub_baseline_df.accuracy)
+        ]
     return result
 
 
@@ -215,10 +219,34 @@ class TinyImageNetCorrupted(ImageFolder):
                     yield member
         with tarfile.open(os.path.join(root, tar_file)) as tar:
             tar.extractall(root, members=members(tar, strip))
+        self.num_classes = 200
+        self.data_size = 10000
         self.corruption = corruption
         self.severity = severity
         # test data does not contain labels so set val as test data (without training on it!!!)
         super().__init__(os.path.join(root, corruption, str(severity)), transform)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __len__(self):
+        return self.data_size
+
+    def __getitem__(self, index):
+        if self.corruption == 'frost':
+            np.random.seed(self.severity * self.data_size + index)
+            frost_index = np.random.randint(5)
+        else:
+            frost_index = 0
+        path, target = self.samples[index + self.data_size * frost_index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target % self.num_classes
 
     def __del__(self):
         # Delete file after use
